@@ -9,6 +9,8 @@ from qiskit.transpiler import Target
 from qiskit.circuit.library import CXGate, RZGate, SXGate
 from qiskit_ibm_runtime.fake_provider import FakeManilaV2 as FakeManila
 import random
+from qiskit.providers.options import Options
+from qiskit.circuit import Parameter
 
 def create_backend(kind="fully_connected", num_qubits=5):
     if num_qubits < 2:
@@ -32,7 +34,8 @@ def createTargetForBackend(num_qubits, coupling_map) -> Target:
     target = Target(num_qubits=num_qubits)
 
     # single-qubit gates allowed on all qubits
-    target.add_instruction(RZGate(), {(i,): None for i in range(num_qubits)})
+    phi = Parameter("phi")
+    target.add_instruction(RZGate(phi), {(i,): None for i in range(num_qubits)})
     target.add_instruction(SXGate(), {(i,): None for i in range(num_qubits)})
 
     # CX allowed only on connected qubits
@@ -63,6 +66,16 @@ class LinearBackend(BackendV2):
     @property
     def coupling_map(self):
         return self._coupling_map
+    
+    @property
+    def max_circuits(self):
+        return None
+    
+    def _default_options(cls):
+        return Options()
+
+    def run(self, circuits, **kwargs):
+        raise NotImplementedError("This backend cannot execute circuits.")
 
 class FullyConnectedBackend(BackendV2):
     def __init__(self, num_qubits=9):
@@ -87,6 +100,16 @@ class FullyConnectedBackend(BackendV2):
     @property
     def coupling_map(self):
         return self._coupling_map
+    
+    @property
+    def max_circuits(self):
+        return None
+    
+    def _default_options(cls):
+        return Options()
+    
+    def run(self, circuits, **kwargs):
+        raise NotImplementedError("This backend cannot execute circuits.")
 
 def isPerfectSquare(n: int) -> bool:
     return int(n**0.5)**2 == n
@@ -124,6 +147,16 @@ class GridBackend(BackendV2):
     @property
     def coupling_map(self):
         return self._coupling_map
+    
+    @property
+    def max_circuits(self):
+        return None
+    
+    def _default_options(cls):
+        return Options()
+    
+    def run(self, circuits, **kwargs):
+        raise NotImplementedError("This backend cannot execute circuits.")
 
 class RandomBackend(BackendV2):
     def __init__(self, num_qubits=10, edge_probability=0.3):
@@ -156,3 +189,13 @@ class RandomBackend(BackendV2):
     @property
     def coupling_map(self):
         return self._coupling_map
+    
+    @property
+    def max_circuits(self):
+        return None
+    
+    def _default_options(cls):
+        return Options()
+    
+    def run(self, circuits, **kwargs):
+        raise NotImplementedError("This backend cannot execute circuits.")

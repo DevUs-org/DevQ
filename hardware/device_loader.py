@@ -16,5 +16,5 @@ def load_device(backend: BackendV2):
         name=backend.name,
         num_qubits=backend.num_qubits,
         coupling_map=backend.coupling_map,
-        basis_gates=backend.target.operation_names()
+        basis_gates=backend.target.operation_names
     )
