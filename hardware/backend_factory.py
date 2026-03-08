@@ -1,5 +1,5 @@
 '''
-ID: Fake
+Tags: Fake
 
 Allows user to create fake Qiskit based backends and then load as a device onto the DevQ hardware layer for testing.
 '''

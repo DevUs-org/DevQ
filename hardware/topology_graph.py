@@ -1,5 +1,5 @@
 '''
-ID: Main
+Tags: Main
 
 Converts backend coupling_map (topology) to an undirected unweighted graph for schedulers and alocators
 '''

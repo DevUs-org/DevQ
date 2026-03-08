@@ -1,5 +1,5 @@
 '''
-ID: Main
+Tags: Main, Adapter
 
 Allows user to load the device onto the DevQ hardware layer.
 '''
