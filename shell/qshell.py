@@ -13,8 +13,9 @@ from kernel.process.process_table import ProcessTable
 
 class QShell(cmd.Cmd):
     prompt = "devq> "
-    def __init__(self):
+    def __init__(self, kernel):
         super().__init__()
+        self.kernel = kernel
         self.process_table = ProcessTable()
         self._last_command = None
         readline.parse_and_bind("tab: complete")
@@ -46,15 +47,17 @@ class QShell(cmd.Cmd):
                 return
             
             circuit = load_qasm(arg)
+            qcb = self.kernel.submit_job(circuit)           
             job = self.process_table.create_job(circuit)
             print(f"Job {job.job_id} submitted")
+            print(f"Allocated qubits: {qcb.virtual_to_physical_map}")
 
         except Exception as e:
             print(f"[DevQ Error] {e}")
 
     def do_qps(self, arg):
         try:
-            jobs = self.process_table.list_jobs()
+            jobs = self.kernel.list_jobs()
             
             if not jobs:
                 print("No jobs in queue.")
