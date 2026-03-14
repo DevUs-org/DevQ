@@ -96,11 +96,11 @@ class QShell(cmd.Cmd):
         print()
 
     def do_qmem(self, arg):
-        free_list = self.kernel.get_free_qubits()
+        free_set = self.kernel.get_free_qubits()
         total = self.kernel.device.num_qubits
 
         for qubit in range(total):
-            if qubit in free_list:
+            if qubit in free_set:
                 print(qubit, "[]")
             else:
                 print(qubit, "[X]")

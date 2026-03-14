@@ -23,4 +23,4 @@ class Kernel:
         return self.device.coupling_map
     
     def get_free_qubits(self):
-        return self.memory_manager.pool.available()
+        return self.memory_manager.pool.free_qubits
