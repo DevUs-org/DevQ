@@ -4,7 +4,7 @@ Tags: Main
 QASM Loader and temporary parser
 '''
 
-from circuits.circuit_rep import CircuitRep
+from .circuit_rep import CircuitRep
 
 def load_qasm(file_path: str):
     if not file_path.lower().endswith(".qasm"):

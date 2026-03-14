@@ -4,7 +4,7 @@ Tags: Main
 Creates the Job Process Table.
 '''
 
-from kernel.process.qcb import QCB
+from .qcb import QCB
 
 class ProcessTable:
     def __init__(self):

@@ -4,7 +4,7 @@ Tags: Main
 DevQ Device Definition
 '''
 
-from hardware.topology_graph import build_graph
+from .topology_graph import build_graph
 
 class QuantumDevice:
     def __init__(self, name, num_qubits, coupling_map, basis_gates):

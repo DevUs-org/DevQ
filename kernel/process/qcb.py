@@ -4,7 +4,7 @@ Tags: Main
 Create the QCB or the process control block for the jobs.
 '''
 
-from kernel.process.lifecycle import JobStates
+from .lifecycle import JobStates
 
 class QCB:
     def __init__(self, job_id, circuit, v2p_map = None):
