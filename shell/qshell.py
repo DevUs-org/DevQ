@@ -61,7 +61,7 @@ class QShell(cmd.Cmd):
                 return
 
             for job in jobs:
-                print(f"{job.job_id} | {job.state}")
+                print(f"{job.job_id} | {job.state.value}")
 
         except Exception as e:
             print(f"[DevQ Error] {e}")
