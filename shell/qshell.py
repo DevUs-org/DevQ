@@ -9,14 +9,12 @@ import os
 import readline
 import atexit
 from circuits.qasm_loader import load_qasm
-from kernel.process.process_table import ProcessTable
 
 class QShell(cmd.Cmd):
     prompt = "devq> "
     def __init__(self, kernel):
         super().__init__()
         self.kernel = kernel
-        self.process_table = ProcessTable()
         self._last_command = None
         readline.parse_and_bind("tab: complete")
         self._history_file = os.path.expanduser("~/.devq_history")
@@ -47,9 +45,8 @@ class QShell(cmd.Cmd):
                 return
             
             circuit = load_qasm(arg)
-            qcb = self.kernel.submit_job(circuit)           
-            job = self.process_table.create_job(circuit)
-            print(f"Job {job.job_id} submitted")
+            qcb = self.kernel.submit_job(circuit)      
+            print(f"Job {qcb.job_id} submitted")
             print(f"Allocated qubits: {qcb.virtual_to_physical_map}")
 
         except Exception as e:
@@ -88,3 +85,22 @@ class QShell(cmd.Cmd):
 
     def emptyline(self):
         pass
+
+    def do_qtopology(self, arg):
+        topology = self.kernel.get_topology()
+
+        print("\nDevice topology:\n")
+        for q1, q2 in topology:
+            print(f"{q1} -- {q2}")
+
+        print()
+
+    def do_qmem(self, arg):
+        free_list = self.kernel.get_free_qubits()
+        total = self.kernel.device.num_qubits
+
+        for qubit in range(total):
+            if qubit in free_list:
+                print(qubit, "[]")
+            else:
+                print(qubit, "[X]")

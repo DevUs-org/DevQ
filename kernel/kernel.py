@@ -18,3 +18,9 @@ class Kernel:
 
     def list_jobs(self):
         return self.process_table.list_jobs()
+    
+    def get_topology(self):
+        return self.device.coupling_map
+    
+    def get_free_qubits(self):
+        return self.memory_manager.pool.available()
