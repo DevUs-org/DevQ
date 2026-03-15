@@ -125,3 +125,24 @@ class QShell(cmd.Cmd):
                 print(qubit, "[]")
             else:
                 print(qubit, "[X]")
+
+    def do_qmap(self, arg):
+        try:
+            job_id = int(arg.strip())
+        except ValueError:
+            print("Invalid job id")
+            return
+
+        mapping = self.kernel.get_job_mapping(job_id)
+
+        if mapping is None:
+            print(f"Job {job_id} does not exist")
+            return
+
+        print(f"\nJob {job_id} mapping\n")
+        print("virtual → physical\n")
+
+        for v, p in mapping.items():
+            print(f"{v} → {p}")
+
+        print()

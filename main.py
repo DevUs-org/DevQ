@@ -17,7 +17,7 @@ from kernel.kernel import Kernel
 from shell.qshell import QShell
 from hardware.backend_factory import create_backend
 
-device = load_device(create_backend("random", 10))
+device = load_device(create_backend("isolated", 10))
 kernel = Kernel(device)
 shell = QShell(kernel)
 shell.cmdloop()

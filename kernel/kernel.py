@@ -24,3 +24,10 @@ class Kernel:
     
     def get_free_qubits(self):
         return self.memory_manager.pool.free_qubits
+    
+    def get_job_mapping(self, job_id):
+        job = self.process_table.jobs.get(job_id)
+        if job is None:
+            return None
+
+        return job.virtual_to_physical_map
