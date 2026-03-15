@@ -88,12 +88,33 @@ class QShell(cmd.Cmd):
 
     def do_qtopology(self, arg):
         topology = self.kernel.get_topology()
+        total = self.kernel.device.num_qubits
 
-        print("\nDevice topology:\n")
-        for q1, q2 in topology:
-            print(f"{q1} -- {q2}")
+        if not arg:
+            print("\nDevice topology:")
+            for q1, q2 in topology:
+                print(f"{q1} -- {q2}")
 
-        print()
+            print()
+            return
+        
+        try:
+            requested = [int(i) for i in arg.split()]
+
+            print("\nRequested device topology:")
+            for q in requested:
+                if q < 0 or q >= total:
+                    print(f"{q} -- Doesn't exist")
+
+            for q1, q2 in topology:
+                if q1 in requested or q2 in requested:
+                    print(f"{q1} -- {q2}")
+
+            print()
+
+        except ValueError:
+            print("Invalid Argument for qtopology")
+
 
     def do_qmem(self, arg):
         free_set = self.kernel.get_free_qubits()
