@@ -1,6 +1,7 @@
+from collections import deque
 
 class GraphAllocator:
-    def allocate(slef, circuit, device, pool):
+    def allocate(self, circuit, device, pool):
         required = circuit.num_qubits
         free_qubits = pool.free_qubits
 
@@ -11,12 +12,14 @@ class GraphAllocator:
             queue = [start]
 
             while queue and len(visited) < required:
-                q = queue.pop(0)
+                queue = deque([start])
+                q = queue.popleft()
                 if q not in visited and q in free_qubits:
                     visited.append(q)
 
                     for neighbor in G.neighbors(q):
-                        queue.append(neighbor)
+                        if neighbor in free_qubits and neighbor not in visited:
+                            queue.append(neighbor)
 
             if len(visited) >= required:
                 selected = visited[:required]
