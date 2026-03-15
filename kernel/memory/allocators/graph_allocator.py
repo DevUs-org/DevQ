@@ -1,19 +1,21 @@
 from collections import deque
 
 class GraphAllocator:
+
     def allocate(self, circuit, device, pool):
+
         required = circuit.num_qubits
         free_qubits = pool.free_qubits
-
         G = device.graph
 
         for start in free_qubits:
+
             visited = []
-            queue = [start]
+            queue = deque([start])
 
             while queue and len(visited) < required:
-                queue = deque([start])
                 q = queue.popleft()
+
                 if q not in visited and q in free_qubits:
                     visited.append(q)
 
