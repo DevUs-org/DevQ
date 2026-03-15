@@ -12,7 +12,7 @@ class QuantumDevice:
         self.num_qubits = num_qubits
         self.coupling_map = coupling_map
         self.basis_gates = basis_gates
-        self.graph = build_graph(coupling_map)
+        self.graph = build_graph(coupling_map, num_qubits)
 
     def __repr__(self):
         return f"QuantumDevice(name={self.name}, num_qubits={self.num_qubits})"

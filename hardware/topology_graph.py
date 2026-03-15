@@ -4,16 +4,12 @@ Tags: Main
 Converts backend coupling_map (topology) to an undirected unweighted graph for schedulers and alocators
 '''
 
-from collections import defaultdict
+import networkx as nx
 
-def build_graph(coupling_map):
-    graph = defaultdict(list)
+def build_graph(coupling_map, num_qubits):
+    graph = nx.Graph()
 
-    for qubit1, qubit2 in coupling_map:
-        if qubit1 not in graph[qubit2]:
-            graph[qubit2].append(qubit1)
-        
-        if qubit2 not in graph[qubit1]:
-            graph[qubit1].append(qubit2)
+    graph.add_nodes_from(range(num_qubits))
+    graph.add_edges_from(coupling_map)
 
     return graph

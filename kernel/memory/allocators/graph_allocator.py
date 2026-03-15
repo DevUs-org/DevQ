@@ -1,13 +1,10 @@
-import networkx as nx
 
 class GraphAllocator:
     def allocate(slef, circuit, device, pool):
         required = circuit.num_qubits
         free_qubits = pool.free_qubits
 
-        G = nx.Graph()
-        G.add_nodes_from(range(device.num_qubits))
-        G.add_edges_from(device.coupling_map)
+        G = device.graph
 
         for start in free_qubits:
             visited = []
