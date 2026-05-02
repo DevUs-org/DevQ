@@ -11,3 +11,5 @@ qtopology \<Qubit list\>?: Without arguments, dispplays each qubit connection. W
 qmem: Displays free and available qubits.
 
 qmap \<Job id\>: Dispplays v2p map for the specified job id.
+
+qerrors: Displays available Qubits and their error rates
