@@ -1,12 +1,12 @@
 from .qubit_pool import QubitPool
-from .allocators.graph_allocator import GraphAllocator
+from .allocators.noise_graph_allocator import NoiseGraphAllocator
 
 class MemoryManager:
 
     def __init__(self, device):
         self.device = device
         self.pool = QubitPool(device.num_qubits)
-        self.allocator = GraphAllocator() # TODO: Make Configurable
+        self.allocator = NoiseGraphAllocator() # TODO: Make Configurable, or GraphAllocator(), 
 
     def allocate(self, circuit):
         return self.allocator.allocate(

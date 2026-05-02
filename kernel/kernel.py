@@ -31,3 +31,6 @@ class Kernel:
             return None
 
         return job.virtual_to_physical_map
+    
+    def get_error_map(self):
+        return self.device.error_map

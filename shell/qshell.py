@@ -146,3 +146,11 @@ class QShell(cmd.Cmd):
             print(f"{v} → {p}")
 
         print()
+
+    def do_qerrors(self, arg):
+        print("\nQubit Error Map:\n")
+        errors = self.kernel.get_error_map()
+        for q in sorted(errors):
+            print(f"{q} -> {errors[q]:.4f}")
+
+        print()
