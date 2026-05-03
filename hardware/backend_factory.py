@@ -7,7 +7,6 @@ Allows user to create fake Qiskit based backends and then load as a device onto 
 from qiskit.providers.backend import BackendV2
 from qiskit.transpiler import Target
 from qiskit.circuit.library import CXGate, RZGate, SXGate
-from qiskit_ibm_runtime.fake_provider import FakeManilaV2 as FakeManila
 import random
 from qiskit.providers.options import Options
 from qiskit.circuit import Parameter
@@ -25,8 +24,6 @@ def create_backend(kind="fully_connected", num_qubits=5):
         return GridBackend(num_qubits)
     elif kind == "random":
         return RandomBackend(num_qubits)
-    elif kind == "ibm_manila": # Will always have 5 qubits, thus ignoring num_qubits parameter
-        return FakeManila()
     else:
         raise ValueError(f"Unknown backend kind: {kind}")
     

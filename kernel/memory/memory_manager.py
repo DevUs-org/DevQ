@@ -6,7 +6,7 @@ class MemoryManager:
     def __init__(self, device):
         self.device = device
         self.pool = QubitPool(device.num_qubits)
-        self.allocator = NoiseGraphAllocator() # TODO: Make Configurable, or GraphAllocator(), 
+        self.allocator = NoiseGraphAllocator() # TODO: Make Configurable, or GraphAllocator(), or StaticAloocator()
 
     def allocate(self, circuit):
         return self.allocator.allocate(

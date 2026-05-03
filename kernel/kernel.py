@@ -34,3 +34,6 @@ class Kernel:
     
     def get_error_map(self):
         return self.device.error_map
+    
+    def get_edge_error_map(self):
+        return self.device.edge_error_map

@@ -147,10 +147,21 @@ class QShell(cmd.Cmd):
 
         print()
 
-    def do_qerrors(self, arg):
-        print("\nQubit Error Map:\n")
-        errors = self.kernel.get_error_map()
-        for q in sorted(errors):
-            print(f"{q} -> {errors[q]:.4f}")
+    def do_qerrors(self, arg='b'):
+        flag = arg.strip()[0] if len(arg) > 0 else 'b'
+        if flag == 'q' or flag == 'b':
+            print("\nQubit Error Map:\n")
+            errors = self.kernel.get_error_map()
+            for q in sorted(errors):
+                print(f"{q} -> {errors[q]:.4f}")
+
+        if flag == 'e' or flag == 'b':
+            print("\nQubit Edge Map:\n")
+            errors = self.kernel.get_edge_error_map()
+            for q in sorted(errors):
+                print(f"{q} -> {errors[q]:.4f}")
+
+        if flag not in ['e', 'q', 'b']:
+            print('Invalid flag given for qerrors.')
 
         print()

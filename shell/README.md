@@ -12,4 +12,4 @@ qmem: Displays free and available qubits.
 
 qmap \<Job id\>: Dispplays v2p map for the specified job id.
 
-qerrors: Displays available Qubits and their error rates
+qerrors \<'e'|'q'|'b'\>?: Displays Qubits' and edges' error rates. Optional flags; e = only edge erros, q = only qubit errors, b (default) = both kind of errors.
