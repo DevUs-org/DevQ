@@ -6,6 +6,10 @@ class NoiseGraphAllocator:
         ALPHA = 0.1 # Node Cost Factor
         BETA = 0.9 # Edge Cost Factor
         best_score = float("inf")
+        
+        required = circuit.num_qubits
+        free_qubits = pool.free_qubits
+        G = device.graph
 
         if required == 2:
             best_edge = None
@@ -29,12 +33,8 @@ class NoiseGraphAllocator:
 
             return {0: best_edge[0], 1: best_edge[1]}
 
-        required = circuit.num_qubits
-        free_qubits = pool.free_qubits
-        G = device.graph
-
         best_block = None
-        
+
         for start in sorted(free_qubits):
 
             visited = []

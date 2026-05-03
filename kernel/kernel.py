@@ -12,7 +12,7 @@ class Kernel:
     def submit_job(self, circuit):
         qcb = self.process_table.create_job(circuit)
         mapping = self.memory_manager.allocate(circuit)
-        qcb.virtual_to_physical_map = mapping
+        qcb.v2p_map = mapping
 
         return qcb
 
@@ -30,7 +30,7 @@ class Kernel:
         if job is None:
             return None
 
-        return job.virtual_to_physical_map
+        return job.v2p_map
     
     def get_error_map(self):
         return self.device.error_map
