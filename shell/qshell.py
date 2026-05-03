@@ -47,7 +47,7 @@ class QShell(cmd.Cmd):
             circuit = load_qasm(arg)
             qcb = self.kernel.submit_job(circuit)      
             print(f"Job {qcb.job_id} submitted")
-            print(f"Allocated qubits: {qcb.virtual_to_physical_map}")
+            print(f"Allocated qubits: {qcb.v2p_map}")
 
         except Exception as e:
             print(f"[DevQ Error] {e}")

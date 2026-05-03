@@ -3,3 +3,4 @@ venv/
 */.pyc
 **/.DS_STORE
 test_circuits/
+*.zip
