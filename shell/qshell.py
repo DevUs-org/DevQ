@@ -165,3 +165,15 @@ class QShell(cmd.Cmd):
             print('Invalid flag given for qerrors.')
 
         print()
+
+    def do_qrun(self, arg):
+        # ... (loading logic) ...
+        qcb = self.kernel.submit_job(circuit)      
+        print(f"Job {qcb.job_id} submitted to queue.")
+        
+        # Trigger the kernel to try and schedule the job
+        scheduled_job = self.kernel.step()
+        if scheduled_job:
+            print(f"Job {scheduled_job.job_id} allocated: {scheduled_job.v2p_map}")
+        else:
+            print(f"Job {qcb.job_id} is WAITING for resources.")
