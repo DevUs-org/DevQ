@@ -184,3 +184,30 @@ class QShell(cmd.Cmd):
 
         except Exception as e:
             print(f"[DevQ Error] {e}")
+    
+    def do_qsubmit(self, arg):
+        try:
+            if not arg:
+                print("Usage: qsubmit <qasm_file1> <qasm_file2> ...")
+                return
+            
+            files = arg.split()
+
+            for file in files:
+                circuit = load_qasm(file)
+                qcb = self.kernel.submit_job(circuit)
+                print(f"Job {qcb.job_id} submitted to queue.")
+
+        except Exception as e:
+            print(f"[DevQ Error] {e}")
+
+    def do_qrunpack(self, arg):
+        try:
+            while True:
+                started_jobs = self.kernel.step()
+
+                if not started_jobs:
+                    break
+
+        except Exception as e:
+            print(f"[DevQ Error] {e}")

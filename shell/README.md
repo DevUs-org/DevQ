@@ -13,3 +13,7 @@ qmem: Displays free and available qubits.
 qmap \<Job id\>: Dispplays v2p map for the specified job id.
 
 qerrors \<'e'|'q'|'b'\>?: Displays Qubits' and edges' error rates. Optional flags; e = only edge erros, q = only qubit errors, b (default) = both kind of errors.
+
+qsubmit \<filename list\>: Only submits the jobs to queue. Does not allocate or schedule them.
+
+qrunpack: Allocates, schedules and executes jobs in queue.
