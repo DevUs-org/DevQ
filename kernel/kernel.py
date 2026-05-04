@@ -1,20 +1,45 @@
 from kernel.process.process_table import ProcessTable
 from kernel.memory.memory_manager import MemoryManager
+from kernel.scheduler.shortest_depth_scheduler import ShortestDepthScheduler
+from kernel.process.lifecycle import JobStates
 
 class Kernel:
-
     def __init__(self, device):
         self.device = device
-
         self.process_table = ProcessTable()
         self.memory_manager = MemoryManager(device)
+        self.scheduler = ShortestDepthScheduler(self.memory_manager, self.process_table) # TODO: make configurable, sdf, fcfs or packing
 
     def submit_job(self, circuit):
         qcb = self.process_table.create_job(circuit)
-        mapping = self.memory_manager.allocate(circuit)
-        qcb.v2p_map = mapping
-
+        self.scheduler.enqueue(qcb) 
         return qcb
+
+    def get_job_mapping(self, job_id):
+        job = self.process_table.jobs.get(job_id)
+        if job is None:
+            return None
+        return job.v2p_map
+
+    def step(self):
+        jobs = self.scheduler.schedule()
+
+        if not jobs:
+            return []
+
+        jobs = jobs if isinstance(jobs, list) else [jobs]
+
+        for job in jobs:
+            self.execute(job)
+
+        return jobs
+    
+    def execute(self, qcb):
+        print(f"[*] Job {qcb.job_id} STARTED. Mapping: {qcb.v2p_map}")
+        print(f"[Kernel] Executing Job {qcb.job_id} on {qcb.v2p_map}")
+        qcb.state = JobStates.FINISHED
+        self.memory_manager.free(qcb.v2p_map.values())
+        print(f"[Kernel] Job {qcb.job_id} completed")
 
     def list_jobs(self):
         return self.process_table.list_jobs()
@@ -27,10 +52,7 @@ class Kernel:
     
     def get_job_mapping(self, job_id):
         job = self.process_table.jobs.get(job_id)
-        if job is None:
-            return None
-
-        return job.v2p_map
+        return job.v2p_map if job else None
     
     def get_error_map(self):
         return self.device.error_map

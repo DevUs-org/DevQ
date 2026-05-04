@@ -165,3 +165,22 @@ class QShell(cmd.Cmd):
             print('Invalid flag given for qerrors.')
 
         print()
+
+    def do_qrun(self, arg):
+        try:
+            if not arg:
+                print("Usage: qrun <qasm_file>")
+                return
+            
+            new_circuit = load_qasm(arg) 
+            
+            qcb = self.kernel.submit_job(new_circuit)      
+            print(f"Job {qcb.job_id} submitted to queue.")
+
+            self.kernel.step()
+            
+            if qcb.state.value == "READY":
+                print(f"[-] Job {qcb.job_id} is WAITING for resources.")
+
+        except Exception as e:
+            print(f"[DevQ Error] {e}")

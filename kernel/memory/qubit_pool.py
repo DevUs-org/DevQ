@@ -12,7 +12,7 @@ class QubitPool:
 
         return True
 
-    def release(self, qubits):
+    def free(self, qubits):
         for q in qubits:
             self.free_qubits.add(q)
 
