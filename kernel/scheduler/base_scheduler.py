@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
-#from kernel.lifecycle import JobStates
-from kernel.process.lifecycle import JobStates  # Use the full path from the root
+from kernel.process.lifecycle import JobStates
 class BaseScheduler(ABC):
     def __init__(self, memory_manager, process_table):
         self.memory_manager = memory_manager
@@ -28,4 +27,5 @@ class BaseScheduler(ABC):
             return True
         except Exception:
             # Allocation failed (likely due to insufficient free qubits)
+            print(f"[Scheduler] Allocation failed for job {qcb.job_id}")
             return False

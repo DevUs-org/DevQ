@@ -1,4 +1,4 @@
-from kernel.scheduler.base_scheduler import BaseScheduler
+from .base_scheduler import BaseScheduler
 
 class PackingScheduler(BaseScheduler):
     def schedule(self):

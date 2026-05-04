@@ -1,21 +1,17 @@
 from kernel.process.process_table import ProcessTable
 from kernel.memory.memory_manager import MemoryManager
-from kernel.scheduler.fcfs_scheduler import FCFSScheduler
-from kernel.scheduler.depth_scheduler import DepthScheduler
+from kernel.scheduler.shortest_depth_scheduler import ShortestDepthScheduler
+from kernel.process.lifecycle import JobStates
 
 class Kernel:
     def __init__(self, device):
         self.device = device
         self.process_table = ProcessTable()
         self.memory_manager = MemoryManager(device)
-        
-        # Initialize the Scheduler (Starting with FCFS)
-        self.scheduler = FCFSScheduler(self.memory_manager, self.process_table)
-        # self.scheduler = DepthScheduler(self.memory_manager, self.process_table)
+        self.scheduler = ShortestDepthScheduler(self.memory_manager, self.process_table) # TODO: make configurable, sdf, fcfs or packing
 
     def submit_job(self, circuit):
         qcb = self.process_table.create_job(circuit)
-        # We no longer allocate here! The scheduler will do it.
         self.scheduler.enqueue(qcb) 
         return qcb
 
@@ -23,25 +19,28 @@ class Kernel:
         job = self.process_table.jobs.get(job_id)
         if job is None:
             return None
-        return job.v2p_map # Changed from virtual_to_physical_map
-
-    # def step(self):
-    #     """
-    #     The 'clock tick'. Calls the scheduler to move jobs from 
-    #     READY to RUNNING.
-    #     """
-    #     return self.scheduler.schedule()
+        return job.v2p_map
 
     def step(self):
-        """
-        Advances the system clock. 
-        Returns a list of jobs that were successfully started.
-        """
         jobs = self.scheduler.schedule()
-        # Ensure we always return a list for consistency
-        return jobs if isinstance(jobs, list) else ([jobs] if jobs else [])
 
-    # --- Passthrough methods for Shell ---
+        if not jobs:
+            return []
+
+        jobs = jobs if isinstance(jobs, list) else [jobs]
+
+        for job in jobs:
+            self.execute(job)
+
+        return jobs
+    
+    def execute(self, qcb):
+        print(f"[*] Job {qcb.job_id} STARTED. Mapping: {qcb.v2p_map}")
+        print(f"[Kernel] Executing Job {qcb.job_id} on {qcb.v2p_map}")
+        qcb.state = JobStates.FINISHED
+        self.memory_manager.free(qcb.v2p_map.values())
+        print(f"[Kernel] Job {qcb.job_id} completed")
+
     def list_jobs(self):
         return self.process_table.list_jobs()
     
@@ -57,3 +56,6 @@ class Kernel:
     
     def get_error_map(self):
         return self.device.error_map
+    
+    def get_edge_error_map(self):
+        return self.device.edge_error_map

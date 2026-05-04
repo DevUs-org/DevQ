@@ -1,6 +1,6 @@
-from kernel.scheduler.base_scheduler import BaseScheduler
+from .base_scheduler import BaseScheduler
 
-class DepthScheduler(BaseScheduler):
+class ShortestDepthScheduler(BaseScheduler):
     def schedule(self):
         """
         Sorts the queue so that circuits with the lowest depth 

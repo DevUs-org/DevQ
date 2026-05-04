@@ -1,5 +1,4 @@
 from .base_scheduler import BaseScheduler
-from kernel.scheduler.base_scheduler import BaseScheduler
 
 class FCFSScheduler(BaseScheduler):
     def schedule(self):

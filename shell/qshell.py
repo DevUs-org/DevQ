@@ -166,43 +166,21 @@ class QShell(cmd.Cmd):
 
         print()
 
-    # def do_qrun(self, arg):
-    #     # ... (loading logic) ...
-    #     qcb = self.kernel.submit_job(circuit)      
-    #     print(f"Job {qcb.job_id} submitted to queue.")
-        
-    #     # Trigger the kernel to try and schedule the job
-    #     scheduled_job = self.kernel.step()
-    #     if scheduled_job:
-    #         print(f"Job {scheduled_job.job_id} allocated: {scheduled_job.v2p_map}")
-    #     else:
-    #         print(f"Job {qcb.job_id} is WAITING for resources.")
-
     def do_qrun(self, arg):
         try:
             if not arg:
                 print("Usage: qrun <qasm_file>")
                 return
             
-            # 1. Load the circuit (Ensure variable name matches)
             new_circuit = load_qasm(arg) 
             
-            # 2. Submit to Kernel (Kernel now enqueues the job)
             qcb = self.kernel.submit_job(new_circuit)      
             print(f"Job {qcb.job_id} submitted to queue.")
+
+            self.kernel.step()
             
-            # 3. Trigger the kernel tick
-            # Since PackingScheduler returns a list, we iterate through it
-            started_jobs = self.kernel.step()
-            
-            if started_jobs:
-                for job in started_jobs:
-                    print(f"[*] Job {job.job_id} STARTED. Mapping: {job.v2p_map}")
-            
-            # 4. Check if our specific job is still waiting (wasn't in started_jobs)
             if qcb.state.value == "READY":
                 print(f"[-] Job {qcb.job_id} is WAITING for resources.")
 
         except Exception as e:
-            # This is where the 'circuit' is not defined error was caught
             print(f"[DevQ Error] {e}")

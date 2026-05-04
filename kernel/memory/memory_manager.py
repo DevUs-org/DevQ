@@ -14,3 +14,6 @@ class MemoryManager:
             self.device,
             self.pool
         )
+    
+    def free(self, qubits):
+        self.pool.free(qubits)

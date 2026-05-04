@@ -11,10 +11,6 @@ class CircuitRep:
         })
 
     def get_depth(self):
-        """
-        Calculates the circuit depth.
-        Tracks the current 'time layer' each qubit is occupied until.
-        """
         if not self.instructions:
             return 0
         
