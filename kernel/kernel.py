@@ -25,12 +25,21 @@ class Kernel:
             return None
         return job.v2p_map # Changed from virtual_to_physical_map
 
+    # def step(self):
+    #     """
+    #     The 'clock tick'. Calls the scheduler to move jobs from 
+    #     READY to RUNNING.
+    #     """
+    #     return self.scheduler.schedule()
+
     def step(self):
         """
-        The 'clock tick'. Calls the scheduler to move jobs from 
-        READY to RUNNING.
+        Advances the system clock. 
+        Returns a list of jobs that were successfully started.
         """
-        return self.scheduler.schedule()
+        jobs = self.scheduler.schedule()
+        # Ensure we always return a list for consistency
+        return jobs if isinstance(jobs, list) else ([jobs] if jobs else [])
 
     # --- Passthrough methods for Shell ---
     def list_jobs(self):

@@ -166,14 +166,35 @@ class QShell(cmd.Cmd):
 
         print()
 
-    def do_qrun(self, arg):
-        # ... (loading logic) ...
-        qcb = self.kernel.submit_job(circuit)      
-        print(f"Job {qcb.job_id} submitted to queue.")
+    # def do_qrun(self, arg):
+    #     # ... (loading logic) ...
+    #     qcb = self.kernel.submit_job(circuit)      
+    #     print(f"Job {qcb.job_id} submitted to queue.")
         
-        # Trigger the kernel to try and schedule the job
-        scheduled_job = self.kernel.step()
-        if scheduled_job:
-            print(f"Job {scheduled_job.job_id} allocated: {scheduled_job.v2p_map}")
-        else:
-            print(f"Job {qcb.job_id} is WAITING for resources.")
+    #     # Trigger the kernel to try and schedule the job
+    #     scheduled_job = self.kernel.step()
+    #     if scheduled_job:
+    #         print(f"Job {scheduled_job.job_id} allocated: {scheduled_job.v2p_map}")
+    #     else:
+    #         print(f"Job {qcb.job_id} is WAITING for resources.")
+
+    def do_qrun(self, arg):
+        try:
+            # ... (loading logic)
+            qcb = self.kernel.submit_job(circuit)
+            print(f"Job {qcb.job_id} submitted to queue.")
+
+            # Trigger the kernel tick
+            started_jobs = self.kernel.step()
+            
+            if started_jobs:
+                for job in started_jobs:
+                    print(f"[*] Job {job.job_id} STARTED: {job.v2p_map}")
+            
+            # Check if our specific job is still waiting
+            if qcb in self.kernel.scheduler.queue:
+                print(f"[-] Job {qcb.job_id} is WAITING in queue.")
+
+        except Exception as e:
+            print(f"[DevQ Error] {e}")
+            
