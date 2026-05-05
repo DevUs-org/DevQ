@@ -29,3 +29,6 @@ class BaseScheduler(ABC):
             # Allocation failed (likely due to insufficient free qubits)
             print(f"[Scheduler] Allocation failed for job {qcb.job_id}")
             return False
+        
+    def is_batch(self):
+        return False

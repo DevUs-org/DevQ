@@ -6,7 +6,7 @@ class NoiseGraphAllocator:
         ALPHA = 0.1 # Node Cost Factor
         BETA = 0.9 # Edge Cost Factor
         best_score = float("inf")
-        
+
         required = circuit.num_qubits
         free_qubits = pool.free_qubits
         G = device.graph

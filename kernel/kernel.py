@@ -1,14 +1,14 @@
 from kernel.process.process_table import ProcessTable
 from kernel.memory.memory_manager import MemoryManager
-from kernel.scheduler.shortest_depth_scheduler import ShortestDepthScheduler
 from kernel.process.lifecycle import JobStates
+from kernel.scheduler.packing_scheduler import PackingScheduler
 
 class Kernel:
     def __init__(self, device):
         self.device = device
         self.process_table = ProcessTable()
         self.memory_manager = MemoryManager(device)
-        self.scheduler = ShortestDepthScheduler(self.memory_manager, self.process_table) # TODO: make configurable, sdf, fcfs or packing
+        self.scheduler = PackingScheduler(self.memory_manager, self.process_table) # TODO: make configurable, sdf, fcfs or packing
 
     def submit_job(self, circuit):
         qcb = self.process_table.create_job(circuit)
@@ -29,8 +29,21 @@ class Kernel:
 
         jobs = jobs if isinstance(jobs, list) else [jobs]
 
-        for job in jobs:
-            self.execute(job)
+        if self.scheduler.is_batch():
+            for job in jobs:
+                print(f"[*] Job {job.job_id} STARTED. Mapping: {job.v2p_map}")
+
+            for job in jobs:
+                print(f"[Kernel] Executing Job {job.job_id} on {job.v2p_map}")
+
+            for job in jobs:
+                job.state = JobStates.FINISHED
+                self.memory_manager.free(job.v2p_map.values())
+                print(f"[Kernel] Job {job.job_id} completed")
+
+        else:
+            for job in jobs:
+                self.execute(job)
 
         return jobs
     
