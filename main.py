@@ -1,25 +1,25 @@
-# from hardware.backend_factory import create_backend
-# from hardware.device_loader import load_device
+'''
+Entry point for DevQ.
 
-# backend = create_backend("grid", 4)
-# device = load_device(backend)
+Initialises the device via a provider, loads it into the kernel,
+and starts the QShell interactive session.
 
-# print(device)
-# print(device.graph)
+To switch providers, swap out the load_device() call:
 
-# from shell.qshell import QShell
+    # DevQ simulated (default)
+    device = load_device(DevQSimulatedProvider().get_device("random", num_qubits=10))
 
-# if __name__ == "__main__":
-#     QShell().cmdloop()
+    # IBM Qiskit simulated (once implemented)
+    # device = load_device(IBMQiskitSimulatedProvider().get_device("FakeNairobi"))
+'''
 
 from hardware.device_loader import load_device
+from hardware.providers.devq.devq_simulated_provider import DevQSimulatedProvider
 from kernel.kernel import Kernel
 from shell.qshell import QShell
-from hardware.backend_factory import create_backend
-import random
 
-random.seed(42)
-device = load_device(create_backend("random", 10))
-kernel = Kernel(device)
-shell = QShell(kernel)
-shell.cmdloop()
+if __name__ == "__main__":
+    device = load_device(DevQSimulatedProvider().get_device("random", num_qubits=10))
+    kernel = Kernel(device)
+    shell  = QShell(kernel)
+    shell.cmdloop()
