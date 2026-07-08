@@ -20,16 +20,16 @@ identically regardless of batch or sequential scheduling.
 from kernel.process.process_table import ProcessTable
 from kernel.memory.memory_manager import MemoryManager
 from kernel.process.lifecycle import JobStates
-from kernel.scheduler.packing_scheduler import PackingScheduler
 
 
 class Kernel:
-    def __init__(self, device):
+    def __init__(self, device, scheduler_class, allocator, shots=1024):
         self.device         = device
+        self.shots          = shots
         self.process_table  = ProcessTable()
-        self.memory_manager = MemoryManager(device)
-        self.scheduler      = PackingScheduler(self.memory_manager, self.process_table)  # TODO: make configurable
-        self._pending       = []   # QCBs dispatched but not yet resolved
+        self.memory_manager = MemoryManager(device, allocator)
+        self.scheduler      = scheduler_class(self.memory_manager, self.process_table)
+        self._pending       = []
 
     # ── Job submission ────────────────────────────────────────────────────────
 
@@ -59,14 +59,13 @@ class Kernel:
         if not jobs:
             return []
 
-        # Normalise — single QCB or list, handle identically
         jobs = jobs if isinstance(jobs, list) else [jobs]
 
         for job in jobs:
             self._execute(job)
 
         return jobs
-    
+
     def run_job(self, qcb):
         '''
         Immediate priority execution for a single job, bypassing the
@@ -85,11 +84,8 @@ class Kernel:
             qcb.state = JobStates.WAITING
 
     def _execute(self, qcb):
-        '''
-        Dispatch a single job to the device and store the future on the QCB.
-        '''
         print(f"[Kernel] Dispatching job {qcb.job_id} → qubits {qcb.v2p_map}")
-        qcb.future = self.device.execute(qcb.circuit, qcb.v2p_map)
+        qcb.future = self.device.execute(qcb.circuit, qcb.v2p_map, shots=self.shots)
         qcb.state  = JobStates.RUNNING
         self._pending.append(qcb)
 

@@ -17,3 +17,5 @@ qerrors \<'e'|'q'|'b'\>?: Displays Qubits' and edges' error rates. Optional flag
 qsubmit \<filename list\>: Only submits the jobs to queue. Does not allocate or schedule them.
 
 qrunpack: Allocates, schedules and executes jobs in queue.
+
+qconfig: Displays the active DevQ configuration and the source of each setting. Shows provider name, device name and qubit count, and the active scheduler, allocator and shots — with provenance indicating whether each value came from DevQ Core defaults, the provider's preferred configuration, or a user-defined config file.

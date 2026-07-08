@@ -30,12 +30,12 @@ class QuantumDevice:
             for (u, v), err in edge_error_map.items()
         }
 
-    def execute(self, circuit, v2p_map):
+    def execute(self, circuit, v2p_map, shots):
         '''
         Delegate execution to the provider.
         Returns an ExecutionFuture.
         '''
-        return self.provider.execute(circuit, v2p_map)
+        return self.provider.execute(circuit, v2p_map, shots)
 
     def qubit_error(self, q):
         return self.error_map.get(q, 0.01)

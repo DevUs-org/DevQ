@@ -6,6 +6,7 @@ QASM Loader and temporary parser
 
 from .circuit_rep import CircuitRep
 
+
 def load_qasm(file_path: str):
     if not file_path.lower().endswith(".qasm"):
         raise ValueError("Need a QASM file to load instructions.")
@@ -39,7 +40,7 @@ def load_qasm(file_path: str):
             continue
 
         gate = parts[0]
-        args = parts[1]
+        args = " ".join(parts[1:])
 
         qubits = []
         for q in args.split(","):

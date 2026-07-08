@@ -9,14 +9,17 @@ import os
 import readline
 import atexit
 from circuits.qasm_loader import load_qasm
+from config.config_loader import SCHEDULER_LABELS, ALLOCATOR_LABELS
 
 
 class QShell(cmd.Cmd):
     prompt = "devq> "
 
-    def __init__(self, kernel):
+    def __init__(self, kernel, config=None, provenance=None):
         super().__init__()
-        self.kernel = kernel
+        self.kernel     = kernel
+        self._config    = config     or {}
+        self._provenance = provenance or {}
         self._last_command = None
         readline.parse_and_bind("tab: complete")
         self._history_file = os.path.expanduser("~/.devq_history")
@@ -209,5 +212,30 @@ class QShell(cmd.Cmd):
             print("\nEdge Error Map:\n")
             for edge, err in sorted(self.kernel.get_edge_error_map().items()):
                 print(f"  {edge} -> {err:.4f}")
+
+        print()
+
+    def do_qconfig(self, arg):
+        '''Display the active DevQ configuration and the source of each value.'''
+        device   = self.kernel.device
+        provider = type(device.provider).__name__
+
+        print(f"\n  provider   =  {provider}")
+        print(f"  device     =  {device.name}  ({device.num_qubits} qubits)")
+        print()
+
+        rows = [
+            ("scheduler", SCHEDULER_LABELS.get(self._config.get("scheduler", ""), "")),
+            ("allocator",  ALLOCATOR_LABELS.get(self._config.get("allocator",  ""), "")),
+            ("shots",      ""),
+        ]
+
+        for key, label in rows:
+            val    = self._config.get(key, "")
+            source = self._provenance.get(key, "")
+            if label:
+                print(f"  {key:<12} =  {str(val):<14}  [{label}]  source: {source}")
+            else:
+                print(f"  {key:<12} =  {str(val):<14}  source: {source}")
 
         print()

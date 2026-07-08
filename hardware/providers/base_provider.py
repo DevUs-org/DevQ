@@ -5,14 +5,16 @@ BaseProvider — Abstract base class for all DevQ hardware providers.
 
 Every provider must implement:
   - get_device()  : construct and return a fully formed QuantumDevice
-  - execute()     : run a circuit on the underlying backend and return an ExecutionFuture
+  - execute()     : run a circuit on the underlying backend
 
-The kernel and QShell never interact with providers directly.
-They only speak to QuantumDevice, which holds a reference to its provider
-and delegates execution via device.execute() → device.provider.execute().
+Optionally override:
+  - preferred_config() : express provider-level config preferences
+    These sit between DevQ core defaults and the user config file.
+    Return only the keys you want to override — omit the rest.
 '''
 
 from abc import ABC, abstractmethod
+
 
 class BaseProvider(ABC):
 
@@ -20,26 +22,35 @@ class BaseProvider(ABC):
     def get_device(self, *args, **kwargs):
         '''
         Construct and return a fully formed QuantumDevice for this provider.
-
-        Each provider defines its own parameters — DevQ takes a topology
-        kind and qubit count, IBM takes a backend name, etc.
-
-        The returned QuantumDevice must have:
-          - All metadata populated (coupling_map, error_map, edge_error_map, etc.)
-          - self set as device.provider
+        The returned device must have self set as device.provider.
         '''
         pass
 
     @abstractmethod
-    def execute(self, circuit, v2p_map):
+    def execute(self, circuit, v2p_map, shots):
         '''
         Execute a circuit on the underlying backend.
 
         Args:
-            circuit  : CircuitRep — the circuit to execute
-            v2p_map  : dict — virtual to physical qubit mapping e.g. {0: 3, 1: 7}
+            circuit  : CircuitRep
+            v2p_map  : dict — virtual to physical qubit mapping
 
         Returns:
-            ExecutionFuture — call .result() to get the ExecutionResult
+            ExecutionFuture
         '''
         pass
+
+    def preferred_config(self) -> dict:
+        '''
+        Override to express provider-level configuration preferences.
+
+        These override DevQ core defaults but are themselves overridden
+        by the user's local config file. Return only the keys you want
+        to set — omit keys you are happy to leave at core defaults.
+
+        Example:
+            return {"allocator": "static", "shots": 2048}
+
+        Valid keys: "scheduler", "allocator", "shots"
+        '''
+        return {}

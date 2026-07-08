@@ -50,7 +50,7 @@ class DevQSimulatedProvider(BaseProvider):
             provider       = self
         )
 
-    def execute(self, circuit, v2p_map):
+    def execute(self, circuit, v2p_map, shots):
         '''
         Mock execution for DevQ's simulated provider.
 
@@ -63,6 +63,7 @@ class DevQSimulatedProvider(BaseProvider):
         Args:
             circuit : CircuitRep — the circuit to execute
             v2p_map : dict — virtual to physical qubit mapping
+            shots : number of shots
 
         Returns:
             ExecutionFuture wrapping a mocked ExecutionResult
@@ -80,9 +81,7 @@ class DevQSimulatedProvider(BaseProvider):
                 )
             ))
 
-        # Equal distribution across all 2^n possible measurement outcomes
         num_states  = 2 ** circuit.num_qubits
-        shots       = 1024
         mock_counts = {
             format(i, f"0{circuit.num_qubits}b"): shots // num_states
             for i in range(num_states)

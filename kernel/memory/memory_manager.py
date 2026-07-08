@@ -1,12 +1,20 @@
+'''
+Tags: Main
+
+MemoryManager — Manages qubit allocation and deallocation.
+
+The allocator is injected at construction time via the DevQ config system.
+Swap allocators by passing a different instance — no other changes needed.
+'''
+
 from .qubit_pool import QubitPool
-from .allocators.noise_graph_allocator import NoiseGraphAllocator
 
 class MemoryManager:
 
-    def __init__(self, device):
-        self.device = device
-        self.pool = QubitPool(device.num_qubits)
-        self.allocator = NoiseGraphAllocator() # TODO: Make Configurable, or GraphAllocator(), or StaticAloocator()
+    def __init__(self, device, allocator):
+        self.device    = device
+        self.pool      = QubitPool(device.num_qubits)
+        self.allocator = allocator
 
     def allocate(self, circuit):
         return self.allocator.allocate(
@@ -14,6 +22,6 @@ class MemoryManager:
             self.device,
             self.pool
         )
-    
+
     def free(self, qubits):
         self.pool.free(qubits)
