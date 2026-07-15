@@ -107,6 +107,31 @@ class QShell(cmd.Cmd):
         except Exception as e:
             print(f"[DevQ Error] {e}")
 
+    def do_qsubmit(self, arg):
+        try:
+            if not arg:
+                print("Usage: qsubmit <qasm_file> [...] "
+                      "[--max-qubit-error=X] [--max-edge-error=Y] "
+                      "| [group syntax: [a.qasm b.qasm --flag=X]]")
+                return
+
+            specs = parse_job_args(arg)
+
+            # Load all circuits before submitting any — a bad file path
+            # rejects the whole batch, consistent with parser atomicity.
+            circuits = [load_qasm(spec.file_path) for spec in specs]
+
+            for spec, circuit in zip(specs, circuits):
+                qcb = self.kernel.submit_job(
+                    circuit,
+                    max_qubit_error=spec.max_qubit_error,
+                    max_edge_error=spec.max_edge_error
+                )
+                print(f"Job {qcb.job_id} submitted to queue.")
+
+        except Exception as e:
+            print(f"[DevQ Error] {e}")
+
     def do_qrunpack(self, arg):
         try:
             total = 0
