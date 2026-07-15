@@ -7,7 +7,7 @@ Parses qsubmit and qrun argument strings into JobSpec objects.
 
 Syntax:
     Bare job:
-        job.qasm                          uses device defaults
+        job.qasm                          no thresholds (no filtering)
 
     Job with trailing flags:
         job.qasm --max-qubit-error=0.05   overrides qubit threshold only
@@ -22,7 +22,7 @@ Syntax:
         [job1 job2 --max-qubit-error=0.05] job3 job4 --max-edge-error=0.1 job5
 
     Priority chain:
-        job-level → device-level → None (no filtering)
+        job-level → None (no filtering)
 '''
 
 from dataclasses import dataclass

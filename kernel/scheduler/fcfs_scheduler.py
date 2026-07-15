@@ -1,3 +1,14 @@
+'''
+Tags: Alt
+
+FCFSScheduler — First come, first served.
+
+Strict submission order. A WAITING head (feasible but blocked on
+resources) blocks the queue — that is FCFS semantics. A REJECTED
+head does not: unsatisfiable jobs are removed and the next job is
+attempted in the same cycle.
+'''
+
 from .base_scheduler import BaseScheduler
 from kernel.process.lifecycle import JobStates
 

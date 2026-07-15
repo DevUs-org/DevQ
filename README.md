@@ -31,8 +31,9 @@ Every source file carries a tag in its module docstring describing its role:
 | Tag | Meaning |
 |---|---|
 | **Main** | Part of the core DevQ abstraction. Hardware-independent; should support most existing quantum infrastructure. |
-| **Provider** | Hardware-provider code. Includes two sub-tags: **Fake** (not part of the DevQ abstraction — uses Qiskit fake backends for simulation and testing) and **Adapter** (code adapting DevQ to specific hardware providers; grows as more hardware support is added). |
-| **Alt** | Configurable alternatives to the default components (e.g. Static/Graph allocators, FCFS/SDF schedulers) usable for debugging, testing, baselines, and optimisation comparisons. |
+| **Default** | The default implementation of a pluggable component (NoiseGraphAllocator, PackingScheduler). Part of the core distribution; swappable via config. |
+| **Alt** | Configurable alternatives to the Default components (Static/Graph allocators, FCFS/SDF schedulers) usable for debugging, testing, baselines, and optimisation comparisons. |
+| **Provider** | Hardware-provider code: everything that adapts a specific backend or framework to DevQ, including simulated/testing backends. Not part of the core abstraction; grows as more hardware support is added. |
 
 ---
 

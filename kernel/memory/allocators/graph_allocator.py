@@ -1,3 +1,14 @@
+'''
+Tags: Alt
+
+GraphAllocator — BFS over the device topology graph.
+
+Selects a connected subgraph of the required size from each free
+starting qubit — topology-aware but noise-blind. Guarantees the
+hard connectivity requirement for two-qubit gates without cost
+scoring; the baseline the NoiseGraphAllocator improves on.
+feasible() requires a connected block among eligible qubits.
+'''
 from collections import deque
 
 from .base_allocator import BaseAllocator

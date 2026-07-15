@@ -1,5 +1,5 @@
 '''
-Tags: Fake
+Tags: Provider
 
 DevQ Backend Factory — Generates simulated quantum device parameters.
 

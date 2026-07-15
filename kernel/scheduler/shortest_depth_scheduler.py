@@ -1,3 +1,15 @@
+'''
+Tags: Alt
+
+ShortestDepthScheduler (SDF) — Shallowest circuit first.
+
+Re-sorts the queue by circuit depth (ascending) every cycle and
+attempts the shallowest job. Shallow circuits complete faster and
+free qubits sooner — better throughput under mixed-depth workloads,
+and less decoherence exposure in the NISQ era. REJECTED jobs are
+removed and skipped; a WAITING head ends the cycle.
+'''
+
 from .base_scheduler import BaseScheduler
 from kernel.process.lifecycle import JobStates
 

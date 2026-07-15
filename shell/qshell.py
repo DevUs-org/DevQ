@@ -1,7 +1,12 @@
 '''
 Tags: Main
 
-DevQ Shell definition file
+QShell — Interactive frontend to the DevQ kernel, built on cmd.
+
+Commands deliberately mirror classical OS tools: qps ≈ ps, qmem ≈ free,
+qerrors ≈ iostat. The shell is a pure frontend — every decision is made
+by the kernel; QShell only parses input (via shell.parser), invokes,
+and displays. Supports command history, !!, and tab completion.
 '''
 
 import cmd

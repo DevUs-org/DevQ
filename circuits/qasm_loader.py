@@ -1,7 +1,13 @@
 '''
 Tags: Main
 
-QASM Loader and temporary parser
+QASM Loader — OpenQASM 2.0 → CircuitRep.
+
+DevQ's reference frontend: parses OpenQASM circuit files into
+CircuitRep, the hardware-independent internal format everything
+downstream operates on. Phase 6 (interchangeable frontends) will add
+adapters for other source representations (Silq, Q#, Qiskit circuits)
+alongside this one — this file is the template they follow.
 '''
 
 from .circuit_rep import CircuitRep

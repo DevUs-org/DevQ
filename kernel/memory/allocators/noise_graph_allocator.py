@@ -1,3 +1,17 @@
+'''
+Tags: Default
+
+NoiseGraphAllocator — BFS connectivity search + weighted noise cost.
+
+Scores every candidate connected block with
+    S = α·Σ(qubit_error) + β·Σ(edge_error),   α=0.1, β=0.9
+and returns the minimum-cost block. β dominates because two-qubit
+gate fidelity is the dominant NISQ noise source. For 2-qubit
+circuits, connected pairs are enumerated directly from the edge
+error map for efficiency. Thresholds are hard constraints applied
+before cost optimisation; feasible() additionally requires a
+connected block among eligible qubits.
+'''
 from collections import deque
 
 from .base_allocator import BaseAllocator

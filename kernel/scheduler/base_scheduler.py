@@ -1,3 +1,15 @@
+'''
+Tags: Main
+
+BaseScheduler — Abstract base class for all job schedulers.
+
+Defines the enqueue/schedule contract the kernel depends on.
+schedule() returns the jobs processed in a cycle — dispatched
+(RUNNING) and/or rejected (REJECTED). _attempt_allocation() provides
+the shared allocation-and-classification step: transient failure →
+WAITING; unsatisfiable per the allocator's feasible() → REJECTED
+(terminal; the caller removes it from the queue).
+'''
 from abc import ABC, abstractmethod
 from kernel.process.lifecycle import JobStates
 

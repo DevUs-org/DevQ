@@ -1,5 +1,5 @@
 '''
-Tags: Main
+Tags: Default
 
 Packing Scheduler — Greedy circuit packing scheduler.
 

@@ -1,7 +1,11 @@
 '''
 Tags: Main
 
-Creates the Job Process Table.
+ProcessTable — Registry of every job DevQ has seen.
+
+Creates QCBs with monotonically increasing job IDs and retains them
+for the lifetime of the session — including terminal jobs (FINISHED,
+FAILED, REJECTED), so qps always shows the full execution history.
 '''
 
 from .qcb import QCB

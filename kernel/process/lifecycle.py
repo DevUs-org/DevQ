@@ -1,7 +1,15 @@
 '''
 Tags: Main
 
-Enum for Job Statuses
+JobStates — The six-state job lifecycle.
+
+READY    submitted, not yet seen by the scheduler
+WAITING  allocation failed on resources — transient, retried
+REJECTED unsatisfiable: no valid allocation can ever exist on this
+         device under the job's thresholds — terminal, never dispatched
+RUNNING  dispatched to the device provider
+FINISHED execution completed successfully — terminal
+FAILED   execution returned an error — terminal
 '''
 
 from enum import Enum
@@ -9,9 +17,7 @@ from enum import Enum
 class JobStates(Enum):
     READY    = "READY"
     RUNNING  = "RUNNING"
-    WAITING  = "WAITING"     # blocked on resources — transient, retried
+    WAITING  = "WAITING"
     FINISHED = "FINISHED"
-    FAILED   = "FAILED"      # dispatched, execution errored — terminal
-    REJECTED = "REJECTED"    # never dispatched: no valid allocation can
-                             # exist on this device under the job's
-                             # thresholds — terminal
+    FAILED   = "FAILED"
+    REJECTED = "REJECTED"

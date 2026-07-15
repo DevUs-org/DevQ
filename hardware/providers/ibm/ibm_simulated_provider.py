@@ -1,5 +1,5 @@
 '''
-Tags: Main, Adapter
+Tags: Provider
 
 IBMSimulatedProvider — IBM simulated hardware provider.
 

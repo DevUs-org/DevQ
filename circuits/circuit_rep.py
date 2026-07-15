@@ -1,3 +1,15 @@
+'''
+Tags: Main
+
+CircuitRep — DevQ's hardware-independent internal circuit format.
+
+A flat list of gate instructions with virtual qubit indices, gate
+names, and parameters. Frontends produce it; allocators, schedulers,
+and providers consume it. get_depth() computes circuit depth via
+per-qubit depth tracking — used by the SDF and Packing schedulers
+for depth-based ordering.
+'''
+
 class CircuitRep:
     def __init__(self, num_qubits):
         self.num_qubits = num_qubits

@@ -1,7 +1,9 @@
 '''
 Tags: Main
 
-Converts backend coupling_map (topology) to an undirected unweighted graph for schedulers and alocators
+Converts a backend coupling_map (topology) into an undirected,
+unweighted NetworkX graph. Consumed by the graph-based allocators
+for BFS connectivity search and feasibility checks.
 '''
 
 import networkx as nx

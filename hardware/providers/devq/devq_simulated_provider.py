@@ -1,5 +1,5 @@
 '''
-Tags: Main, Adapter
+Tags: Provider
 
 DevQSimulatedProvider — DevQ's own simulated hardware provider.
 
