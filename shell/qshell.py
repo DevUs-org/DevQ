@@ -10,6 +10,7 @@ import readline
 import atexit
 from circuits.qasm_loader import load_qasm
 from config.config_loader import SCHEDULER_LABELS, ALLOCATOR_LABELS
+from shell.parser import parse_job_args
 
 
 class QShell(cmd.Cmd):
@@ -68,11 +69,23 @@ class QShell(cmd.Cmd):
     def do_qrun(self, arg):
         try:
             if not arg:
-                print("Usage: qrun <qasm_file>")
+                print("Usage: qrun <qasm_file> [--max-qubit-error=X] [--max-edge-error=Y]")
                 return
 
-            circuit = load_qasm(arg)
-            qcb     = self.kernel.submit_job(circuit)
+            specs = parse_job_args(arg)
+
+            if len(specs) > 1:
+                print("[DevQ Error] qrun accepts exactly one job. "
+                      "Use qsubmit + qrunpack for multiple jobs.")
+                return
+
+            spec    = specs[0]
+            circuit = load_qasm(spec.file_path)
+            qcb     = self.kernel.submit_job(
+                circuit,
+                max_qubit_error=spec.max_qubit_error,
+                max_edge_error=spec.max_edge_error
+            )
             print(f"Job {qcb.job_id} submitted to queue.")
 
             self.kernel.run_job(qcb)
@@ -83,20 +96,6 @@ class QShell(cmd.Cmd):
                 print(f"[-] Job {qcb.job_id} failed. See above for details.")
             elif qcb.state.value == "WAITING":
                 print(f"[~] Job {qcb.job_id} is WAITING for resources.")
-
-        except Exception as e:
-            print(f"[DevQ Error] {e}")
-
-    def do_qsubmit(self, arg):
-        try:
-            if not arg:
-                print("Usage: qsubmit <qasm_file1> <qasm_file2> ...")
-                return
-
-            for file in arg.split():
-                circuit = load_qasm(file)
-                qcb     = self.kernel.submit_job(circuit)
-                print(f"Job {qcb.job_id} submitted to queue.")
 
         except Exception as e:
             print(f"[DevQ Error] {e}")

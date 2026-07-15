@@ -78,7 +78,9 @@ class PackingScheduler(BaseScheduler):
             mapping = self.memory_manager.allocator.allocate(
                 qcb.circuit,
                 self.memory_manager.device,
-                temp_pool
+                temp_pool,
+                max_qubit_error=qcb.max_qubit_error,
+                max_edge_error=qcb.max_edge_error
             )
             return mapping
         except Exception:

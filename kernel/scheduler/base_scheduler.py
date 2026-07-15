@@ -27,7 +27,11 @@ class BaseScheduler(ABC):
         On failure: sets state to WAITING, returns False.
         '''
         try:
-            mapping     = self.memory_manager.allocate(qcb.circuit)
+            mapping     = self.memory_manager.allocate(
+                qcb.circuit,
+                max_qubit_error=qcb.max_qubit_error,
+                max_edge_error=qcb.max_edge_error
+            )
             qcb.v2p_map = mapping
             qcb.state   = JobStates.RUNNING
             return True

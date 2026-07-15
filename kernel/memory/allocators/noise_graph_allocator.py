@@ -1,21 +1,27 @@
 from collections import deque
 
-class NoiseGraphAllocator:
+from .base_allocator import BaseAllocator
+from .filtering import eligible_qubits, edge_allowed
 
-    def allocate(self, circuit, device, pool):
+
+class NoiseGraphAllocator(BaseAllocator):
+
+    def allocate(self, circuit, device, pool,
+                 max_qubit_error=None, max_edge_error=None):
         ALPHA = 0.1 # Node Cost Factor
         BETA = 0.9 # Edge Cost Factor
         best_score = float("inf")
 
         required = circuit.num_qubits
-        free_qubits = pool.free_qubits
-        G = device.graph
+        usable   = eligible_qubits(device, pool.free_qubits, max_qubit_error)
+        G        = device.graph
 
         if required == 2:
             best_edge = None
 
             for (u, v) in device.edge_error_map.keys():
-                if u in free_qubits and v in free_qubits:
+                if (u in usable and v in usable
+                        and edge_allowed(device, u, v, max_edge_error)):
 
                     node_cost = device.qubit_error(u) + device.qubit_error(v)
                     edge_cost = device.edge_error(u, v)
@@ -35,7 +41,7 @@ class NoiseGraphAllocator:
 
         best_block = None
 
-        for start in sorted(free_qubits):
+        for start in sorted(usable):
 
             visited = []
             queue = deque([start])
@@ -44,11 +50,14 @@ class NoiseGraphAllocator:
 
                 q = queue.popleft()
 
-                if q not in visited and q in free_qubits:
+                if q not in visited and q in usable:
                     visited.append(q)
 
                     for neighbor in G.neighbors(q):
-                        if neighbor in free_qubits and neighbor not in visited:
+                        if (neighbor in usable
+                                and neighbor not in visited
+                                and edge_allowed(device, q, neighbor,
+                                                 max_edge_error)):
                             queue.append(neighbor)
 
             if len(visited) >= required:

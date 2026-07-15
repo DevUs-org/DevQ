@@ -12,11 +12,17 @@ from .lifecycle import JobStates
 
 
 class QCB:
-    def __init__(self, job_id, circuit, v2p_map=None):
+    def __init__(self, job_id, circuit, v2p_map=None,
+                 max_qubit_error=None, max_edge_error=None):
         self.job_id  = job_id
         self.circuit = circuit
         self.v2p_map = v2p_map or {}
         self.state   = JobStates.READY
+
+        # Job-level noise thresholds (None = use device default / no filtering)
+        # Priority chain: job-level → device-level → None
+        self.max_qubit_error = max_qubit_error
+        self.max_edge_error  = max_edge_error
 
         # Set by the kernel when execution is dispatched
         self.future  = None

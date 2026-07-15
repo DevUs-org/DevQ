@@ -16,11 +16,13 @@ class MemoryManager:
         self.pool      = QubitPool(device.num_qubits)
         self.allocator = allocator
 
-    def allocate(self, circuit):
+    def allocate(self, circuit, max_qubit_error=None, max_edge_error=None):
         return self.allocator.allocate(
             circuit,
             self.device,
-            self.pool
+            self.pool,
+            max_qubit_error=max_qubit_error,
+            max_edge_error=max_edge_error
         )
 
     def free(self, qubits):

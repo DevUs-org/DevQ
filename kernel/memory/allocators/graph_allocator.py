@@ -1,14 +1,19 @@
 from collections import deque
 
-class GraphAllocator:
+from .base_allocator import BaseAllocator
+from .filtering import eligible_qubits, edge_allowed
 
-    def allocate(self, circuit, device, pool):
+
+class GraphAllocator(BaseAllocator):
+
+    def allocate(self, circuit, device, pool,
+                 max_qubit_error=None, max_edge_error=None):
 
         required = circuit.num_qubits
-        free_qubits = pool.free_qubits
-        G = device.graph
+        usable   = eligible_qubits(device, pool.free_qubits, max_qubit_error)
+        G        = device.graph
 
-        for start in free_qubits:
+        for start in usable:
 
             visited = []
             queue = deque([start])
@@ -16,11 +21,14 @@ class GraphAllocator:
             while queue and len(visited) < required:
                 q = queue.popleft()
 
-                if q not in visited and q in free_qubits:
+                if q not in visited and q in usable:
                     visited.append(q)
 
                     for neighbor in G.neighbors(q):
-                        if neighbor in free_qubits and neighbor not in visited:
+                        if (neighbor in usable
+                                and neighbor not in visited
+                                and edge_allowed(device, q, neighbor,
+                                                 max_edge_error)):
                             queue.append(neighbor)
 
             if len(visited) >= required:

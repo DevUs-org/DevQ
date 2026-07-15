@@ -173,7 +173,8 @@ def _parse_flag(flag: str) -> tuple:
         (key, float_value) e.g. ("max-qubit-error", 0.05)
 
     Raises:
-        ValueError: if format is wrong or value is not a valid float in [0, 1]
+        ValueError: if the flag is unknown, or the value is not a valid
+        float in [0, 1]
     '''
     if '=' not in flag:
         raise ValueError(
@@ -182,6 +183,12 @@ def _parse_flag(flag: str) -> tuple:
         )
 
     key, _, raw_val = flag.lstrip('-').partition('=')
+
+    if key not in ('max-qubit-error', 'max-edge-error'):
+        raise ValueError(
+            f"Unknown flag '--{key}'. "
+            f"Supported flags: --max-qubit-error, --max-edge-error"
+        )
 
     if not raw_val:
         raise ValueError(
@@ -201,12 +208,6 @@ def _parse_flag(flag: str) -> tuple:
         raise ValueError(
             f"Invalid value for '--{key}': {val} is out of range. "
             f"Expected a float between 0 and 1."
-        )
-
-    if key not in ('max-qubit-error', 'max-edge-error'):
-        raise ValueError(
-            f"Unknown flag '--{key}'. "
-            f"Supported flags: --max-qubit-error, --max-edge-error"
         )
 
     return key, val

@@ -33,9 +33,20 @@ class Kernel:
 
     # ── Job submission ────────────────────────────────────────────────────────
 
-    def submit_job(self, circuit):
-        '''Create a QCB and enqueue it in the scheduler. Does not execute.'''
-        qcb = self.process_table.create_job(circuit)
+    def submit_job(self, circuit, max_qubit_error=None, max_edge_error=None):
+        '''
+        Create a QCB and enqueue it in the scheduler. Does not execute.
+
+        Optional job-level noise thresholds are stored on the QCB.
+        Priority chain: job-level → device-level → None (no filtering).
+        Allocators read these at allocation time to exclude qubits/edges
+        whose error rates exceed the effective threshold.
+        '''
+        qcb = self.process_table.create_job(
+            circuit,
+            max_qubit_error=max_qubit_error,
+            max_edge_error=max_edge_error
+        )
         self.scheduler.enqueue(qcb)
         return qcb
 
@@ -74,7 +85,11 @@ class Kernel:
         for qrunpack to pick up later.
         '''
         try:
-            mapping     = self.memory_manager.allocate(qcb.circuit)
+            mapping     = self.memory_manager.allocate(
+                qcb.circuit,
+                max_qubit_error=qcb.max_qubit_error,
+                max_edge_error=qcb.max_edge_error
+            )
             qcb.v2p_map = mapping
             qcb.state   = JobStates.RUNNING
             self.scheduler.queue.remove(qcb)

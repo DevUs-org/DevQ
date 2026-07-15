@@ -1,11 +1,22 @@
-class StaticAllocator:
+from .base_allocator import BaseAllocator
+from .filtering import eligible_qubits
 
-    def allocate(self, circuit, device, pool):
+
+class StaticAllocator(BaseAllocator):
+
+    def allocate(self, circuit, device, pool,
+                 max_qubit_error=None, max_edge_error=None):
+        # Static allocation has no topology concept — the edge threshold
+        # is not applicable here and is ignored by design. Suitable for
+        # fully-connected hardware (e.g. IonQ) where edges are uniform.
         required = circuit.num_qubits
-        free = pool.available()
-        if len(free) < required:
+        free     = pool.available()
+        allowed  = eligible_qubits(device, free, max_qubit_error)
+        usable   = [q for q in free if q in allowed]  # preserve pool order
+
+        if len(usable) < required:
             raise Exception("Not enough qubits available")
 
-        selected = free[:required]
+        selected = usable[:required]
         pool.allocate(selected)
         return {v: p for v, p in enumerate(selected)}

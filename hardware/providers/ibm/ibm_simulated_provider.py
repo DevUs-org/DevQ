@@ -13,8 +13,9 @@ hardware access or an IBM account.
 All error data is extracted from the backend's Target object —
 the correct API for Qiskit 2.x V2 backends. properties() is not used.
 
-Native 2-qubit gate on IBM V2 backends is ECR (not CX).
-Edge errors are extracted via target['ecr'][edge].error.
+The native 2-qubit gate varies by backend generation (ECR on
+Eagle/Heron, CX on older Falcon devices, CZ on some Heron revisions).
+Edge errors are extracted by discovering 2-qubit gates from the Target.
 Readout errors are extracted via target['measure'][(q,)].error.
 
 Available backends (examples):
@@ -203,28 +204,68 @@ class IBMSimulatedProvider(BaseProvider):
 
     def _extract_edge_errors(self, backend, coupling_map) -> dict:
         '''
-        Extract per-edge ECR gate error rates from Target.
+        Extract per-edge 2-qubit gate error rates from Target.
 
-        IBM V2 backends use ECR as the native 2-qubit gate.
-        Uses target['ecr'][edge].error — the correct V2 API.
-        Falls back to 0.02 if an edge's data is unavailable.
+        The native 2-qubit gate differs across IBM device generations:
+        ECR on Eagle/Heron backends (Sherbrooke, Torino, ...), CX on
+        older Falcon backends (NairobiV2, MumbaiV2, ...), CZ on some
+        Heron revisions. Rather than hardcoding a gate name, the gate
+        set is discovered from the Target: every operation acting on
+        exactly 2 qubits is a candidate, and each edge takes the error
+        of the first candidate gate defined on it.
+
+        Falls back to 0.02 for an edge only if no 2-qubit gate reports
+        an error for it — and warns, so bad calibration data is never
+        silently fabricated.
 
         Note: edges are tried in both directions since the backend
         coupling map is directed but our coupling_map is undirected.
         '''
-        target        = backend.target
+        target = backend.target
+
+        # Discover the backend's native 2-qubit gate names
+        twoq_gates = [
+            name for name in target.operation_names
+            if self._op_num_qubits(target, name) == 2
+        ]
+
+        if not twoq_gates:
+            print(f"[IBMSimulatedProvider] Warning: no 2-qubit gates found "
+                  f"in Target — edge errors will use fallback 0.02.")
+
         edge_error_map = {}
         for (u, v) in coupling_map:
             key = tuple(sorted((u, v)))
             err = None
-            for edge in [(u, v), (v, u)]:
-                try:
-                    err = target['ecr'][edge].error
+
+            for gate in twoq_gates:
+                for edge in [(u, v), (v, u)]:
+                    try:
+                        candidate = target[gate][edge].error
+                        if candidate is not None:
+                            err = candidate
+                            break
+                    except Exception:
+                        continue
+                if err is not None:
                     break
-                except Exception:
-                    continue
-            edge_error_map[key] = err if err is not None else 0.02
+
+            if err is None:
+                print(f"[IBMSimulatedProvider] Warning: no 2-qubit gate "
+                      f"error for edge {key}, using fallback 0.02.")
+                err = 0.02
+
+            edge_error_map[key] = err
+
         return edge_error_map
+
+    @staticmethod
+    def _op_num_qubits(target, name):
+        '''Number of qubits an operation acts on, or None if unknown.'''
+        try:
+            return target.operation_from_name(name).num_qubits
+        except Exception:
+            return None
 
     def _add_gate(self, qc, gate, qubits, params):
         '''Map CircuitRep gate names to Qiskit QuantumCircuit methods.'''
