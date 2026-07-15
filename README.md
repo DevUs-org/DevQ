@@ -45,7 +45,7 @@ job IDs or lifecycle states.
 
 ```
 User layer          qrun · qsubmit · qrunpack · QShell CLI
-Circuit rep         CircuitRep · QASM parser · get_depth()
+Circuit rep         CircuitRep · QASM parser · get_depth() · [Silq, Q#, Qiskit …]
 DevQ kernel         ProcessTable · QCB · MemoryManager · Scheduler
 Qubit allocator     Static · Graph · Noise-Graph (default)
 Device abstraction  BaseProvider · QuantumDevice · load_device()
@@ -54,8 +54,8 @@ Hardware provider   DevQSimulatedProvider · IBMSimulatedProvider · [Cirq, IonQ
 
 Every pluggable layer has an enforced contract:
 - `BaseProvider` — providers implement exactly `get_device()` + `execute()`
-- `BaseAllocator` — allocators implement `allocate(circuit, device, pool, max_qubit_error=None, max_edge_error=None)`
-- `BaseScheduler` — schedulers implement `schedule()`
+- `BaseAllocator` — allocators implement `allocate(circuit, device, pool, max_qubit_error=None, max_edge_error=None)`; optionally override `feasible()` (default provided) to classify unsatisfiable jobs
+- `BaseScheduler` — schedulers implement `schedule()`, returning the jobs processed in a cycle — dispatched (RUNNING) and/or rejected (REJECTED)
 
 ---
 
@@ -75,10 +75,14 @@ Every pluggable layer has an enforced contract:
 
 ### ✅ Phase 1 — QCB, Process Table & QShell (done)
 Quantum Control Block (the quantum PCB): job_id, circuit, v2p_map, state,
-future, result, job-level noise thresholds. Five-state lifecycle:
-READY → WAITING / RUNNING → FINISHED / FAILED. Future-based execution
-(`ExecutionFuture`, synchronous now, async-ready for Phase 4). QShell with
-full inspection command set (see below).
+future, result, job-level noise thresholds. Six-state lifecycle:
+READY → WAITING / REJECTED / RUNNING → FINISHED / FAILED. WAITING is
+transient (blocked on resources, retried); REJECTED is terminal — no
+valid allocation can ever exist on the device under the job's
+thresholds, as determined by the active allocator's `feasible()` check
+at first allocation failure. Future-based execution (`ExecutionFuture`,
+synchronous now, async-ready for Phase 4). QShell with full inspection
+command set (see below).
 
 ### ✅ Phase 2 — Qubit Allocation (done)
 Three interchangeable allocators behind `BaseAllocator`:
@@ -92,15 +96,26 @@ Three interchangeable allocators behind `BaseAllocator`:
 
 All allocators honour **hard noise thresholds**: qubits/edges whose error
 exceeds the job's `max_qubit_error` / `max_edge_error` are excluded from
-consideration entirely, before cost optimisation.
+consideration entirely, before cost optimisation. Each allocator also
+answers feasibility via `feasible()` — whether a job could *ever* be
+allocated on the device under its thresholds, pool state aside. The base
+default checks eligible-qubit count (exactly right for Static); the graph
+allocators additionally require a connected block among eligible qubits.
 
 ### ✅ Phase 3 — Job Scheduling (done)
 Three schedulers behind `BaseScheduler`:
-- **FCFSScheduler** *(Alt)* — strict submission order; head-of-line blocking.
+- **FCFSScheduler** *(Alt)* — strict submission order; head-of-line blocking
+  applies to WAITING (feasible-but-blocked) jobs only — unsatisfiable jobs
+  are REJECTED, removed from the queue, and never block it.
 - **ShortestDepthScheduler** *(Alt)* — shallowest circuit first.
 - **PackingScheduler** *(default)* — SDF + greedy bin-packing via a temporary
   reservation pool (TempPool) with two-phase commit; multiple circuits run
   concurrently on disjoint qubit sets.
+
+All three classify allocation failures through the allocator's
+`feasible()` check: transient contention → WAITING (retried);
+unsatisfiable on this device → REJECTED (terminal, removed from queue,
+reason reported in QShell and recorded on the QCB).
 
 Plus the **config cascade** (DevQ core defaults → provider
 `preferred_config()` → user JSON, with provenance shown by `qconfig`) and the
@@ -108,13 +123,9 @@ Plus the **config cascade** (DevQ core defaults → provider
 fully wired end-to-end).
 
 ### 🔧 Work in progress
-- Device-level default noise thresholds set at `load_device()` time
-  (job-level flags already override downward; the chain is
-  job-level → device-level → None).
-- Additional providers: Cirq, IonQ, and `IBMRealProvider` via
-  `QiskitRuntimeService` for live hardware.
-- Packaging: `pyproject.toml` with separate provider packages
-  (`devq`, `devq-provider-ibm`, `devq-provider-cirq`, …).
+- Verification pass: full QShell test plan over Phases 0–3
+  (FakeNairobiV2, deterministic expected mappings, threshold and
+  REJECTED/WAITING classification cases).
 
 ### 🔭 Phase 4 — Distributed Scheduling (planned)
 Network-based distributed execution across heterogeneous quantum backends: a
@@ -129,6 +140,30 @@ combination and report comparative results. The goal is for DevQ to serve as
 an **algorithm evaluation playground** for quantum scheduling and allocation
 researchers — write an allocator against `BaseAllocator`, plug it in,
 benchmark it against the built-ins.
+
+### 🔭 Phase 6 — Interchangeable Frontends (planned)
+Today circuits enter DevQ as OpenQASM files. Phase 6 opens the top of the
+stack the same way `BaseProvider` opens the bottom: a frontend adapter
+contract that converts any source representation — **Silq, Q#, Qiskit
+circuits**, and other quantum languages — into `CircuitRep`, DevQ's
+hardware-independent internal format. Frontends need no knowledge of the
+kernel, allocators, or schedulers; the existing QASM loader becomes the
+reference frontend. Write in the language you prefer, and DevQ handles
+allocation, scheduling, and execution identically.
+
+### 🔭 Phase 7 — Expanded Provider Ecosystem (planned)
+More hardware providers behind the same two-method `BaseProvider` contract:
+- **IBMRealProvider** — live IBM hardware via `QiskitRuntimeService`;
+  `get_device()` pulls live calibration data, `execute()` submits to IBM's
+  job queue. The `ExecutionFuture` interface naturally absorbs real queue
+  wait times.
+- **CirqProvider** — Google's Cirq framework and its gate representation.
+- **IonQProvider** — trapped-ion hardware with all-to-all connectivity and
+  native gates (gpi, gpi2, ms); pairs naturally with the Static allocator,
+  since the connectivity constraint is irrelevant.
+
+Together, Phases 6 and 7 make both ends of the stack interchangeable: any
+frontend in, any hardware out, with the DevQ kernel unchanged in between.
 
 ---
 
@@ -162,6 +197,11 @@ devq> qrunpack
 [Kernel] Job 1 FINISHED. Counts: {'00': 1007, '11': 989, '01': 26, '10': 26}
 ...
 
+devq> qrun test_circuits/bell.qasm --max-edge-error=0.001
+Job 3 submitted to queue.
+[x] Job 3 REJECTED: no connected block of 2 qubits exists on this device
+    under max_qubit_error=None, max_edge_error=0.001
+
 devq> qmap 1
 
 Job 1 mapping
@@ -189,8 +229,9 @@ devq> qmem
 
 `qrun` vs `qsubmit`/`qrunpack`: `qrun` is a priority path — it attempts
 allocation immediately, executes, resolves the result before returning, and
-leaves all queued jobs untouched. If allocation fails, the job stays WAITING
-in the queue for a later `qrunpack`. `qrun` accepts exactly one job.
+leaves all queued jobs untouched. If allocation fails but the job is
+feasible, it stays WAITING in the queue for a later `qrunpack`; if it is
+unsatisfiable, it is REJECTED and removed. `qrun` accepts exactly one job.
 
 ---
 
@@ -205,11 +246,18 @@ JobSpec(file_path, max_qubit_error=None, max_edge_error=None)
 Thresholds are **hard constraints**: any qubit whose readout error exceeds
 `max_qubit_error`, or edge whose gate error exceeds `max_edge_error`, is
 excluded from allocation for that job. `None` means no filtering on that
-dimension. If filtering makes allocation impossible, the job is set WAITING.
+dimension. If filtering makes allocation *temporarily* impossible (resources
+busy), the job is set WAITING and retried. If it makes allocation
+*permanently* impossible on the loaded device, the job is REJECTED with an
+allocator-generated reason and removed from the queue — detected lazily at
+first allocation failure via the allocator's `feasible()` check.
 (StaticAllocator applies the qubit threshold only — it has no topology
 concept, so the edge threshold is ignored there by design.)
 
-Priority chain: **job-level → device-level → None** (no filtering).
+Thresholds are **job-level only** — a deliberate design decision. Error
+filtering is a per-job user intent, not a platform property, so it is
+expressed at submission time; bracket groups (below) cover the case of
+applying one threshold across many jobs.
 
 ### Syntax
 
@@ -258,7 +306,7 @@ Three-level cascade, later levels override earlier ones:
 
 | Config key | Class | Tag | Behaviour |
 |---|---|---|---|
-| `fcfs` | `FCFSScheduler` | Alt | Strict submission order; head job first; susceptible to head-of-line blocking |
+| `fcfs` | `FCFSScheduler` | Alt | Strict submission order; head job first; head-of-line blocking on WAITING jobs (REJECTED jobs are removed, never block) |
 | `sdf` | `ShortestDepthScheduler` | Alt | Shallowest circuit first; better throughput under mixed-depth workloads |
 | `packing` | `PackingScheduler` | **default** | SDF + greedy bin-packing (TempPool, two-phase commit); concurrent circuits on disjoint qubits |
 | `static` | `StaticAllocator` | Alt | First available block; no topology/noise awareness; ignores edge thresholds by design |
@@ -275,6 +323,10 @@ Three-level cascade, later levels override earlier ones:
 
 **New allocator** — subclass `BaseAllocator`, implement `allocate()` per the
 documented contract (reserve via `pool.allocate()` on success; raise on
-failure; honour thresholds as hard constraints).
+failure; honour thresholds as hard constraints). Optionally override
+`feasible(circuit, device, max_qubit_error, max_edge_error) → None | reason`
+— the base default checks eligible-qubit count; override it if your
+allocator has stricter existence requirements (see the graph allocators'
+connected-block check).
 
 **New scheduler** — subclass `BaseScheduler`, implement `schedule()`.

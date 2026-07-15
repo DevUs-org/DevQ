@@ -15,6 +15,12 @@ It only speaks to QuantumDevice, which delegates to the provider.
 Scheduler type (FCFS, SDF, Packing) is transparent to the kernel —
 step() normalises all scheduler output to a list and handles it
 identically regardless of batch or sequential scheduling.
+
+Scheduler type is transparent here — FCFS and SDF return a single
+QCB or a list, Packing returns a list. All output is normalised
+to a list and handled identically. Returned jobs are *processed*
+jobs: dispatched (RUNNING) or rejected (REJECTED) — the latter
+are never executed and pass through for the shell to report.
 '''
 
 from kernel.process.process_table import ProcessTable
@@ -73,6 +79,8 @@ class Kernel:
         jobs = jobs if isinstance(jobs, list) else [jobs]
 
         for job in jobs:
+            if job.state == JobStates.REJECTED:
+                continue
             self._execute(job)
 
         return jobs
@@ -96,7 +104,17 @@ class Kernel:
             self._execute(qcb)
             self._resolve_pending()
         except Exception:
-            qcb.state = JobStates.WAITING
+            reason = self.memory_manager.unsatisfiable_reason(
+                qcb.circuit,
+                max_qubit_error=qcb.max_qubit_error,
+                max_edge_error=qcb.max_edge_error
+            )
+            if reason:
+                qcb.state         = JobStates.REJECTED
+                qcb.reject_reason = reason
+                self.scheduler.queue.remove(qcb)
+            else:
+                qcb.state = JobStates.WAITING
 
     def _execute(self, qcb):
         print(f"[Kernel] Dispatching job {qcb.job_id} → qubits {qcb.v2p_map}")

@@ -96,6 +96,8 @@ class QShell(cmd.Cmd):
                 print(f"[-] Job {qcb.job_id} failed. See above for details.")
             elif qcb.state.value == "WAITING":
                 print(f"[~] Job {qcb.job_id} is WAITING for resources.")
+            elif qcb.state.value == "REJECTED":
+                print(f"[x] Job {qcb.job_id} REJECTED: {qcb.reject_reason}")
 
         except Exception as e:
             print(f"[DevQ Error] {e}")
@@ -115,6 +117,8 @@ class QShell(cmd.Cmd):
                         print(f"[+] Job {job.job_id} FINISHED. Counts: {job.result.counts}")
                     elif job.state.value == "FAILED":
                         print(f"[-] Job {job.job_id} FAILED. Error: {job.result.error}")
+                    elif job.state.value == "REJECTED":
+                        print(f"[x] Job {job.job_id} REJECTED: {job.reject_reason}")
                     total += 1
 
             if total == 0:

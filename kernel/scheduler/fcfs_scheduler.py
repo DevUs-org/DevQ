@@ -1,19 +1,33 @@
 from .base_scheduler import BaseScheduler
+from kernel.process.lifecycle import JobStates
 
 class FCFSScheduler(BaseScheduler):
     def schedule(self):
         """
-        Processes the queue in strict order. 
-        If the first job cannot be allocated, it blocks the queue.
+        Processes the queue in strict order.
+
+        A WAITING head (blocked on resources) still blocks the queue —
+        that is FCFS semantics. A REJECTED head (unsatisfiable) does
+        not: it is removed and the next job is attempted in the same
+        cycle. A job that can never be served isn't in line.
+
+        Returns a list of processed jobs (rejected and/or one
+        dispatched), or None if nothing was processed.
         """
-        if not self.queue:
-            return None
+        processed = []
 
-        # Take the oldest job
-        qcb = self.queue[0]
+        while self.queue:
+            qcb = self.queue[0]
 
-        if self._attempt_allocation(qcb):
-            # Successfully scheduled! Remove from queue.
-            return self.queue.pop(0)
-        
-        return None
+            if self._attempt_allocation(qcb):
+                processed.append(self.queue.pop(0))
+                return processed
+
+            if qcb.state == JobStates.REJECTED:
+                processed.append(self.queue.pop(0))
+                continue
+
+            # WAITING — head-of-line blocking preserved
+            break
+
+        return processed or None

@@ -19,10 +19,13 @@ class QCB:
         self.v2p_map = v2p_map or {}
         self.state   = JobStates.READY
 
-        # Job-level noise thresholds (None = use device default / no filtering)
-        # Priority chain: job-level → device-level → None
+        # Job-level noise thresholds (None = no filtering)
         self.max_qubit_error = max_qubit_error
         self.max_edge_error  = max_edge_error
+
+        # Set when the job is classified unsatisfiable (state REJECTED):
+        # a human-readable, allocator-generated reason string.
+        self.reject_reason = None
 
         # Set by the kernel when execution is dispatched
         self.future  = None

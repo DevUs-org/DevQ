@@ -17,6 +17,10 @@ class BaseScheduler(ABC):
         '''
         Logic to decide which job(s) from the queue to allocate next.
         Must be implemented by subclasses.
+
+        Returns processed jobs — dispatched (RUNNING) and/or rejected
+        (REJECTED). Callers must not assume every returned job was
+        dispatched; check qcb.state.
         '''
         pass
 
@@ -24,7 +28,11 @@ class BaseScheduler(ABC):
         '''
         Try to allocate qubits for a job.
         On success: sets v2p_map and state to RUNNING, returns True.
-        On failure: sets state to WAITING, returns False.
+        On failure: classifies the failure and returns False —
+          - unsatisfiable (could never be allocated on this device
+            under the job's thresholds): state REJECTED, reason stored
+            on the QCB. Terminal; caller must remove it from the queue.
+          - otherwise (transient resource contention): state WAITING.
         '''
         try:
             mapping     = self.memory_manager.allocate(
@@ -36,7 +44,16 @@ class BaseScheduler(ABC):
             qcb.state   = JobStates.RUNNING
             return True
         except Exception:
-            qcb.state = JobStates.WAITING
+            reason = self.memory_manager.unsatisfiable_reason(
+                qcb.circuit,
+                max_qubit_error=qcb.max_qubit_error,
+                max_edge_error=qcb.max_edge_error
+            )
+            if reason:
+                qcb.state         = JobStates.REJECTED
+                qcb.reject_reason = reason
+            else:
+                qcb.state = JobStates.WAITING
             return False
 
     def is_batch(self):

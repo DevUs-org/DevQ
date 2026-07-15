@@ -1,7 +1,7 @@
 from collections import deque
 
 from .base_allocator import BaseAllocator
-from .filtering import eligible_qubits, edge_allowed
+from .filtering import eligible_qubits, edge_allowed, has_connected_block
 
 
 class GraphAllocator(BaseAllocator):
@@ -37,3 +37,23 @@ class GraphAllocator(BaseAllocator):
                 return {v: p for v, p in enumerate(selected)}
 
         raise Exception("No connected qubit block available")
+    
+    def feasible(self, circuit, device,
+                 max_qubit_error=None, max_edge_error=None):
+        reason = super().feasible(circuit, device,
+                                  max_qubit_error, max_edge_error)
+        if reason:
+            return reason
+
+        eligible = eligible_qubits(
+            device, range(device.num_qubits), max_qubit_error
+        )
+
+        if not has_connected_block(device, eligible,
+                                   circuit.num_qubits, max_edge_error):
+            return (f"no connected block of {circuit.num_qubits} qubits "
+                    f"exists on this device under "
+                    f"max_qubit_error={max_qubit_error}, "
+                    f"max_edge_error={max_edge_error}")
+
+        return None

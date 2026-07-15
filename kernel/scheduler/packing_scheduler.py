@@ -10,7 +10,9 @@ execute simultaneously on disjoint qubit sets, maximising device
 utilisation per scheduling cycle.
 
 Jobs not picked in a given cycle are set to WAITING, indicating
-they are queued but blocked on resource availability.
+they are queued but blocked on resource availability. Jobs whose
+thresholds can never be satisfied on this device are classified
+REJECTED and removed from the queue entirely.
 '''
 
 from kernel.scheduler.base_scheduler import BaseScheduler
@@ -27,6 +29,7 @@ class PackingScheduler(BaseScheduler):
         self.queue.sort(key=lambda qcb: qcb.circuit.get_depth())
 
         batch     = []
+        rejected  = []
         temp_free = set(self.memory_manager.pool.free_qubits)
 
         for qcb in list(self.queue):
@@ -40,6 +43,20 @@ class PackingScheduler(BaseScheduler):
                 # jobs in this cycle don't overlap
                 for p in mapping.values():
                     temp_free.remove(p)
+            else:
+                # Classify the failure. feasible() ignores pool state,
+                # so it is unaffected by what this batch has already
+                # reserved in the temp pool.
+                reason = self.memory_manager.unsatisfiable_reason(
+                    qcb.circuit,
+                    max_qubit_error=qcb.max_qubit_error,
+                    max_edge_error=qcb.max_edge_error
+                )
+                if reason:
+                    qcb.state         = JobStates.REJECTED
+                    qcb.reject_reason = reason
+                    self.queue.remove(qcb)
+                    rejected.append(qcb)
 
         # Commit allocations for picked jobs directly via pool —
         # do NOT re-run the allocator here, the temp pass already
@@ -53,7 +70,7 @@ class PackingScheduler(BaseScheduler):
         for qcb in self.queue:
             qcb.state = JobStates.WAITING
 
-        return batch
+        return rejected + batch
 
     def _try_allocate_temp(self, qcb, temp_free):
         '''
