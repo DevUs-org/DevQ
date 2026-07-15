@@ -254,9 +254,16 @@ Three-level cascade, later levels override earlier ones:
 }
 ```
 
-Valid values — `scheduler`: `fcfs` | `sdf` | `packing`;
-`allocator`: `static` | `graph` | `noise_graph`.
-`qconfig` shows every active value **and where it came from**.
+### Scheduler & Allocator Reference
+
+| Config key | Class | Tag | Behaviour |
+|---|---|---|---|
+| `fcfs` | `FCFSScheduler` | Alt | Strict submission order; head job first; susceptible to head-of-line blocking |
+| `sdf` | `ShortestDepthScheduler` | Alt | Shallowest circuit first; better throughput under mixed-depth workloads |
+| `packing` | `PackingScheduler` | **default** | SDF + greedy bin-packing (TempPool, two-phase commit); concurrent circuits on disjoint qubits |
+| `static` | `StaticAllocator` | Alt | First available block; no topology/noise awareness; ignores edge thresholds by design |
+| `graph` | `GraphAllocator` | Alt | BFS over topology graph; guarantees connected subgraph |
+| `noise_graph` | `NoiseGraphAllocator` | **default** | BFS + weighted cost S = α·Σ(qubit_err) + β·Σ(edge_err), α=0.1, β=0.9 |
 
 ---
 
