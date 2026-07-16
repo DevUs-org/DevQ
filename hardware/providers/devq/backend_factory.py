@@ -21,7 +21,6 @@ import random
 
 
 BASIS_GATES = ["cx", "rz", "sx", "x", "measure"]
-random.seed(1)
 
 def create_backend(kind="fully_connected", num_qubits=5) -> dict:
     if num_qubits < 2:
