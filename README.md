@@ -3,15 +3,17 @@
 DevQ is an open-source quantum execution middleware that applies classical
 operating-system abstractions to quantum computing: a microkernel with a
 process table, noise-aware qubit allocators, pluggable job schedulers, a
-hardware-agnostic device abstraction, and an interactive inspection shell.
+noise-aware device router for distributed execution across multiple
+backends, a hardware-agnostic device abstraction, and an interactive
+inspection shell.
 
 Quantum platforms today are fragmented, vendor-locked, and opaque — qubit
 selection, scheduling, and topology decisions happen inside closed runtimes.
 DevQ is the transparent layer beneath them: **Linux for quantum computing**.
 It does not compete with Qiskit or Braket; it makes the execution decisions
 they hide *inspectable, controllable, and extensible* — type `qerrors` to see
-the device noise map, `qmap <id>` to see exactly which physical qubits your
-circuit used, and read the source that made that decision.
+every device's noise map, `qmap <id>` to see exactly which device and physical
+qubits your circuit used, and read the source that made that decision.
 
 The entire system initialises in three lines of user code:
 
@@ -22,6 +24,21 @@ from hardware.providers.devq.devq_simulated_provider import DevQSimulatedProvide
 DevQ(DevQSimulatedProvider().get_device("random", 10)).start()
 ```
 
+Attaching multiple backends is one chained call per device:
+
+```python
+DevQ(config_path="~/devq.config.json") \
+    .add_device(DevQSimulatedProvider().get_device("random", 7)) \
+    .add_device(ibm.get_device("FakeNairobiV2")) \
+    .add_device(ibm.get_device("FakeLagosV2"), "~/lagos.config.json") \
+    .start()
+```
+
+Devices are indexed `d0..dn` in add order — stable for the session, shown by
+`qdevices`, and referenced by `--exec`/`--no-exec` flags and device-scoped
+commands. `add_devices([d1, d2, ...])` attaches several at once;
+`start()` raises `DevQError` if no device is attached.
+
 ---
 
 ## Code Tags
@@ -31,23 +48,27 @@ Every source file carries a tag in its module docstring describing its role:
 | Tag | Meaning |
 |---|---|
 | **Main** | Part of the core DevQ abstraction. Hardware-independent; should support most existing quantum infrastructure. |
-| **Default** | The default implementation of a pluggable component (NoiseGraphAllocator, PackingScheduler). Part of the core distribution; swappable via config. |
-| **Alt** | Configurable alternatives to the Default components (Static/Graph allocators, FCFS/SDF schedulers) usable for debugging, testing, baselines, and optimisation comparisons. |
+| **Default** | The default implementation of a pluggable component (NoiseGraphAllocator, PackingScheduler, NoiseRouter). Part of the core distribution; swappable via config. |
+| **Alt** | Configurable alternatives to the Default components (Static/Graph allocators, FCFS/SDF schedulers, RoundRobin router) usable for debugging, testing, baselines, and optimisation comparisons. |
 | **Provider** | Hardware-provider code: everything that adapts a specific backend or framework to DevQ, including simulated/testing backends. Not part of the core abstraction; grows as more hardware support is added. |
 
 ---
 
 ## Architecture
 
-Six layers, strict separation of concerns — each layer talks only to its
-immediate neighbours. The kernel never knows which provider backs the device;
-the shell never touches the scheduler directly; providers know nothing about
-job IDs or lifecycle states.
+Seven layers, strict separation of concerns — each layer talks only to its
+immediate neighbours. Two-level scheduling, the classical cluster pattern:
+the **router** decides *which* device a job runs on; each device's local
+**scheduler** decides *when* it runs there. The kernel never knows which
+provider backs a device; the shell never touches the scheduler directly;
+providers know nothing about job IDs or lifecycle states.
 
 ```
-User layer          qrun · qsubmit · qrunpack · QShell CLI
+User layer          qrun · qsubmit · qrunpack · qdevices · QShell CLI
 Circuit rep         CircuitRep · QASM parser · get_depth() · [Silq, Q#, Qiskit …]
-DevQ kernel         ProcessTable · QCB · MemoryManager · Scheduler
+DevQ kernel         ProcessTable · QCB · federation host (step / futures)
+Device router       NoiseRouter (default) · RoundRobin — binds job → device
+Device context      per-device: MemoryManager · QubitPool · Scheduler
 Qubit allocator     Static · Graph · Noise-Graph (default)
 Device abstraction  BaseProvider · QuantumDevice · load_device()
 Hardware provider   DevQSimulatedProvider · IBMSimulatedProvider · [Cirq, IonQ …]
@@ -57,6 +78,13 @@ Every pluggable layer has an enforced contract:
 - `BaseProvider` — providers implement exactly `get_device()` + `execute()`
 - `BaseAllocator` — allocators implement `allocate(circuit, device, pool, max_qubit_error=None, max_edge_error=None)`; optionally override `feasible()` (default provided) to classify unsatisfiable jobs
 - `BaseScheduler` — schedulers implement `schedule()`, returning the jobs processed in a cycle — dispatched (RUNNING) and/or rejected (REJECTED)
+- `BaseRouter` — routers implement `select(qcb, candidates)`, choosing among feasible candidate devices; the base class handles device constraints, per-device feasibility, and rejection-reason aggregation
+
+**One circuit, one device.** There are no quantum links between backends, so
+a circuit never spans devices. DevQ therefore federates rather than merges:
+each attached device keeps its own qubit pool, allocator, and scheduler
+instance inside a `DeviceContext` — a node in the cluster — and physical
+qubit indices remain local to their device everywhere in the system.
 
 ---
 
@@ -69,21 +97,24 @@ Every pluggable layer has an enforced contract:
   (fully_connected, linear, grid, random), generated error maps, mocked
   execution. Doubles as the reference implementation for provider authors.
 - **IBMSimulatedProvider** — wraps Qiskit V2 fake backends (FakeSherbrooke,
-  FakeNairobiV2, …) with **real IBM calibration data** extracted from the
-  Target API. The native 2-qubit gate is auto-discovered per backend
+  FakeNairobiV2, FakeLagosV2, …) with **real IBM calibration data** extracted
+  from the Target API. The native 2-qubit gate is auto-discovered per backend
   (ECR on Eagle/Heron, CX on older Falcon devices), and execution runs on
   AerSimulator with the backend's noise model.
 
 ### ✅ Phase 1 — QCB, Process Table & QShell (done)
 Quantum Control Block (the quantum PCB): job_id, circuit, v2p_map, state,
-future, result, job-level noise thresholds. Six-state lifecycle:
-READY → WAITING / REJECTED / RUNNING → FINISHED / FAILED. WAITING is
-transient (blocked on resources, retried); REJECTED is terminal — no
-valid allocation can ever exist on the device under the job's
-thresholds, as determined by the active allocator's `feasible()` check
-at first allocation failure. Future-based execution (`ExecutionFuture`,
-synchronous now, async-ready for Phase 4). QShell with full inspection
-command set (see below).
+device binding, future, result, job-level noise thresholds and device
+constraints. Six-state lifecycle: READY → WAITING / REJECTED / RUNNING →
+FINISHED / FAILED. READY covers a queued job that has not yet attempted
+allocation; WAITING is transient (attempted, blocked on resources,
+retried); REJECTED is the umbrella terminal state for any kernel-level
+rejection, whatever stage produced it — device constraints excluding
+every device, unsatisfiable thresholds on every allowed device, or
+allocation classification inside a scheduler. Future-based execution
+(`ExecutionFuture` / `AsyncExecutionFuture` behind one `done()`/`result()`
+interface). QShell with full inspection command set (see below). Job IDs
+are global across all devices.
 
 ### ✅ Phase 2 — Qubit Allocation (done)
 Three interchangeable allocators behind `BaseAllocator`:
@@ -113,34 +144,65 @@ Three schedulers behind `BaseScheduler`:
   reservation pool (TempPool) with two-phase commit; multiple circuits run
   concurrently on disjoint qubit sets.
 
-All three classify allocation failures through the allocator's
-`feasible()` check: transient contention → WAITING (retried);
-unsatisfiable on this device → REJECTED (terminal, removed from queue,
-reason reported in QShell and recorded on the QCB).
-
-Plus the **config cascade** (DevQ core defaults → provider
-`preferred_config()` → user JSON, with provenance shown by `qconfig`) and the
-**QShell job parser** (JobSpec, bracket groups, per-job threshold flags —
+Plus the **configuration cascade** (see Configuration) and the **QShell job
+parser** (JobSpec, bracket groups, per-job threshold and device flags —
 fully wired end-to-end).
 
-### 🔧 Work in progress
-- Verification pass: full QShell test plan over Phases 0–3
-  (FakeNairobiV2, deterministic expected mappings, threshold and
-  REJECTED/WAITING classification cases).
+### ✅ Phase 4 — Distributed Scheduling (done)
+Distributed execution across heterogeneous quantum backends, following the
+classical cluster pattern (DevQ = the node kernel, the router = the cluster
+scheduler):
 
-### 🔭 Phase 4 — Distributed Scheduling (planned)
-Network-based distributed execution across heterogeneous quantum backends: a
-**Device Registry** maintaining a live pool of backends with calibration data
-and queue depths, a noise-aware topology-matching job router, and truly
-asynchronous `ExecutionFuture` resolution. The kernel requires no changes —
-the future-based lifecycle was designed for this from the start.
+- **DeviceContext** — the federation unit: one per attached device, bundling
+  the device, its MemoryManager/QubitPool, its allocator instance, its
+  scheduler instance, and its resolved per-device configuration. Per-device
+  config is therefore real: d0 can pack with NoiseGraph while d1 runs FCFS
+  over Static.
+- **Device router** behind `BaseRouter` — a pluggable decision layer
+  mirroring the allocator/scheduler contracts:
+  - **NoiseRouter** *(default)* — scores every feasible candidate device by
+    `w_queue · queue_pressure + w_noise · best_case_cost` (both min-max
+    normalised across candidates) and routes to the lowest score. Queue
+    pressure = queued + running jobs on the device. Best-case cost dry-runs
+    the device's *own configured allocator* on an empty pool clone and
+    scores the returned mapping with the S yardstick — the score reflects
+    the mapping quality the job would actually receive under that device's
+    real policy. Ties break deterministically by lower device index (note:
+    with exactly two candidates and equal weights, normalisation makes the
+    terms mirror each other, so the index tiebreak frequently decides).
+  - **RoundRobinRouter** *(Alt)* — cycles through feasible devices in index
+    order; load- and noise-oblivious fairness baseline.
+- **Sticky routing** — a job is routed exactly once, at its first scheduling
+  cycle, and the binding is recorded on the QCB. Re-routing WAITING jobs to
+  less-loaded devices (work migration) is deliberate future work and an open
+  research knob.
+- **Cross-device rejection semantics** — REJECTED now means unsatisfiable on
+  *every device the job is allowed to run on*: the router calls each
+  candidate's pool-state-independent `feasible()` and, if none passes,
+  aggregates one reason per device. With sticky routing, rejection
+  concentrates at the router — post-routing allocation failures classify
+  WAITING, since routing already established feasibility on the chosen
+  device.
+- **Job-level device constraints** — `--exec` (allow-list; no fallback
+  outside it) and `--no-exec` (deny-list); see JobSpec below.
+- **Truly asynchronous execution** — `AsyncExecutionFuture` wraps a real
+  thread-pool future behind the same `done()`/`result()` interface; both
+  simulated providers now execute asynchronously, so circuits genuinely run
+  concurrently across devices while the kernel keeps routing and scheduling.
+  The kernel required no changes to its resolution loop — the future-based
+  lifecycle was designed for this from the start. Worker threads only
+  compute; all state mutation happens on the shell thread inside the
+  kernel's resolution step, so the system needs no locks.
 
 ### 🔭 Phase 5 — Research Benchmarking Mode (planned)
-A `qbench` command: run circuit workloads through every scheduler/allocator
-combination and report comparative results. The goal is for DevQ to serve as
-an **algorithm evaluation playground** for quantum scheduling and allocation
-researchers — write an allocator against `BaseAllocator`, plug it in,
-benchmark it against the built-ins.
+A `qbench` command: run circuit workloads through every
+router/scheduler/allocator combination and report comparative results. The
+goal is for DevQ to serve as an **algorithm evaluation playground** for
+quantum scheduling and allocation researchers — write an allocator against
+`BaseAllocator` or a router against `BaseRouter`, plug it in, benchmark it
+against the built-ins. Open research problems that live at the router
+layer: cross-backend shot aggregation, coherence-window scheduling, and
+work migration of WAITING jobs.
 
 ### 🔭 Phase 6 — Interchangeable Frontends (planned)
 Today circuits enter DevQ as OpenQASM files. Phase 6 opens the top of the
@@ -150,14 +212,14 @@ circuits**, and other quantum languages — into `CircuitRep`, DevQ's
 hardware-independent internal format. Frontends need no knowledge of the
 kernel, allocators, or schedulers; the existing QASM loader becomes the
 reference frontend. Write in the language you prefer, and DevQ handles
-allocation, scheduling, and execution identically.
+routing, allocation, scheduling, and execution identically.
 
 ### 🔭 Phase 7 — Expanded Provider Ecosystem (planned)
 More hardware providers behind the same two-method `BaseProvider` contract:
 - **IBMRealProvider** — live IBM hardware via `QiskitRuntimeService`;
   `get_device()` pulls live calibration data, `execute()` submits to IBM's
-  job queue. The `ExecutionFuture` interface naturally absorbs real queue
-  wait times.
+  job queue. The `AsyncExecutionFuture` interface naturally absorbs real
+  queue wait times.
 - **CirqProvider** — Google's Cirq framework and its gate representation.
 - **IonQProvider** — trapped-ion hardware with all-to-all connectivity and
   native gates (gpi, gpi2, ms); pairs naturally with the Static allocator,
@@ -170,156 +232,211 @@ frontend in, any hardware out, with the DevQ kernel unchanged in between.
 
 ## QShell Command Reference
 
-QShell commands deliberately mirror classical OS tools.
+QShell commands deliberately mirror classical OS tools. Commands marked
+`[dN]` take an optional device argument: with it, output covers that device
+only; without it, output is sectioned per attached device (a single-device
+session simply shows one `d0` section — the format is uniform).
 
 | Command | Classical analogue | Purpose |
 |---|---|---|
 | `qrun` | — | Priority-execute a **single** job immediately, bypassing the queue |
 | `qsubmit` | — | Enqueue one or more jobs without executing |
-| `qrunpack` | — | Drain the queue via the configured scheduler |
-| `qps` | `ps` | List all jobs with lifecycle state |
-| `qmap <job_id>` | — | Show a job's virtual → physical qubit mapping |
-| `qmem` | `free` | Show free `[]` vs allocated `[X]` qubits |
-| `qtopology [q …]` | — | Show device coupling map (optionally filtered to listed qubits) |
-| `qerrors [q\|e\|b]` | `iostat` | Show qubit errors, edge errors, or both (default `b`) |
-| `qconfig` | — | Show active scheduler/allocator/shots and the source of each value |
+| `qrunpack` | — | Drain all queues via the router and per-device schedulers |
+| `qdevices` | `lscpu` | List attached devices: index, name, provider, qubits, queued/running load |
+| `qps` | `ps` | List all jobs with device binding and lifecycle state |
+| `qmap <job_id>` | — | Show a job's device and virtual → physical qubit mapping |
+| `qmem [dN]` | `free` | Show free `[]` vs allocated `[X]` qubits |
+| `qtopology [dN] [q …]` | — | Show device coupling map(s) (qubit filtering requires a device) |
+| `qerrors [q\|e\|b] [dN]` | `iostat` | Show qubit errors, edge errors, or both (default `b`) |
+| `qconfig [dN]` | — | Show global router policy and each device's scheduler/allocator/shots with the source of every value |
 | `!!` | `!!` | Repeat the last command |
 | `exit` / Ctrl-D | — | Exit DevQ |
 
 ### Examples
 
 ```
-devq> qsubmit test_circuits/bell.qasm test_circuits/ghz.qasm
+devq> qdevices
+
+  d0   random_backend       DevQSimulatedProvider     7 qubits   queued: 0  running: 0
+  d1   fakenairobiv2        IBMSimulatedProvider      7 qubits   queued: 0  running: 0
+  d2   fakelagosv2          IBMSimulatedProvider      7 qubits   queued: 0  running: 0
+
+devq> qrun test_circuits/bell.qasm --exec=d1,d2
 Job 1 submitted to queue.
-Job 2 submitted to queue.
-
-devq> qrunpack
-[Kernel] Dispatching job 1 → qubits {0: 1, 1: 2}
+[Kernel] Dispatching job 1 → d1 (fakenairobiv2) qubits {0: 1, 1: 2}
 [Kernel] Job 1 FINISHED. Counts: {'00': 1007, '11': 989, '01': 26, '10': 26}
-...
+[+] Job 1 FINISHED.
 
-devq> qrun test_circuits/bell.qasm --max-edge-error=0.001
-Job 3 submitted to queue.
-[x] Job 3 REJECTED: no connected block of 2 qubits exists on this device
-    under max_qubit_error=None, max_edge_error=0.001
+devq> qrun test_circuits/bell.qasm --max-qubit-error=0.03 --exec=d2
+Job 2 submitted to queue.
+[x] Job 2 REJECTED: unsatisfiable on every allowed device — d2: no connected
+    block of 2 qubits exists on this device under max_qubit_error=0.03,
+    max_edge_error=None
+
+devq> qps
+1 | d1  | FINISHED
+2 | -   | REJECTED
 
 devq> qmap 1
 
 Job 1 mapping
+
+device: d1 (fakenairobiv2)
 
 virtual → physical
 
   0 → 1
   1 → 2
 
-devq> qerrors e
+devq> qerrors e d1
 
-Edge Error Map:
+  d1 (fakenairobiv2):
 
-  (0, 1) -> 0.0086
-  (1, 2) -> 0.0070
-  ...
+  Edge Error Map:
 
-devq> qmem
-
-  0 []
-  1 [X]
-  2 [X]
-  ...
+    (0, 1) -> 0.0086
+    (1, 2) -> 0.0070
+    ...
 ```
 
-`qrun` vs `qsubmit`/`qrunpack`: `qrun` is a priority path — it attempts
-allocation immediately, executes, resolves the result before returning, and
-leaves all queued jobs untouched. If allocation fails but the job is
-feasible, it stays WAITING in the queue for a later `qrunpack`; if it is
-unsatisfiable, it is REJECTED and removed. `qrun` accepts exactly one job.
+`qrun` vs `qsubmit`/`qrunpack`: `qrun` is a priority path — it routes and
+attempts allocation immediately, executes, blocks until its own result
+resolves, and leaves all queued jobs untouched. If allocation fails but the
+job is feasible on its routed device, it stays WAITING in that device's
+queue for a later `qrunpack`; if it is unsatisfiable everywhere allowed, it
+is REJECTED. `qrun` accepts exactly one job (all flags, including
+`--exec`/`--no-exec`, are supported).
 
 ---
 
-## JobSpec: Job-Level Noise Thresholds
+## JobSpec: Job-Level Noise Thresholds & Device Constraints
 
 `qrun` and `qsubmit` arguments are parsed into **JobSpec** objects:
 
 ```python
-JobSpec(file_path, max_qubit_error=None, max_edge_error=None)
+JobSpec(file_path, max_qubit_error=None, max_edge_error=None,
+        exec_on=None, no_exec_on=None)
 ```
 
-Thresholds are **hard constraints**: any qubit whose readout error exceeds
-`max_qubit_error`, or edge whose gate error exceeds `max_edge_error`, is
-excluded from allocation for that job. `None` means no filtering on that
-dimension. If filtering makes allocation *temporarily* impossible (resources
-busy), the job is set WAITING and retried. If it makes allocation
-*permanently* impossible on the loaded device, the job is REJECTED with an
-allocator-generated reason and removed from the queue — detected lazily at
-first allocation failure via the allocator's `feasible()` check.
+**Noise thresholds** are **hard constraints**: any qubit whose readout error
+exceeds `max_qubit_error`, or edge whose gate error exceeds
+`max_edge_error`, is excluded from allocation for that job. `None` means no
+filtering on that dimension. Thresholds are **job-level only** — a
+deliberate design decision. Error filtering is a per-job user intent, not a
+platform property, so it is expressed at submission time; bracket groups
+cover applying one threshold across many jobs.
 (StaticAllocator applies the qubit threshold only — it has no topology
 concept, so the edge threshold is ignored there by design.)
 
-Thresholds are **job-level only** — a deliberate design decision. Error
-filtering is a per-job user intent, not a platform property, so it is
-expressed at submission time; bracket groups (below) cover the case of
-applying one threshold across many jobs.
+**Device constraints** bind jobs to devices:
+- `--exec=d0,d2` — allow-list: the job may **only** run on the listed
+  devices. If it is infeasible on all of them, it is REJECTED — never
+  re-routed elsewhere.
+- `--no-exec=d1` — deny-list: the job is never routed to the listed devices.
+- The two flags are mutually exclusive on the same job or group (an
+  allow-list already implies exclusion of every other device).
+- Device lists are comma-separated without brackets (brackets are reserved
+  for job grouping). Device *existence* is validated at submission —
+  referencing a device that is not attached rejects the whole batch.
+
+If constraints or filtering make allocation *temporarily* impossible on the
+routed device (resources busy), the job is set WAITING and retried. If they
+make allocation *permanently* impossible on every allowed device, the job is
+REJECTED with one router-aggregated reason per candidate device — detected
+via each device's allocator `feasible()` check, which deliberately ignores
+pool state.
 
 ### Syntax
 
 ```
-# Bare jobs — no thresholds
+# Bare jobs — no thresholds, any device
 qsubmit bell.qasm
 qsubmit bell.qasm ghz.qasm
 
 # Trailing flags — bind ONLY to the job immediately before them
 qsubmit bell.qasm --max-qubit-error=0.05
-qsubmit bell.qasm --max-edge-error=0.1
-qsubmit bell.qasm --max-qubit-error=0.05 --max-edge-error=0.1
+qsubmit bell.qasm --max-edge-error=0.1 --no-exec=d0
+qsubmit bell.qasm --exec=d1,d2
 
 # Bracket group — flags apply to ALL jobs in the group
-qsubmit [a.qasm b.qasm --max-qubit-error=0.05]
+qsubmit [a.qasm b.qasm --max-qubit-error=0.05 --no-exec=d0]
 qsubmit [a.qasm b.qasm]                          # valid: group, no flags
 
 # Mixed — groups and bare jobs combine; flags never leak across
-qsubmit [a.qasm b.qasm --max-qubit-error=0.05] c.qasm d.qasm --max-edge-error=0.1 e.qasm
-#   a: qe=0.05 | b: qe=0.05 | c: defaults | d: ee=0.1 | e: defaults
+qsubmit [a.qasm b.qasm --max-qubit-error=0.05] c.qasm d.qasm --exec=d2 e.qasm
+#   a: qe=0.05 | b: qe=0.05 | c: defaults | d: exec=d2 | e: defaults
 ```
 
-Flag values must be floats in `[0, 1]`. Malformed input (unclosed brackets,
-unknown flags, out-of-range values, flags with no preceding file) is rejected
+Threshold values must be floats in `[0, 1]`; device references must match
+`d<int>`. Malformed input (unclosed brackets, unknown flags, out-of-range
+values, flags with no preceding file, bracketed or malformed device lists,
+`--exec` with `--no-exec`, references to unattached devices) is rejected
 with a clear error and no job is created.
 
 ---
 
 ## Configuration
 
-Three-level cascade, later levels override earlier ones:
+Configuration keys are split into two scopes.
+
+**Device keys** (`scheduler`, `allocator`, `shots`) are resolved
+independently for every attached device through a four-level cascade,
+later levels overriding earlier ones:
 
 1. **DevQ core defaults**
-2. **Provider `preferred_config()`** (e.g. IBM prefers `shots: 2048`)
-3. **User JSON file** passed to `DevQ(device, config_path)`
+2. **That device's provider `preferred_config()`** (e.g. IBM prefers `shots: 2048`)
+3. **Global user config file** — `DevQ(config_path=...)`, applies to all devices
+4. **Per-device user config file** — `add_device(device, config_path)`, this device only
+
+**Global keys** (`router`, `router_queue_weight`, `router_noise_weight`)
+are resolved once for the whole system: core defaults ← global user file.
+Providers deliberately **cannot** set global keys — a provider expressing
+system routing policy would be a layer violation; such keys are warned
+about and ignored.
+
+One JSON file may freely mix both scopes; each loader reads only its own
+keys:
 
 ```json
 {
     "scheduler": "packing",
     "allocator": "noise_graph",
-    "shots": 1024
+    "shots": 1024,
+    "router": "noise",
+    "router_queue_weight": 0.5,
+    "router_noise_weight": 0.5
 }
 ```
 
-### Scheduler & Allocator Reference
+`qconfig` shows the provenance of every active value: `DevQ Core`,
+`<ProviderName>`, `User (global)`, or `User (dN)`.
 
-| Config key | Class | Tag | Behaviour |
-|---|---|---|---|
-| `fcfs` | `FCFSScheduler` | Alt | Strict submission order; head job first; head-of-line blocking on WAITING jobs (REJECTED jobs are removed, never block) |
-| `sdf` | `ShortestDepthScheduler` | Alt | Shallowest circuit first; better throughput under mixed-depth workloads |
-| `packing` | `PackingScheduler` | **default** | SDF + greedy bin-packing (TempPool, two-phase commit); concurrent circuits on disjoint qubits |
-| `static` | `StaticAllocator` | Alt | First available block; no topology/noise awareness; ignores edge thresholds by design |
-| `graph` | `GraphAllocator` | Alt | BFS over topology graph; guarantees connected subgraph |
-| `noise_graph` | `NoiseGraphAllocator` | **default** | BFS + weighted cost S = α·Σ(qubit_err) + β·Σ(edge_err), α=0.1, β=0.9 |
+### Scheduler, Allocator & Router Reference
+
+| Config key | Class | Tag | Scope | Behaviour |
+|---|---|---|---|---|
+| `fcfs` | `FCFSScheduler` | Alt | device | Strict submission order; head-of-line blocking on WAITING jobs (REJECTED jobs are removed, never block) |
+| `sdf` | `ShortestDepthScheduler` | Alt | device | Shallowest circuit first; better throughput under mixed-depth workloads |
+| `packing` | `PackingScheduler` | **default** | device | SDF + greedy bin-packing (TempPool, two-phase commit); concurrent circuits on disjoint qubits |
+| `static` | `StaticAllocator` | Alt | device | First available block; no topology/noise awareness; ignores edge thresholds by design |
+| `graph` | `GraphAllocator` | Alt | device | BFS over topology graph; guarantees connected subgraph |
+| `noise_graph` | `NoiseGraphAllocator` | **default** | device | BFS + weighted cost S = α·Σ(qubit_err) + β·Σ(edge_err), α=0.1, β=0.9 |
+| `round_robin` | `RoundRobinRouter` | Alt | global | Cycles through feasible devices in index order; load/noise-oblivious baseline |
+| `noise` | `NoiseRouter` | **default** | global | Routes to lowest `w_q·queue_pressure + w_n·best_case_cost` over feasible devices; weights via `router_queue_weight` / `router_noise_weight` (floats in [0,1], default 0.5 each) |
+
+Because per-device FCFS queues sit below the router, FCFS ordering is
+per-device: global submission order is approximately preserved via routing
+order — the standard two-level-scheduling tradeoff.
 
 ---
 
 ## Extending DevQ
 
 **New provider** — subclass `BaseProvider`, implement `get_device()` and
-`execute()`. No knowledge of the kernel, allocators, or schedulers required;
+`execute()`. Return either a synchronous `ExecutionFuture` or (preferred)
+an `AsyncExecutionFuture` via `circuits.execution_result.submit_async(fn)`
+— the kernel polls `done()`/`result()` and never knows the difference. No
+knowledge of the kernel, allocators, schedulers, or routers required;
 `DevQSimulatedProvider` is the reference template.
 
 **New allocator** — subclass `BaseAllocator`, implement `allocate()` per the
@@ -328,6 +445,15 @@ failure; honour thresholds as hard constraints). Optionally override
 `feasible(circuit, device, max_qubit_error, max_edge_error) → None | reason`
 — the base default checks eligible-qubit count; override it if your
 allocator has stricter existence requirements (see the graph allocators'
-connected-block check).
+connected-block check). `feasible()` powers both scheduler-level
+classification and router-level candidate filtering.
 
 **New scheduler** — subclass `BaseScheduler`, implement `schedule()`.
+
+**New router** — subclass `BaseRouter`, implement
+`select(qcb, candidates) → DeviceContext`. Candidates arrive already
+filtered by the job's device constraints and per-device feasibility; the
+base class handles rejection-reason aggregation. Keep `select()`
+deterministic (break ties by lower device index). `RoundRobinRouter` is the
+minimal reference; `NoiseRouter` shows how to reuse the per-device allocator
+machinery for scoring.
