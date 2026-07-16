@@ -66,12 +66,14 @@ class DevQSimulatedProvider(BaseProvider):
             shots : number of shots
 
         Returns:
-            ExecutionFuture wrapping a mocked ExecutionResult
+            AsyncExecutionFuture resolving to a mocked ExecutionResult
         '''
-        from circuits.execution_result import ExecutionResult, ExecutionFuture
+        from circuits.execution_result import ExecutionResult, submit_async
 
         if len(v2p_map) < circuit.num_qubits:
-            return ExecutionFuture(ExecutionResult(
+            # Validation errors surface synchronously-shaped but async-wrapped
+            # for a single uniform future type from this provider.
+            return submit_async(lambda: ExecutionResult(
                 counts  = {},
                 success = False,
                 error   = (
@@ -81,13 +83,12 @@ class DevQSimulatedProvider(BaseProvider):
                 )
             ))
 
-        num_states  = 2 ** circuit.num_qubits
-        mock_counts = {
-            format(i, f"0{circuit.num_qubits}b"): shots // num_states
-            for i in range(num_states)
-        }
+        def _run():
+            num_states  = 2 ** circuit.num_qubits
+            mock_counts = {
+                format(i, f"0{circuit.num_qubits}b"): shots // num_states
+                for i in range(num_states)
+            }
+            return ExecutionResult(counts=mock_counts, success=True)
 
-        return ExecutionFuture(ExecutionResult(
-            counts  = mock_counts,
-            success = True
-        ))
+        return submit_async(_run)

@@ -105,7 +105,7 @@ class IBMSimulatedProvider(BaseProvider):
             shots : number of shots
 
         Returns:
-            ExecutionFuture wrapping an ExecutionResult
+            AsyncExecutionFuture resolving to an ExecutionResult
         '''
         try:
             from qiskit_aer import AerSimulator
@@ -118,34 +118,32 @@ class IBMSimulatedProvider(BaseProvider):
                 error   = "qiskit-aer is not installed. Run: pip install qiskit-aer"
             ))
 
-        from circuits.execution_result import ExecutionResult, ExecutionFuture
+        from circuits.execution_result import ExecutionResult, submit_async
 
-        try:
-            num_virtual = circuit.num_qubits
-            qc = QuantumCircuit(num_virtual, num_virtual)
+        def _run():
+            try:
+                num_virtual = circuit.num_qubits
+                qc = QuantumCircuit(num_virtual, num_virtual)
 
-            for inst in circuit.instructions:
-                self._add_gate(qc, inst['gate'].lower(),
-                            inst['qubits'], inst.get('params', []))
+                for inst in circuit.instructions:
+                    self._add_gate(qc, inst['gate'].lower(),
+                                inst['qubits'], inst.get('params', []))
 
-            qc.measure(range(num_virtual), range(num_virtual))
+                qc.measure(range(num_virtual), range(num_virtual))
 
-            sim    = AerSimulator(noise_model=self._noise_model)
-            t_circ = transpile(qc, sim)
-            counts = sim.run(t_circ, shots=shots).result().get_counts()
+                sim    = AerSimulator(noise_model=self._noise_model)
+                t_circ = transpile(qc, sim)
+                counts = sim.run(t_circ, shots=shots).result().get_counts()
 
-            return ExecutionFuture(ExecutionResult(
-                counts  = counts,
-                success = True
-            ))
+                return ExecutionResult(counts=counts, success=True)
 
-        except Exception as e:
-            return ExecutionFuture(ExecutionResult(
-                counts  = {},
-                success = False,
-                error   = str(e)
-            ))
-        
+            except Exception as e:
+                return ExecutionResult(counts={}, success=False, error=str(e))
+
+        # Phase 4: genuinely asynchronous — the returned future resolves
+        # on a worker thread while the kernel keeps scheduling/routing.
+        return submit_async(_run)
+
     def preferred_config(self) -> dict:
         '''
         IBM simulated backends benefit from more shots for statistical

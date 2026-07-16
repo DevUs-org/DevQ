@@ -2,14 +2,18 @@
 Tags: Main
 
 ExecutionResult — Structured result returned after circuit execution.
-ExecutionFuture — Lightweight future wrapper around an ExecutionResult.
+ExecutionFuture — Synchronous future wrapper (reference implementation).
+AsyncExecutionFuture — Real asynchronous future (Phase 4).
 
-ExecutionFuture is intentionally simple for now — synchronous simulation
-means results are always immediately available. Phase 4 (distributed
-backends) will replace the internals with real async execution while
-keeping the same .done() / .result() interface so the Kernel never
-needs to change.
+Both futures expose the identical done()/result() interface the Kernel
+polls — which future a provider returns is invisible above the
+provider layer. ExecutionFuture remains the simplest possible
+reference for provider authors; AsyncExecutionFuture wraps a
+concurrent.futures.Future so execution genuinely overlaps with
+scheduling, routing, and shell interaction.
 '''
+
+import concurrent.futures
 
 
 class ExecutionResult:
@@ -32,11 +36,9 @@ class ExecutionResult:
 
 class ExecutionFuture:
     '''
-    Wraps a synchronous ExecutionResult to look like a future.
-
-    Keeps the interface identical to what Phase 4 async execution
-    will need — the Kernel only ever calls .done() and .result(),
-    so swapping in a real async future requires no kernel changes.
+    Wraps an already-computed ExecutionResult to look like a future.
+    The reference implementation for providers whose execution is
+    synchronous — done() is immediately True.
     '''
 
     def __init__(self, result: ExecutionResult):
@@ -52,3 +54,48 @@ class ExecutionFuture:
     def __repr__(self):
         state = "done" if self._done else "pending"
         return f"ExecutionFuture(state={state}, result={self._result})"
+
+
+class AsyncExecutionFuture:
+    '''
+    Wraps a concurrent.futures.Future whose callable returns an
+    ExecutionResult. Same done()/result() surface as ExecutionFuture.
+
+    A callable that raises is converted into a failed ExecutionResult
+    rather than propagating — the kernel's contract is that result()
+    always yields an ExecutionResult.
+    '''
+
+    def __init__(self, future: concurrent.futures.Future):
+        self._future = future
+
+    def done(self) -> bool:
+        return self._future.done()
+
+    def result(self) -> ExecutionResult:
+        try:
+            return self._future.result()
+        except Exception as e:
+            return ExecutionResult(counts=None, success=False, error=str(e))
+
+    def __repr__(self):
+        state = "done" if self.done() else "pending"
+        return f"AsyncExecutionFuture(state={state})"
+
+
+# Shared pool for providers that execute via AsyncExecutionFuture.
+# Module-level singleton — provider authors call submit_async(fn, *args).
+_EXECUTOR = None
+
+
+def submit_async(fn, *args, **kwargs) -> AsyncExecutionFuture:
+    '''
+    Run fn(*args, **kwargs) -> ExecutionResult on the shared executor,
+    returning an AsyncExecutionFuture the kernel can poll.
+    '''
+    global _EXECUTOR
+    if _EXECUTOR is None:
+        _EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+            max_workers=8, thread_name_prefix="devq-exec"
+        )
+    return AsyncExecutionFuture(_EXECUTOR.submit(fn, *args, **kwargs))
