@@ -1,0 +1,5 @@
+{
+    "router": "noise",
+    "router_queue_weight": 0.5,
+    "router_noise_weight": 0.5
+}

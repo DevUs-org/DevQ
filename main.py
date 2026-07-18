@@ -14,13 +14,13 @@ is handled by the DevQ core.
 '''
 
 from devq import DevQ
-from hardware.providers.devq.devq_simulated_provider import DevQSimulatedProvider
-from hardware.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
 if __name__ == "__main__":
     ibm = IBMSimulatedProvider()
 
-    DevQ(config_path='./config/example_devq.config.json') \
+    DevQ(config_path='./config/config_examples/devq_core_mimic.config.json') \
         .add_device(DevQSimulatedProvider().get_device("random", 7)) \
         .add_device(ibm.get_device("FakeNairobiV2")) \
         .add_device(ibm.get_device("FakeLagosV2")) \

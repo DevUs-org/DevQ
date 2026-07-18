@@ -17,9 +17,9 @@ Usage:
     shell  = QShell(kernel)
 '''
 
-from hardware.providers.base_provider import BaseProvider
+from providers.base_provider import BaseProvider
 from hardware.device import QuantumDevice
-from hardware.providers.devq.backend_factory import create_backend
+from providers.devq.backend_factory import create_backend
 
 
 class DevQSimulatedProvider(BaseProvider):

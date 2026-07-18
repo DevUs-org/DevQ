@@ -1,0 +1,7 @@
+{
+    "router": "noise",
+    "router_queue_weight": 0.5,
+    "router_noise_weight": 0.5,
+    "qubit_error_weight": 1,
+    "edge_error_weight": 9
+}

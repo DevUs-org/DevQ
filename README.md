@@ -19,7 +19,7 @@ The entire system initialises in three lines of user code:
 
 ```python
 from devq import DevQ
-from hardware.providers.devq.devq_simulated_provider import DevQSimulatedProvider
+from providers.devq.devq_simulated_provider import DevQSimulatedProvider
 
 DevQ(DevQSimulatedProvider().get_device("random", 10)).start()
 ```
@@ -438,6 +438,10 @@ keys:
 
 `qconfig` shows the provenance of every active value: `DevQ Core`,
 `<ProviderName>`, `User (global)`, or `User (dN)`.
+
+Ready-made example config files — including the ones used by the sanity
+test blocks (`router_only`, `round_robin`, per-device overrides, weight
+variants) — live in `config/config_examples/`.
 
 ### Scheduler, Allocator & Router Reference
 
