@@ -32,6 +32,8 @@ Config file format (JSON) — device keys and global keys may share one file:
         "scheduler":  "packing",      // fcfs | sdf | packing      (device)
         "allocator":  "noise_graph",  // static | graph | noise_graph (device)
         "shots":      1024,           //                            (device)
+        "qubit_error_weight": 0.1,    // noise cost weight α        (common)
+        "edge_error_weight":  0.9,    // noise cost weight β        (common)
         "router":     "noise"         // noise | round_robin       (global)
     }
 
@@ -42,6 +44,9 @@ Configuration priority:
         3. Global user config file   (DevQ(config_path=...))
         4. Per-device user config    (add_device(device, config_path))
     GLOBAL keys (router policy): core defaults ← global user file.
+    COMMON keys (qubit_error_weight, edge_error_weight): resolved in
+        BOTH scopes — the global copy steers the NoiseRouter yardstick,
+        each device's copy steers that device's allocator.
 '''
 
 from hardware.device_loader import load_device
@@ -70,6 +75,11 @@ _ALLOCATOR_MAP = {
     "static":      StaticAllocator,
     "graph":       GraphAllocator,
     "noise_graph": NoiseGraphAllocator,
+}
+
+_ROUTER_MAP = {
+    "noise": NoiseRouter,
+    "round_robin": RoundRobinRouter
 }
 
 
@@ -150,7 +160,10 @@ class DevQ:
                 device_config_path=device_config_path
             )
 
-            allocator = _ALLOCATOR_MAP[config["allocator"]]()
+            allocator = _ALLOCATOR_MAP[config["allocator"]](
+                qubit_error_weight = config["qubit_error_weight"],
+                edge_error_weight  = config["edge_error_weight"]
+            )
             memory    = MemoryManager(device, allocator)
             scheduler = _SCHEDULER_MAP[config["scheduler"]](
                 memory, None   # process_table injected below by Kernel wiring
@@ -180,9 +193,9 @@ class DevQ:
         shell.cmdloop()
 
     def _build_router(self, global_config):
-        if global_config["router"] == "round_robin":
-            return RoundRobinRouter()
-        return NoiseRouter(
-            queue_weight = global_config["router_queue_weight"],
-            noise_weight = global_config["router_noise_weight"]
+        return _ROUTER_MAP[global_config["router"]](
+            router_queue_weight = global_config["router_queue_weight"],
+            router_noise_weight = global_config["router_noise_weight"],
+            qubit_error_weight = global_config["qubit_error_weight"],
+            edge_error_weight = global_config["edge_error_weight"]
         )

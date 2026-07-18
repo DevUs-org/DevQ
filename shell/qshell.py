@@ -417,6 +417,10 @@ class QShell(cmd.Cmd):
                     val    = self._global_config.get(key, "")
                     source = self._global_provenance.get(key, "")
                     print(f"  {key:<12} =  {str(val):<14}  source: {source}")
+                for key in ("qubit_error_weight", "edge_error_weight"):
+                    val    = self._global_config.get(key, "")
+                    source = self._global_provenance.get(key, "")
+                    print(f"  {key:<12} =  {str(val):<14}  source: {source}")
                 print()
 
             for ctx in contexts:
@@ -432,16 +436,21 @@ class QShell(cmd.Cmd):
                     ("allocator", ALLOCATOR_LABELS.get(
                         ctx.config.get("allocator", ""), "")),
                     ("shots",     ""),
+                    ("qubit_error_weight", ""),
+                    ("edge_error_weight",  ""),
                 ]
 
                 for key, label in rows:
                     val    = ctx.config.get(key, "")
                     source = ctx.provenance.get(key, "")
+                    # Compact float display — normalised weights can be
+                    # long repeating decimals (e.g. 0.35714285714285715).
+                    val_str = f"{val:g}" if isinstance(val, float) else str(val)
                     if label:
-                        print(f"    {key:<12} =  {str(val):<14}  [{label}]  "
+                        print(f"    {key:<12} =  {val_str:<14}  [{label}]  "
                               f"source: {source}")
                     else:
-                        print(f"    {key:<12} =  {str(val):<14}  "
+                        print(f"    {key:<12} =  {val_str:<14}  "
                               f"source: {source}")
                 print()
 

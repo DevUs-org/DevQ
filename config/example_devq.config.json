@@ -1,5 +1,10 @@
 {
-    "scheduler": "fcfs",
-    "allocator": "static",
-    "shots": 512
+    "scheduler": "packing",
+    "allocator": "noise_graph",
+    "shots": 1024,
+    "router": "noise",
+    "qubit_error_weight": 0.1,
+    "edge_error_weight": 0.9,
+    "router_queue_weight": 0.5,
+    "router_noise_weight": 0.5
 }

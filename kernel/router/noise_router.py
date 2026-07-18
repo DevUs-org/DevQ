@@ -14,8 +14,13 @@ Scores every feasible candidate device and routes to the lowest score:
   best_case_cost  — dry-run the context's OWN configured allocator
                     against a fresh, fully-free pool clone, then score
                     the mapping it returns with the NoiseGraph cost
-                    formula S = α·Σ(qubit_error) + β·Σ(edge_error),
-                    α=0.1 / β=0.9. The formula is a yardstick applied
+                    formula S = α·Σ(qubit_error) + β·Σ(edge_error).
+                    α / β come from the GLOBAL-scope copy of
+                    qubit_error_weight / edge_error_weight (normalised
+                    to sum to 1; defaults 0.1 / 0.9) — one uniform
+                    ruler across all candidates, deliberately NOT each
+                    device's own allocator weights, so cross-device
+                    scores stay comparable. The formula is a yardstick applied
                     to the allocator's output, not an assumption about
                     which allocator is configured: a Static-configured
                     device is scored on the noise-oblivious block Static
@@ -32,15 +37,7 @@ default 0.5 / 0.5). Ties break by lower device index (deterministic).
 from kernel.router.base_router import BaseRouter
 from kernel.memory.qubit_pool import QubitPool
 
-ALPHA = 0.1   # qubit-error weight in the cost yardstick
-BETA  = 0.9   # edge-error weight  (two-qubit gate fidelity dominates NISQ noise)
-
-
 class NoiseRouter(BaseRouter):
-
-    def __init__(self, queue_weight=0.5, noise_weight=0.5):
-        self.queue_weight = queue_weight
-        self.noise_weight = noise_weight
 
     def select(self, qcb, candidates):
         pressures = [self._queue_pressure(ctx) for ctx in candidates]
@@ -50,7 +47,7 @@ class NoiseRouter(BaseRouter):
         c_norm = _min_max(costs)
 
         scored = [
-            (self.queue_weight * p + self.noise_weight * c, ctx.index, ctx)
+            (self.router_queue_weight * p + self.router_noise_weight * c, ctx.index, ctx)
             for p, c, ctx in zip(p_norm, c_norm, candidates)
         ]
 
@@ -72,6 +69,8 @@ class NoiseRouter(BaseRouter):
         failure scores worst rather than crashing routing.
         '''
         temp_pool = QubitPool(ctx.device.num_qubits)
+        ALPHA = self.qubit_error_weight
+        BETA = self.edge_error_weight
 
         try:
             mapping = ctx.memory_manager.allocator.allocate(

@@ -35,6 +35,13 @@ from abc import ABC, abstractmethod
 
 class BaseRouter(ABC):
 
+    def __init__(self, router_queue_weight=0.5, router_noise_weight=0.5, qubit_error_weight=0.1, edge_error_weight=0.9):
+        self.router_queue_weight = router_queue_weight
+        self.router_noise_weight = router_noise_weight
+        self.qubit_error_weight = qubit_error_weight
+        self.edge_error_weight  = edge_error_weight
+
+
     def route(self, qcb, contexts):
         '''
         Choose a device for a job, or explain why none is possible.

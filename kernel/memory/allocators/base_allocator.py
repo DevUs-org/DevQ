@@ -7,6 +7,10 @@ Defines the allocation contract that MemoryManager and the schedulers
 depend on. Any allocator (built-in or third-party, e.g. via qbench)
 must implement allocate() with this exact signature.
 
+Constructor: every allocator is built with the device's resolved cost
+weights (qubit_error_weight, edge_error_weight), normalised to sum to 1.
+Cost-based allocators use them for scoring; others ignore them.
+
 Contract:
     allocate(circuit, device, pool, max_qubit_error=None, max_edge_error=None)
         -> v2p_map (dict: virtual qubit index -> physical qubit index)
@@ -39,6 +43,17 @@ from .filtering import eligible_qubits
 
 
 class BaseAllocator(ABC):
+
+    def __init__(self, qubit_error_weight=0.1, edge_error_weight=0.9):
+        '''
+        Cost weights from the device's resolved config (qubit_error_weight
+        / edge_error_weight — arriving already normalised to sum to 1).
+        Every allocator receives them; cost-oblivious allocators (Static,
+        Graph) simply never read them — same precedent as Static ignoring
+        the edge threshold. Third-party allocators may use them freely.
+        '''
+        self.qubit_error_weight = qubit_error_weight
+        self.edge_error_weight  = edge_error_weight
 
     @abstractmethod
     def allocate(self, circuit, device, pool,

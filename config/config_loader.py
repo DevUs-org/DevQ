@@ -3,7 +3,7 @@ Tags: Main
 
 ConfigLoader — Four-level configuration system for DevQ.
 
-Keys are split into two scopes:
+Keys are split into three scopes:
 
   DEVICE keys (scheduler, allocator, shots) — resolved independently
   for every attached device through the full cascade
@@ -21,6 +21,16 @@ Keys are split into two scopes:
   expressing system routing policy would be a layer violation;
   such keys are warned about and ignored.
 
+  COMMON keys (qubit_error_weight, edge_error_weight) — the α/β of the
+  noise cost S = α·Σ(qubit_error) + β·Σ(edge_error); one concept with
+  two consumers, so the pair is resolved in BOTH scopes: the global
+  copy feeds the NoiseRouter's scoring yardstick (one uniform ruler
+  across all candidates), each device's copy rides the full device
+  cascade and feeds that device's allocator. Every resolved weight
+  pair (including the router weights) is normalised to sum to 1 —
+  only the ratio matters, so users may write 1/9, 0.1/0.9, or 2/18
+  equivalently; qconfig shows the effective normalised values.
+
 Provenance is tracked for every key so qconfig can show where each
 active value came from: "DevQ Core", "<ProviderName>",
 "User (global)", "User (dN)".
@@ -33,9 +43,9 @@ import os
 # ── Core defaults ─────────────────────────────────────────────────────────────
 
 DEVICE_DEFAULTS = {
-    "scheduler": "packing",
-    "allocator": "noise_graph",
-    "shots":     1024
+    "scheduler":          "packing",
+    "allocator":          "noise_graph",
+    "shots":              1024
 }
 
 GLOBAL_DEFAULTS = {
@@ -44,8 +54,14 @@ GLOBAL_DEFAULTS = {
     "router_noise_weight": 0.5
 }
 
+COMMON_DEFAULTS = {
+    "qubit_error_weight": 0.1,
+    "edge_error_weight":  0.9
+}
+
 DEVICE_KEYS = set(DEVICE_DEFAULTS)
 GLOBAL_KEYS = set(GLOBAL_DEFAULTS)
+COMMON_KEYS = set(COMMON_DEFAULTS)
 
 # ── Valid values ──────────────────────────────────────────────────────────────
 
@@ -53,6 +69,8 @@ VALID_VALUES = {
     "scheduler":           ["fcfs", "sdf", "packing"],
     "allocator":           ["static", "graph", "noise_graph"],
     "shots":               None,   # any positive integer
+    "qubit_error_weight":  None,   # any non-negative number (normalised)
+    "edge_error_weight":   None,   # any non-negative number (normalised)
     "router":              ["noise", "round_robin"],
     "router_queue_weight": None,   # any float in [0, 1]
     "router_noise_weight": None    # any float in [0, 1]
@@ -90,8 +108,8 @@ def load_global_config(config_path=None):
     Returns:
         (config, provenance) for GLOBAL keys only
     '''
-    config     = dict(GLOBAL_DEFAULTS)
-    provenance = {k: "DevQ Core" for k in GLOBAL_DEFAULTS}
+    config     = dict(GLOBAL_DEFAULTS) | dict(COMMON_DEFAULTS)
+    provenance = {k: "DevQ Core" for k in (GLOBAL_DEFAULTS | COMMON_DEFAULTS)}
 
     if config_path:
         user_cfg = _load_user_config(config_path)
@@ -101,6 +119,9 @@ def load_global_config(config_path=None):
             if _validate_key_value(key, val, source="User (global)"):
                 config[key]     = val
                 provenance[key] = "User (global)"
+
+    _normalise('router_queue_weight', 'router_noise_weight', config, provenance)
+    _normalise('qubit_error_weight', 'edge_error_weight', config, provenance)
 
     return config, provenance
 
@@ -121,8 +142,8 @@ def load_device_config(provider, index,
     Returns:
         (config, provenance) for DEVICE keys only
     '''
-    config     = dict(DEVICE_DEFAULTS)
-    provenance = {k: "DevQ Core" for k in DEVICE_DEFAULTS}
+    config     = dict(DEVICE_DEFAULTS) | dict(COMMON_DEFAULTS)
+    provenance = {k: "DevQ Core" for k in (DEVICE_DEFAULTS | COMMON_DEFAULTS)}
 
     # Level 2 — provider preferred config
     provider_prefs = _load_provider_config(provider)
@@ -151,7 +172,44 @@ def load_device_config(provider, index,
                 config[key]     = val
                 provenance[key] = label
 
+    _normalise('qubit_error_weight', 'edge_error_weight', config, provenance)
+
     return config, provenance
+
+
+def _normalise(s1, s2, config, provenance):
+    '''
+    Normalise the resolved (qubit_error_weight, edge_error_weight) pair
+    to sum to 1 — only the ratio between the two affects which block the
+    allocator picks, so normalising keeps allocation behaviour identical
+    while putting cost scores (S) on one comparable scale everywhere.
+    Users may therefore write the pair on any scale: 1/9, 0.1/0.9, and
+    2/18 are all equivalent. Each key cascades independently, THEN the
+    pair is normalised. qconfig shows the effective normalised values.
+
+    A both-zero pair would make every candidate block score 0, silently
+    degrading allocation to "first block found" — rejected here with a
+    fall back to core defaults.
+    '''
+    alpha = float(config[s1])
+    beta  = float(config[s2])
+    total = alpha + beta
+    defaults = {**GLOBAL_DEFAULTS, **DEVICE_DEFAULTS, **COMMON_DEFAULTS}
+
+    if total <= 0.0:
+        print(f"[Config] Warning: {s1} and {s2} "
+              "are both 0. Falling back "
+              "to core defaults "
+              f"({defaults[s1]}/"
+              f"{defaults[s2]}).")
+        config[s1] = defaults[s1]
+        config[s2] = defaults[s2]
+        provenance[s1] = "DevQ Core"
+        provenance[s2] = "DevQ Core"
+        return
+
+    config[s1] = alpha / total
+    config[s2] = beta / total
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
@@ -211,6 +269,14 @@ def _validate_key_value(key, val, source) -> bool:
         if not isinstance(val, int) or isinstance(val, bool) or val <= 0:
             print(f"[Config] Warning: invalid value '{val}' for 'shots' from "
                   f"{source} — expected a positive integer. Ignoring.")
+            return False
+        return True
+
+    if key in ("qubit_error_weight", "edge_error_weight"):
+        if not isinstance(val, (int, float)) or isinstance(val, bool) \
+                or float(val) < 0.0:
+            print(f"[Config] Warning: invalid value '{val}' for '{key}' from "
+                  f"{source} — expected a non-negative number. Ignoring.")
             return False
         return True
 

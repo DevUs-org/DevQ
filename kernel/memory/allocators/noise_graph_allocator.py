@@ -4,9 +4,11 @@ Tags: Default
 NoiseGraphAllocator — BFS connectivity search + weighted noise cost.
 
 Scores every candidate connected block with
-    S = α·Σ(qubit_error) + β·Σ(edge_error),   α=0.1, β=0.9
-and returns the minimum-cost block. β dominates because two-qubit
-gate fidelity is the dominant NISQ noise source. For 2-qubit
+    S = α·Σ(qubit_error) + β·Σ(edge_error)
+and returns the minimum-cost block. α and β come from the device's
+resolved config (qubit_error_weight / edge_error_weight, normalised
+to sum to 1; defaults 0.1 / 0.9 — β dominates because two-qubit
+gate fidelity is the dominant NISQ noise source). For 2-qubit
 circuits, connected pairs are enumerated directly from the edge
 error map for efficiency. Thresholds are hard constraints applied
 before cost optimisation; feasible() additionally requires a
@@ -22,8 +24,8 @@ class NoiseGraphAllocator(BaseAllocator):
 
     def allocate(self, circuit, device, pool,
                  max_qubit_error=None, max_edge_error=None):
-        ALPHA = 0.1 # Node Cost Factor
-        BETA = 0.9 # Edge Cost Factor
+        ALPHA = self.qubit_error_weight  # node cost factor
+        BETA  = self.edge_error_weight   # edge cost factor
         best_score = float("inf")
 
         required = circuit.num_qubits

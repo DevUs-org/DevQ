@@ -123,8 +123,10 @@ Three interchangeable allocators behind `BaseAllocator`:
 - **GraphAllocator** *(Alt)* — BFS over the topology graph; guarantees a
   connected subgraph.
 - **NoiseGraphAllocator** *(default)* — BFS + weighted cost
-  `S = α·Σ(qubit_error) + β·Σ(edge_error)`, α=0.1, β=0.9 (two-qubit gate
-  fidelity dominates NISQ noise).
+  `S = α·Σ(qubit_error) + β·Σ(edge_error)`. α and β are the common-scope
+  config keys `qubit_error_weight` / `edge_error_weight` (defaults 0.1 /
+  0.9 — two-qubit gate fidelity dominates NISQ noise), so the cost
+  balance is tunable per device through the full config cascade.
 
 All allocators honour **hard noise thresholds**: qubits/edges whose error
 exceeds the job's `max_qubit_error` / `max_edge_error` are excluded from
@@ -165,9 +167,12 @@ scheduler):
     normalised across candidates) and routes to the lowest score. Queue
     pressure = queued + running jobs on the device. Best-case cost dry-runs
     the device's *own configured allocator* on an empty pool clone and
-    scores the returned mapping with the S yardstick — the score reflects
-    the mapping quality the job would actually receive under that device's
-    real policy. Ties break deterministically by lower device index (note:
+    scores the returned mapping with the S yardstick (α/β = the
+    global-scope copy of `qubit_error_weight` / `edge_error_weight` — one
+    uniform ruler across all candidates, deliberately not each device's
+    own allocator weights, so cross-device scores stay comparable) — the
+    score reflects the mapping quality the job would actually receive
+    under that device's real policy. Ties break deterministically by lower device index (note:
     with exactly two candidates and equal weights, normalisation makes the
     terms mirror each other, so the index tiebreak frequently decides).
   - **RoundRobinRouter** *(Alt)* — cycles through feasible devices in index
@@ -377,7 +382,7 @@ with a clear error and no job is created.
 
 ## Configuration
 
-Configuration keys are split into two scopes.
+Configuration keys are split into three scopes.
 
 **Device keys** (`scheduler`, `allocator`, `shots`) are resolved
 independently for every attached device through a four-level cascade,
@@ -392,7 +397,28 @@ later levels overriding earlier ones:
 are resolved once for the whole system: core defaults ← global user file.
 Providers deliberately **cannot** set global keys — a provider expressing
 system routing policy would be a layer violation; such keys are warned
-about and ignored.
+about and ignored. Like the common keys below, the router weight pair
+accepts any non-negative numbers and is normalised to sum to 1 at
+resolution time (scaling both weights never changes which device wins).
+
+**Common keys** (`qubit_error_weight`, `edge_error_weight`) are the α / β
+of the noise cost `S = α·Σ(qubit_error) + β·Σ(edge_error)` — one concept
+with two consumers, so the pair is resolved in **both** scopes. The
+global-scope copy feeds the NoiseRouter's scoring yardstick (one uniform
+ruler across all candidate devices); each device's copy rides the full
+four-level device cascade and feeds that device's allocator. Setting the
+weights once in the global file therefore moves the yardstick and every
+device's allocator together; a per-device file overrides only that
+device's allocator copy. The keys accept any non-negative numbers and
+each resolved pair is **normalised to sum to 1** — only the ratio
+matters, so `1`/`9`, `0.1`/`0.9`, and `2`/`18` are all equivalent, and
+normalising keeps S values on one comparable scale everywhere. Keys
+cascade independently, *then* the pair is normalised (overriding only
+one of the two mixes it with the other's inherited value). A both-zero
+pair falls back to core defaults with a warning. `qconfig` shows the
+effective normalised values in both the global section and each device
+section. Allocators without a cost model (Static, Graph) ignore the
+weights — the same precedent as Static ignoring edge thresholds.
 
 One JSON file may freely mix both scopes; each loader reads only its own
 keys:
@@ -402,6 +428,8 @@ keys:
     "scheduler": "packing",
     "allocator": "noise_graph",
     "shots": 1024,
+    "qubit_error_weight": 0.1,
+    "edge_error_weight": 0.9,
     "router": "noise",
     "router_queue_weight": 0.5,
     "router_noise_weight": 0.5
@@ -420,9 +448,9 @@ keys:
 | `packing` | `PackingScheduler` | **default** | device | SDF + greedy bin-packing (TempPool, two-phase commit); concurrent circuits on disjoint qubits |
 | `static` | `StaticAllocator` | Alt | device | First available block; no topology/noise awareness; ignores edge thresholds by design |
 | `graph` | `GraphAllocator` | Alt | device | BFS over topology graph; guarantees connected subgraph |
-| `noise_graph` | `NoiseGraphAllocator` | **default** | device | BFS + weighted cost S = α·Σ(qubit_err) + β·Σ(edge_err), α=0.1, β=0.9 |
+| `noise_graph` | `NoiseGraphAllocator` | **default** | device | BFS + weighted cost S = α·Σ(qubit_err) + β·Σ(edge_err); α/β via the common-scope `qubit_error_weight`/`edge_error_weight` (defaults 0.1/0.9, normalised to sum 1) |
 | `round_robin` | `RoundRobinRouter` | Alt | global | Cycles through feasible devices in index order; load/noise-oblivious baseline |
-| `noise` | `NoiseRouter` | **default** | global | Routes to lowest `w_q·queue_pressure + w_n·best_case_cost` over feasible devices; weights via `router_queue_weight` / `router_noise_weight` (floats in [0,1], default 0.5 each) |
+| `noise` | `NoiseRouter` | **default** | global | Routes to lowest `w_q·queue_pressure + w_n·best_case_cost` over feasible devices; weights via `router_queue_weight` / `router_noise_weight` (any non-negative numbers, normalised to sum 1, default 0.5 each) |
 
 Because per-device FCFS queues sit below the router, FCFS ordering is
 per-device: global submission order is approximately preserved via routing
@@ -441,7 +469,10 @@ knowledge of the kernel, allocators, schedulers, or routers required;
 
 **New allocator** — subclass `BaseAllocator`, implement `allocate()` per the
 documented contract (reserve via `pool.allocate()` on success; raise on
-failure; honour thresholds as hard constraints). Optionally override
+failure; honour thresholds as hard constraints). Every allocator is
+constructed with the device's resolved cost weights
+(`self.qubit_error_weight` / `self.edge_error_weight`, normalised to sum
+to 1) — use them for cost scoring or ignore them freely. Optionally override
 `feasible(circuit, device, max_qubit_error, max_edge_error) → None | reason`
 — the base default checks eligible-qubit count; override it if your
 allocator has stricter existence requirements (see the graph allocators'
