@@ -492,3 +492,22 @@ base class handles rejection-reason aggregation. Keep `select()`
 deterministic (break ties by lower device index). `RoundRobinRouter` is the
 minimal reference; `NoiseRouter` shows how to reuse the per-device allocator
 machinery for scoring.
+
+---
+
+## Acknowledgements
+
+The author thanks Prof. Yiming Zeng for guidance throughout CS 580Q:
+Quantum Computing and Networks at Binghamton University, and Karan Patil
+for his contributions to the baseline scheduling strategies (FCFS and
+SDF) in an earlier phase of DevQ.
+
+### Use of AI Tools
+
+Large language models were used as development aids in this work:
+Claude Fable 5 (Anthropic) for code generation, debugging, and figure
+preparation; GPT-5.5 (OpenAI) for architecture refinement and design
+brainstorming; and Gemini 3.5 Flash (Google) for literature search.
+All designs, AI-assisted code, and text were reviewed, tested, and
+validated by the author, who takes sole responsibility for the content
+and correctness of this project.
