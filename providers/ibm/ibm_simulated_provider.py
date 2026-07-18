@@ -37,7 +37,7 @@ Usage:
     shell  = QShell(kernel)
 '''
 
-from hardware.providers.base_provider import BaseProvider
+from providers.base_provider import BaseProvider
 from hardware.device import QuantumDevice
 
 
