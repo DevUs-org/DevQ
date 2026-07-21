@@ -350,6 +350,15 @@ queue for a later `qrunpack`; if it is unsatisfiable everywhere allowed, it
 is REJECTED. `qrun` accepts exactly one job (all flags, including
 `--exec`/`--no-exec`, are supported).
 
+**Command history.** Interactive sessions keep readline history in
+`~/.devq_history`, capped at the last 1000 commands. A file that has
+grown past 4 MB is trimmed on startup before being read, so an
+oversized history repairs itself rather than slowing every launch.
+Shells built programmatically via `DevQ.build()` skip readline
+entirely — history is meaningless for a driven session, and on macOS
+(where `readline` is backed by libedit) reading a large history file
+costs enormous amounts of memory.
+
 ---
 
 ## JobSpec: Job-Level Noise Thresholds & Device Constraints

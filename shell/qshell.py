@@ -16,6 +16,7 @@ a single-device session simply shows one d0 section.
 '''
 
 import cmd
+import collections
 import os
 import re
 import time
@@ -29,27 +30,93 @@ from shell.parser import parse_job_args
 _DEVICE_RE = re.compile(r"^d(\d+)$")
 
 
+# Cap the on-disk history. Unbounded, this file grows for the life of
+# the project and every session pays to read it back — on macOS, where
+# readline is backed by libedit, reading a large history file consumes
+# memory catastrophically (a 6 GB file cost ~25 GB of RSS).
+HISTORY_LIMIT = 1000
+
+# Refuse to read a history file larger than this. set_history_length
+# only bounds what gets WRITTEN, so a file that grew before the cap
+# existed would still be read in full on the next launch — the cap
+# would never get a chance to apply. Truncating on read makes the fix
+# self-healing rather than dependent on a clean prior shutdown.
+HISTORY_MAX_BYTES = 4 * 1024 * 1024
+
+
 class QShell(cmd.Cmd):
     prompt = "devq> "
 
-    def __init__(self, kernel, global_config=None, global_provenance=None):
+    def __init__(self, kernel, global_config=None, global_provenance=None,
+                 interactive=True):
+        '''
+        Args:
+            interactive: whether this shell is driven by a human at a
+                         terminal. False disables readline history —
+                         command history is meaningless for a shell
+                         driven through onecmd(), and loading it is
+                         actively harmful: on macOS the readline module
+                         is backed by libedit, whose read_history_file
+                         can consume enormous amounts of memory on a
+                         large history file. A harness that builds many
+                         shells per process would pay that cost every
+                         time, and every shell would also register an
+                         atexit hook that rewrites the file.
+        '''
         super().__init__()
         self.kernel             = kernel
         self._global_config     = global_config     or {}
         self._global_provenance = global_provenance or {}
         self._last_command = None
-        readline.parse_and_bind("tab: complete")
-        self._history_file = os.path.expanduser("~/.devq_history")
+        self._history_file = None
+
+        if interactive:
+            self._history_file = os.path.expanduser("~/.devq_history")
+            readline.parse_and_bind("tab: complete")
+            self._load_history()
+            atexit.register(self._save_history)
+
+    def _load_history(self):
+        '''
+        Read command history, trimming the file first if it has grown
+        past HISTORY_MAX_BYTES. Any failure here is non-fatal — history
+        is a convenience, and a corrupt or unreadable file must never
+        stop a session from starting.
+        '''
+        path = self._history_file
+        try:
+            if os.path.getsize(path) > HISTORY_MAX_BYTES:
+                self._truncate_history(path)
+        except OSError:
+            return          # missing or unreadable — nothing to load
 
         try:
-            readline.read_history_file(self._history_file)
-        except FileNotFoundError:
+            readline.read_history_file(path)
+        except (OSError, ValueError):
             pass
 
-        atexit.register(self._save_history)
+    @staticmethod
+    def _truncate_history(path):
+        '''
+        Keep only the last HISTORY_LIMIT lines of an oversized history
+        file, reading from the end so an enormous file is never pulled
+        into memory whole.
+        '''
+        try:
+            keep = collections.deque(maxlen=HISTORY_LIMIT)
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    keep.append(line)
+            with open(path, "w", encoding="utf-8") as f:
+                f.writelines(keep)
+        except OSError:
+            pass
 
     def _save_history(self):
+        if not self._history_file:
+            return
         try:
+            readline.set_history_length(HISTORY_LIMIT)
             readline.write_history_file(self._history_file)
         except Exception:
             pass

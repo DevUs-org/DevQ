@@ -33,6 +33,7 @@ device and feasible() ignores pool state.
 
 import time
 
+from circuits.execution_result import ExecutionResult
 from kernel.process.process_table import ProcessTable
 from kernel.process.lifecycle import JobStates
 
@@ -215,12 +216,38 @@ class Kernel:
 
         self._pending = still_pending
 
-    def _wait_for(self, qcb, poll_interval=0.02):
-        '''Block until a specific job's future resolves (qrun path).'''
+    def _wait_for(self, qcb, poll_interval=0.02, timeout=300):
+        '''
+        Block until a specific job's future resolves (qrun path).
+
+        Bounded by `timeout`: a future that never resolves — a wedged
+        provider, a dead executor — would otherwise spin here forever,
+        and the caller has no way to distinguish that from slow work.
+        Failing loudly after five minutes is strictly better than a
+        process that appears to hang.
+        '''
+        deadline = time.monotonic() + timeout
+
         while qcb in self._pending:
             self._resolve_pending()
-            if qcb in self._pending:
-                time.sleep(poll_interval)
+            if qcb not in self._pending:
+                return
+            if time.monotonic() > deadline:
+                self._pending.remove(qcb)
+                ctx = self.contexts[qcb.device_index]
+                ctx.memory_manager.free(list(qcb.v2p_map.values()))
+                ctx.running_jobs -= 1
+                qcb.state  = JobStates.FAILED
+                qcb.result = ExecutionResult(
+                    counts  = None,
+                    success = False,
+                    error   = (f"execution did not resolve within {timeout}s "
+                               f"— provider or executor may be wedged")
+                )
+                print(f"[Kernel] Job {qcb.job_id} FAILED. "
+                      f"Error: {qcb.result.error}")
+                return
+            time.sleep(poll_interval)
 
     # ── QShell API ────────────────────────────────────────────────────────────
 

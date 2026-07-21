@@ -178,7 +178,19 @@ class IBMSimulatedProvider(BaseProvider):
 
                 qc.measure(range(num_virtual), range(num_virtual))
 
-                sim    = AerSimulator(noise_model=noise_model)
+                # Pin Aer's internal parallelism. Left unset, Aer sizes
+                # its thread pool from the CPU count and each thread
+                # allocates its own simulation buffers — multiplied by
+                # the shared executor's workers and by every session
+                # alive in the process, memory grows with cores rather
+                # than with work. These jobs are small; one thread each
+                # is both sufficient and predictable across machines.
+                sim = AerSimulator(
+                    noise_model              = noise_model,
+                    max_parallel_threads     = 1,
+                    max_parallel_experiments = 1,
+                    max_parallel_shots       = 1,
+                )
                 t_circ = transpile(qc, sim,
                                    initial_layout = initial_layout,
                                    seed_transpiler = run_seed)

@@ -28,12 +28,24 @@ Exit code is 0 only if every block passes.
 
 import argparse
 import contextlib
+import gc
+import os
 import io
 import itertools
 import re
 import sys
 import threading
 import traceback
+
+# MUST precede any Qiskit/Aer import: these are read when the native
+# libraries initialise their thread pools. Aer otherwise sizes its pool
+# from the CPU count, and each thread allocates its own simulation
+# buffers — on a many-core machine that multiplies against the shared
+# executor's workers and against every session alive in the process,
+# so memory grows with cores rather than with work.
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+             "NUMEXPR_NUM_THREADS", "RAYON_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 
 from circuits.execution_result import shutdown_executor
 from devq import DevQ, DevQError
@@ -45,6 +57,7 @@ BELL   = "test_circuits/bell.qasm"
 GHZ    = "test_circuits/ghz.qasm"
 
 SEED = 42   # fixed everywhere so mock-device topologies never flap
+
 
 
 # ── Session construction ──────────────────────────────────────────────────────
@@ -731,6 +744,19 @@ def main():
             emit(f"  {name:26} {(fn.__doc__ or '').strip().splitlines()[0]}")
         return 0
 
+    # Hard ceiling on the process. If a regression reintroduces runaway
+    # allocation, the suite dies with a clear message instead of driving
+    # the machine into swap — an OOM that takes the desktop down is a far
+    # worse failure than a failed test.
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        ceiling    = 4 * 1024 ** 3      # 4 GB is ample; the suite peaks ~0.4
+        if hard == resource.RLIM_INFINITY or hard > ceiling:
+            resource.setrlimit(resource.RLIMIT_AS, (ceiling, hard))
+    except (ImportError, ValueError, OSError):
+        pass                            # not supported here; carry on
+
     detail = args.checks or args.verbose
     width  = max(len(n) for n, _ in blocks)
     failed = []
@@ -740,8 +766,12 @@ def main():
         TRACE.reset()
         # Each block builds its own sessions; reclaim their executor
         # threads before the next one rather than accumulating workers
-        # across every block in the suite.
+        # across every block in the suite. gc.collect() then releases the
+        # finished sessions themselves — every one holds fake-backend
+        # calibration data and a NoiseModel, which is the bulk of the
+        # per-session footprint.
         shutdown_executor()
+        gc.collect()
 
         if detail:
             summary = (fn.__doc__ or "").strip().splitlines()[0]

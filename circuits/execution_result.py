@@ -96,8 +96,14 @@ def submit_async(fn, *args, **kwargs) -> AsyncExecutionFuture:
     '''
     global _EXECUTOR
     if _EXECUTOR is None:
+        # Deliberately small. Each in-flight job holds a simulator and
+        # its noise model, so worker count sets the peak memory floor —
+        # and DevQ's own concurrency is what the packing scheduler
+        # exploits, not raw thread count. Oversizing this against a
+        # many-core machine multiplies memory without improving
+        # throughput for circuits this size.
         _EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-            max_workers=8, thread_name_prefix="devq-exec"
+            max_workers=4, thread_name_prefix="devq-exec"
         )
         atexit.register(shutdown_executor)
     return AsyncExecutionFuture(_EXECUTOR.submit(fn, *args, **kwargs))

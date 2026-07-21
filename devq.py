@@ -228,9 +228,9 @@ class DevQ:
         Raises:
             DevQError: if no devices are attached.
         '''
-        self.build().cmdloop()
+        self.build(interactive=True).cmdloop()
 
-    def build(self):
+    def build(self, interactive=False):
         '''
         Resolve configs, build one DeviceContext per attached device
         and the configured router, wire everything into the Kernel and
@@ -239,6 +239,12 @@ class DevQ:
         Everything start() does except blocking on input, so a session
         can be driven programmatically via shell.onecmd(...). Used by
         run_tests.py; also the hook for any non-interactive front end.
+
+        Args:
+            interactive: True only when a human will drive this shell at
+                         a terminal (start() sets it). Programmatic
+                         callers leave it False, which skips readline
+                         history setup — see QShell.__init__.
 
         Returns:
             QShell, fully wired and ready to accept commands.
@@ -294,7 +300,8 @@ class DevQ:
         return QShell(
             kernel            = kernel,
             global_config     = global_config,
-            global_provenance = global_provenance
+            global_provenance = global_provenance,
+            interactive       = interactive
         )
 
     def _build_router(self, global_config):
