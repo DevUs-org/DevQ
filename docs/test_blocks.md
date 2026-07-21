@@ -1,7 +1,19 @@
 # DevQ Sanity Test Plan
 
-Manual verification blocks covering Phases 0–5.1. Run `python main.py`
-from the project root and paste each block's commands into the shell.
+Verification blocks covering Phases 0–5.1.
+
+**Most of this is automated.** `python run_tests.py` from the project
+root runs every block below plus several that were impractical by hand
+(the full scheduler × allocator × router matrix, single-device
+sessions, name validation). Each automated block builds its own
+session, so no entry point needs editing. Use `--list` to see the
+blocks, `-k PATTERN` to run a subset.
+
+This document remains the human-readable specification of what each
+block checks and why, and the reference for driving a session by hand:
+run `python example.py` and paste a block's commands into the shell.
+Where a block below says "change `example.py`", the runner does the
+equivalent by constructing the session directly.
 
 Blocks are **cumulative within a session** unless a block says
 *fresh session* — job IDs continue from the previous block, so running
@@ -48,7 +60,7 @@ deterministic checks pin `--exec` or exclude `d0`.
 
 ## Block 1 — Devices and config
 
-**Config:** `router_only.config.json` (global, as `main.py`'s
+**Config:** `router_only.config.json` (global, as `example.py`'s
 `config_path`). Fresh session.
 
 ```
@@ -230,7 +242,7 @@ it lands on `d0`, counts are uniform mock counts (roughly equal across
 
 **Config:** `router_only.config.json` (global) **plus**
 `d1.static.config.json` as the per-device config on the Nairobi line.
-Change `main.py` to:
+Change `example.py` to:
 
 ```python
 .add_device(ibm.get_device("FakeNairobiV2"),
@@ -238,7 +250,7 @@ Change `main.py` to:
             name="nairobi")
 ```
 
-Relaunch (fresh session), and revert `main.py` afterwards.
+Relaunch (fresh session), and revert `example.py` afterwards.
 
 ```
 qconfig d1
@@ -259,9 +271,9 @@ instead of noise_graph's `{0:1, 1:2}` — Static ignores noise by design.
 
 ## Block 9 — Common-scope noise cost weights
 
-**Config:** `weights_1_9.config.json` (global, as `main.py`'s
+**Config:** `weights_1_9.config.json` (global, as `example.py`'s
 `config_path`) **plus** `d1.edge_only.config.json` as the per-device
-config on the Nairobi line — same `main.py` edit as Block 8, swapping
+config on the Nairobi line — same `example.py` edit as Block 8, swapping
 the path. Relaunch (fresh session); revert afterwards. The bonus check
 uses `zero_weights.config.json` as a per-device or global file in a
 separate launch.
@@ -295,7 +307,7 @@ falls back to 0.1/0.9 [DevQ Core].
 ## Block 10 — Determinism and seeding
 
 **Phase 5.1.** Same three devices and config as every other block
-(`router_only.config.json`); the only difference is `main.py`'s
+(`router_only.config.json`); the only difference is `example.py`'s
 `--seed` flag, which passes a seed to both providers at construction.
 
 Run the command list **four times** as four separate fresh launches,
@@ -303,14 +315,14 @@ saving each session's output:
 
 | Run | Command | Role |
 |---|---|---|
-| A | `python main.py --seed 42` | reproducibility |
-| B | `python main.py --seed 42` | reproducibility |
-| C | `python main.py` | unseeded control |
-| D | `python main.py` | unseeded control |
+| A | `python example.py --seed 42` | reproducibility |
+| B | `python example.py --seed 42` | reproducibility |
+| C | `python example.py` | unseeded control |
+| D | `python example.py` | unseeded control |
 
 Diff the full transcripts A vs B, then C vs D. This is the **only**
 block that asserts counts — seeding is what makes them assertable.
-`python main.py --help` should list `--seed`.
+`python example.py --help` should list `--seed`.
 
 ```
 qerrors q d0

@@ -222,9 +222,26 @@ class DevQ:
 
     def start(self):
         '''
+        Build the session and hand control to the interactive shell.
+        Blocks until the user exits.
+
+        Raises:
+            DevQError: if no devices are attached.
+        '''
+        self.build().cmdloop()
+
+    def build(self):
+        '''
         Resolve configs, build one DeviceContext per attached device
-        and the configured router, wire everything into the Kernel,
-        attach QShell, start the session.
+        and the configured router, wire everything into the Kernel and
+        return the QShell — WITHOUT starting the command loop.
+
+        Everything start() does except blocking on input, so a session
+        can be driven programmatically via shell.onecmd(...). Used by
+        run_tests.py; also the hook for any non-interactive front end.
+
+        Returns:
+            QShell, fully wired and ready to accept commands.
 
         Raises:
             DevQError: if no devices are attached.
@@ -274,12 +291,11 @@ class DevQ:
         for ctx in contexts:
             ctx.scheduler.process_table = kernel.process_table
 
-        shell = QShell(
+        return QShell(
             kernel            = kernel,
             global_config     = global_config,
             global_provenance = global_provenance
         )
-        shell.cmdloop()
 
     def _build_router(self, global_config):
         return _ROUTER_MAP[global_config["router"]](

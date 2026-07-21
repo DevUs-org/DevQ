@@ -34,6 +34,9 @@ DevQ(config_path="~/devq.config.json") \
     .start()
 ```
 
+`example.py` is a runnable reference session; `run_tests.py` verifies the
+whole plugin matrix (`python run_tests.py --list` to see the blocks).
+
 Devices are indexed `d0..dn` in add order — stable for the session, shown by
 `qdevices`, and referenced by `--exec`/`--no-exec` flags and device-scoped
 commands. `add_devices([d1, d2, ...])` attaches several at once;
@@ -496,12 +499,12 @@ IBMSimulatedProvider(seed=42)                            # reproducible counts
 `seed=None` (the default) preserves fully unseeded behaviour, byte-identical
 to a build without the parameter.
 
-The example `main.py` wires this to a `--seed` flag, so a whole session can
+The example `example.py` wires this to a `--seed` flag, so a whole session can
 be made reproducible without editing code:
 
 ```bash
-python main.py              # unseeded (default)
-python main.py --seed 42    # identical devices and counts every launch
+python example.py              # unseeded (default)
+python example.py --seed 42    # identical devices and counts every launch
 ```
 
 Two launches with the same seed produce byte-identical transcripts —
@@ -552,7 +555,7 @@ order — the standard two-level-scheduling tradeoff.
 | Document | Contents |
 |---|---|
 | [`docs/cost-model.md`](docs/cost-model.md) | Formal statement of the block cost `S` and the router's device score, with notation and worked values |
-| [`docs/test_blocks.md`](docs/test_blocks.md) | Manual sanity test plan — ten blocks covering routing, allocation, config cascade, error handling and determinism |
+| [`docs/test_blocks.md`](docs/test_blocks.md) | Sanity test plan — what each block checks and why; run it with `python run_tests.py` |
 
 ---
 

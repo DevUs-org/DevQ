@@ -79,8 +79,19 @@ class PackingScheduler(BaseScheduler):
         None on failure.
         '''
         class TempPool:
+            '''
+            Stand-in for QubitPool during the trial pass. It must
+            implement the FULL pool interface (free_qubits, available,
+            allocate, free) — allocators are written against QubitPool
+            and any missing method surfaces as an AttributeError that
+            the caller's except-clause would silently turn into "no
+            mapping", leaving the job unallocated AND unrejected.
+            '''
             def __init__(self, free):
                 self.free_qubits = free
+
+            def available(self):
+                return sorted(self.free_qubits)
 
             def allocate(self, qubits):
                 for q in qubits:
@@ -88,6 +99,10 @@ class PackingScheduler(BaseScheduler):
                         raise Exception("Not enough qubits")
                 for q in qubits:
                     self.free_qubits.remove(q)
+
+            def free(self, qubits):
+                for q in qubits:
+                    self.free_qubits.add(q)
 
         temp_pool = TempPool(set(temp_free))
 
