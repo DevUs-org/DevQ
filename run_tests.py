@@ -395,7 +395,7 @@ def block_single_device_devq_provider():
 # ── Plugin matrix ─────────────────────────────────────────────────────────────
 
 def block_plugin_matrix():
-    '''Every scheduler x allocator x router combination runs to completion'''
+    '''Every scheduler × allocator × router combination runs to completion'''
     import devq as D
     import json
     import os

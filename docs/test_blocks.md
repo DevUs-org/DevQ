@@ -1,25 +1,39 @@
 # DevQ Sanity Test Plan
 
-Verification blocks covering Phases 0–5.1.
+Specification for the sanity blocks in `run_tests.py`, covering Phases
+0–5.1.
 
-**Most of this is automated.** `python run_tests.py` from the project
-root runs every block below plus several that were impractical by hand
-(the full scheduler × allocator × router matrix, single-device
-sessions, name validation). Each automated block builds its own
-session, so no entry point needs editing. Use `--list` to see the
-blocks, `-k PATTERN` to run a subset.
+`run_tests.py` asserts **what** each block expects. This document
+records **why** those values are correct — the S-cost arithmetic behind
+a mapping, the reason a device is rejected, the physics behind an error
+rate. When a block fails, the assertion tells you something changed;
+this tells you whether the change was a regression or an improvement.
 
-This document remains the human-readable specification of what each
-block checks and why, and the reference for driving a session by hand:
-run `python example.py` and paste a block's commands into the shell.
-Where a block below says "change `example.py`", the runner does the
-equivalent by constructing the session directly.
+## Running
 
-Blocks are **cumulative within a session** unless a block says
-*fresh session* — job IDs continue from the previous block, so running
-them out of order will shift every ID.
+```bash
+python run_tests.py              # all 20 blocks
+python run_tests.py --list       # block names and descriptions
+python run_tests.py -k single    # only blocks matching a pattern
+python run_tests.py -k matrix    # just the plugin sweep
+python run_tests.py -v           # also print captured output
+```
 
-## Session under test
+Run from the project root — circuit paths are relative. Exit status is
+0 only when every block passes, so `python run_tests.py && git push`
+works as a pre-push gate.
+
+The full suite takes a few minutes, most of it `plugin_matrix` running
+36 Aer simulations. While iterating, `-k <block>` is much faster.
+
+Each block builds its own session through `DevQ.build()`, which returns
+a wired `QShell` without entering the command loop, and drives it with
+`shell.onecmd(...)`. Nothing needs editing to run a block, and blocks do
+not share state.
+
+## Reference session
+
+Most multi-device blocks use this federation, mirroring `example.py`:
 
 | Device | Backend | Provider | Qubits |
 |---|---|---|---|
@@ -27,222 +41,411 @@ them out of order will shift every ID.
 | `nairobi` (`d1`) | `fakenairobiv2` | `IBMSimulatedProvider` | 7 |
 | `lagos` (`d2`) | `fakelagosv2` | `IBMSimulatedProvider` | 7 |
 
-## Conventions
+Providers are seeded (`SEED = 42`) so `d0`'s generated topology never
+flaps between runs.
 
-**Device references.** Named devices are addressable **both ways** —
-`d1` and `nairobi` are the same device in `--exec`/`--no-exec` and in
-every device-scoped command. Blocks below deliberately mix the two
-forms; where a block writes a name, the index form must work
-identically and vice versa (spot-check by re-running a command the
-other way). `d0` is unnamed throughout and is only ever addressable as
-`d0`.
+**Calibration reference.** Every mapping assertion below derives from
+these values, which come from `qiskit-ibm-runtime` 0.45.1. If they
+change, the pinned stack changed — check `requirements.txt` before
+suspecting the code.
 
-**Expectations use index form** (`d1`, `d2`) as the canonical
-identifier, since indices are always valid. On screen, named devices
-*display* as `nairobi (d1)` / `lagos (d2)` — in Dispatching lines, the
-`qps` device column, `qmap`, `qmem`, `qerrors`, `qtopology` and
-`qconfig` headers. `d0` displays bare. Read "Job 1 → d1" as satisfied
-by `nairobi (d1)`.
-
-**Config files** are referenced by name and all live in
-`config/config_examples/`. A block's stated config stays in effect for
-every following block until a block states a new one.
-
-**Before trusting anything downstream:** `d1`/`d2` calibration values
-assume `qiskit-ibm-runtime` 0.45.1. Verify Block 1's `qerrors` output
-first; if those match, the rest should follow.
-
-**Counts are unseeded** except in Block 10 — check mappings, states and
-reasons, not counts. `d0`'s error map is random per launch, so
-deterministic checks pin `--exec` or exclude `d0`.
-
----
-
-## Block 1 — Devices and config
-
-**Config:** `router_only.config.json` (global, as `example.py`'s
-`config_path`). Fresh session.
-
-```
-qdevices
-qconfig
-qerrors q d2
-qerrors e d2
-qtopology d1 1
-```
-
-**Expect.** `qdevices` shows three rows — `d0` `random_backend` (7q),
-`d1` `fakenairobiv2` (7q), `d2` `fakelagosv2` (7q), all `queued: 0`
-`running: 0` — plus an **alias column** (`d0` shows `-`, `d1`
-`nairobi`, `d2` `lagos`), which appears because at least one device is
-named.
-
-`qconfig` shows global `router=noise` [User (global)] with router
-weights 0.5 [User (global)], **and** global `qubit_error_weight` 0.1 /
-`edge_error_weight` 0.9 [DevQ Core] (the router's S yardstick); `d0`
-packing/noise_graph [DevQ Core] shots 1024 [DevQ Core]; `d1` and `d2`
-packing/noise_graph [DevQ Core] shots 2048 [IBMSimulatedProvider].
-**Every** device section additionally shows `qubit_error_weight` 0.1 /
-`edge_error_weight` 0.9 [DevQ Core].
-
-`qerrors q d2` (Lagos):
+Nairobi qubit errors:
 
 | Qubit | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
 |---|---|---|---|---|---|---|---|
-| Error | 0.1690 | 0.1362 | 0.4638 | 0.0167 | 0.0292 | 0.2619 | 0.3480 |
+| | 0.0580 | 0.0199 | 0.0193 | 0.0223 | 0.0183 | 0.0225 | 0.0258 |
 
-`qerrors e d2`:
+Nairobi edge errors:
 
 | Edge | (0,1) | (1,2) | (1,3) | (3,5) | (4,5) | (5,6) |
 |---|---|---|---|---|---|---|
-| Error | 0.0094 | 0.0103 | 0.0107 | 0.0290 | 0.0083 | 0.0202 |
+| | 0.0086 | 0.0070 | 0.0068 | 0.0126 | 0.0070 | 0.0107 |
 
-`qtopology d1 1` filtered to `0--1`, `1--2`, `1--3` only.
+Lagos qubit errors:
 
----
+| Qubit | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|---|
+| | 0.1690 | 0.1362 | 0.4638 | 0.0167 | 0.0292 | 0.2619 | 0.3480 |
 
-## Block 2 — Noise routing and Lagos mappings
+Lagos edge errors:
 
-**Deterministic.** Same session as Block 1.
+| Edge | (0,1) | (1,2) | (1,3) | (3,5) | (4,5) | (5,6) |
+|---|---|---|---|---|---|---|
+| | 0.0094 | 0.0103 | 0.0107 | 0.0290 | 0.0083 | 0.0202 |
 
-```
-qrun test_circuits/bell.qasm --exec=nairobi,lagos
-qrun test_circuits/bell.qasm --exec=d2
-qrun test_circuits/ghz.qasm --exec=d2
-```
+**Device references.** Named devices are addressable both ways — `d1`
+and `nairobi` are the same device in `--exec`/`--no-exec` and in every
+device-scoped command. Blocks mix the forms deliberately. Named devices
+display as `nairobi (d1)`; unnamed ones as `d0`.
 
-**Expect.**
-
-| Job | Routes to | Mapping | Why |
-|---|---|---|---|
-| 1 | `d1` | `{0:1, 1:2}` | Nairobi S≈0.0102 beats Lagos S≈0.0249 |
-| 2 | `d2` | `{0:1, 1:3}` | Lagos's best bell block |
-| 3 | `d2` | `{0:3, 1:4, 2:5}` | pinned |
-
-All three FINISHED.
+The cost function `S` used throughout is defined in
+[`cost-model.md`](cost-model.md).
 
 ---
 
-## Block 3 — Cross-device REJECTED semantics
+## Federation blocks
 
-**Deterministic.** Same session.
+### `devices_and_config`
+
+*Devices, alias column, calibration data and config provenance.*
 
 ```
-qrun test_circuits/bell.qasm --max-qubit-error=0.03 --exec=lagos
-qrun test_circuits/bell.qasm --max-qubit-error=0.03 --exec=d1,d2
-qrun test_circuits/bell.qasm --max-qubit-error=0.0185 --exec=nairobi,lagos
+qdevices    qconfig    qerrors q d2    qerrors e d2    qtopology d1 1
 ```
 
-**Expect.**
+Checks the session reports itself correctly before any job runs. Three
+devices attach in order; `qdevices` grows an **alias column** because at
+least one device is named (`d0` shows `-`).
 
-- **Job 4** REJECTED — `...d2: no connected block of 2 qubits...`
-  (Lagos qubits 3 and 4 pass the 0.03 threshold but are not adjacent).
-- **Job 5** → `d1` `{0:1, 1:2}` — same threshold, feasible on Nairobi
-  so routed there rather than rejected.
-- **Job 6** REJECTED with **two aggregated reasons**:
-  `d1: ...only 1...satisfy max_qubit_error=0.0185; d2: ...only 1...`.
+`qconfig` must show provenance for every value, not just the value:
+`router = noise` from User (global), scheduler and allocator from DevQ
+Core, and `shots` from `IBMSimulatedProvider` on `d1`/`d2` but DevQ Core
+on `d0` — evidence the four-level cascade resolves per device rather
+than globally.
+
+The `qerrors` assertions pin all 13 Lagos calibration figures. This is
+the canary for the whole suite: if these drift, every mapping assertion
+downstream is measuring a different machine.
+
+`qtopology d1 1` must show only `0--1`, `1--2`, `1--3` — qubit 1's
+edges — and *not* `4--5` or `5--6`. Filtering is by incidence, not
+proximity.
+
+### `noise_routing`
+
+*Noise-aware routing picks Nairobi; Lagos mappings are correct.*
+
+```
+qrun bell --exec=nairobi,lagos    qrun bell --exec=d2    qrun ghz --exec=d2
+```
+
+The core routing claim. Job 1 may use either device, and the router
+picks Nairobi because its best bell block scores lower:
+
+| Device | Best block | S |
+|---|---|---|
+| nairobi | `{1,2}` | **0.0102** |
+| lagos | `{1,3}` | 0.0249 |
+
+Jobs 2 and 3 are pinned to Lagos to assert its allocator independently:
+bell → `{0:1, 1:3}`, ghz → `{0:3, 1:4, 2:5}`.
+
+**Margin worth knowing.** Nairobi's `{1,2}` at 0.0102 beats `{1,3}` at
+0.0103 by 0.0001. The choice is correct but nearly tied, which is
+exactly why `weight_normalisation` can flip it by re-weighting. A future
+change that flips this mapping is not necessarily a bug — check the
+weights first.
+
+### `name_index_equivalence`
+
+*A device name and its index are interchangeable everywhere.*
+
+Runs `qerrors q nairobi` / `qtopology nairobi 1` and asserts the output
+is **byte-identical** to the `d1` forms, then submits the same circuit
+under `--exec=nairobi` and `--exec=d1` and asserts identical routing and
+mapping.
+
+A name is an alias, never a replacement. This block exists because the
+shell resolves names in two structurally different places — positional
+device tokens and comma-separated flag lists — and either could regress
+alone.
+
+### `name_validation`
+
+*Ambiguous or duplicate device names are rejected at attach time.*
+
+Table-driven; each name must raise `DevQError` during `add_device`,
+never at use time:
+
+| Rejected | Reason |
+|---|---|
+| `d0`, `d7` | would be ambiguous with a device index |
+| `q`, `e`, `b` | shadow `qerrors` subcommand arguments |
+| `""`, `"   "` | empty after stripping |
+| `has space` | whitespace breaks token splitting |
+| `has,comma` | commas separate `--exec` lists |
+| `alpha` + `ALPHA` | duplicate, compared case-insensitively |
+
+Failing at attach time matters: a name accepted here but ambiguous later
+would produce a confusing mid-session error, or silently resolve to the
+wrong device.
+
+### `rejection_semantics`
+
+*Thresholds reject across devices with aggregated reasons.*
+
+```
+qrun bell --max-qubit-error=0.03 --exec=lagos
+qrun bell --max-qubit-error=0.03 --exec=d1,d2
+qrun bell --max-qubit-error=0.0185 --exec=nairobi,lagos
+```
+
+Three outcomes that must stay distinct:
+
+- **Job 1 REJECTED.** On Lagos only qubits 3 (0.0167) and 4 (0.0292)
+  pass 0.03, and they are **not adjacent** — the reason must say
+  *no connected block*, a topology failure, not a count failure.
+- **Job 2 runs on Nairobi.** Same threshold, but Nairobi has many
+  qualifying adjacent qubits. Proves rejection is per-device, and a job
+  infeasible somewhere is not globally rejected.
+- **Job 3 REJECTED with both devices named.** At 0.0185 only Nairobi
+  qubit 4 (0.0183) and Lagos qubit 3 (0.0167) qualify. The reason must
+  aggregate `d1: ...` *and* `d2: ...`, so a user sees why every allowed
+  device failed rather than just the first.
+
+### `packing_across_devices`
+
+*Bracket groups, batch packing and cross-device concurrency.*
+
+```
+qsubmit [bell bell ghz --no-exec=d0] ghz --exec=lagos
+qrunpack    qps    qmap 1    qmem
+```
+
+Group flags apply to all three bracketed jobs; the trailing job is
+pinned separately.
+
+Jobs 1 and 2 pack into the **same cycle** on disjoint blocks — `{1,2}`
+and `{4,5}` — which is the packing scheduler's whole purpose. Job 3
+needs three connected qubits and cannot fit alongside them, so it waits
+a cycle and allocates once qubits free up. Job 4 goes to Lagos.
+
+**This block deliberately does not assert job 3's exact mapping.** Which
+qubits are free when it retries depends on async completion order, so
+the assertion is the invariant: it lands on Nairobi with three qubits.
+An earlier version hardcoded `{0,1,2}` and passed alone but failed in
+full-suite runs — a flaky assertion, not a flaky scheduler.
+
+`qmem` at the end must show no `[X]` markers: every qubit returned to
+its pool.
+
+### `parser_errors`
+
+*Malformed commands are rejected atomically, creating no jobs.*
+
+Five malformed submissions, each producing a specific message:
+
+| Input | Error |
+|---|---|
+| `--exec=d5` | device out of range (3 attached) |
+| `--exec=d0 --no-exec=d1` | flags mutually exclusive |
+| `--exec=[d0,d1]` | brackets reserved for grouping |
+| `--exec=sherbrooke` | unknown name, message lists attached names |
+| `nofile.qasm bell.qasm` | bad path kills the **whole** batch |
+
+The closing `qps` must report `No jobs.` — the atomicity claim. A
+partially-applied batch is worse than a rejected one, since the user
+would have to work out which half landed.
+
+### `round_robin_router`
+
+*Round-robin router cycles devices in index order.*
+
+Uses `round_robin.config.json`. Three identical bells must land on `d0`,
+`d1`, `d2` in that order — the rotation is noise- and load-oblivious by
+design, so identical jobs still spread.
+
+Contrast with `noise_routing`, where all three would go to Nairobi. That
+difference is the point: it proves the router is genuinely pluggable
+rather than the noise policy being hardcoded.
+
+### `per_device_config`
+
+*A per-device config overrides only that device.*
+
+Attaches `d1.static.config.json` to Nairobi alone. `qconfig d1` must
+show `allocator = static` and `shots = 512` sourced from User (d1),
+while `scheduler` stays packing from DevQ Core — level 4 overriding
+levels 1–3 key by key, not wholesale.
+
+The behavioural proof is the mapping: Static picks the **first free
+block** `{0:0, 1:1}` (S = 0.0155) rather than noise_graph's `{0:1, 1:2}`
+(S = 0.0102). Static ignores noise by design, so a *worse* mapping here
+is the correct result.
+
+### `weight_normalisation`
+
+*Cost weights normalise, and edge-only weighting changes the mapping.*
+
+Global `weights_1_9.config.json` (raw `1`/`9`) plus
+`d1.edge_only.config.json` on Nairobi (`0`/`1`).
+
+`qconfig d2` must report 0.1 / 0.9: the raw pair is **normalised to sum
+to 1** at resolution, so `1`/`9`, `0.1`/`0.9` and `2`/`18` are
+equivalent. Only the ratio matters.
+
+The behavioural half — with edge-only weighting on Nairobi, ranking by
+edge error alone:
+
+| Block | Edge error | Rank |
+|---|---|---|
+| `{1,3}` | 0.0068 | **1st** |
+| `{1,2}` | 0.0070 | 2nd |
+
+So job 1 maps to `{0:1, 1:3}`, flipping the default choice. Lagos is
+unchanged at `{0:1, 1:3}` because 1/9 has the same ratio as the default
+— the same weights expressed differently must not change behaviour.
+
+### `zero_weight_fallback`
+
+*Both weights zero warns and falls back to core defaults.*
+
+A both-zero pair cannot be normalised (division by zero) and would make
+every block score identically. Config resolution emits a
+`[Config] Warning` and falls back to 0.1 / 0.9.
+
+The warning is printed during `build()`, before any command runs, so
+this block captures construction as well as command output — worth
+knowing if you add similar blocks.
 
 ---
 
-## Block 4 — Batch, bracket groups, packing across devices
+## Single-device blocks
 
-Same session.
+No routing decisions exist with one device, so these cover the path
+where the router is effectively a pass-through. They also guard a
+specific trap: **the only device is `d0`**, so anything assuming `d1`
+exists breaks.
 
-```
-qsubmit [test_circuits/bell.qasm test_circuits/bell.qasm test_circuits/ghz.qasm --no-exec=d0] test_circuits/ghz.qasm --exec=lagos
-qrunpack
-qps
-qmap 7
-qmem
-```
+### `single_device_ibm`
 
-**Expect.**
+*A one-device session works with no routing decisions to make.*
 
-- **Jobs 7 and 8** (bells) → `d1`, packed in the **same cycle** on
-  `{1,2}` and `{4,5}`.
-- **Job 9** (ghz) → `d1` (0.5/0.5 score tie vs `d2`, lower index wins),
-  waits one cycle then runs on `{0,1,2}`.
-- **Job 10** (ghz, pinned) → `d2` `{3,4,5}`.
+Full command sweep — `qdevices`, `qconfig`, `qerrors`, `qtopology`,
+`qrun`, `qmap`, `qps`, `qmem` — against a lone Nairobi. Asserts no
+output mentions `d1` or `d2`, and that noise_graph still selects
+`{0:1, 1:2}`: allocation is per-device and does not depend on having
+peers.
 
-All four FINISHED. Dispatch and resolution lines from `d1` and `d2` may
-interleave — that is the async concurrency working, not a fault.
+### `single_device_named`
 
-`qps`: jobs 1–3 and 5 FINISHED on `d1`/`d2`; 4 and 6 REJECTED with
-device `-`; 7–9 on `d1`; 10 on `d2`.
-`qmap 7`: device `nairobi (d1) (fakenairobiv2)`, `0->1`, `1->2`.
-`qmem`: three sections, all qubits free.
+*Naming works with one device, and the index still resolves.*
 
----
+The sole device is named `solo` and must display as `solo (d0)`. Runs
+`--exec=solo` and `--exec=d0` in separate sessions and asserts identical
+mappings — naming has no special case at federation size 1.
 
-## Block 5 — Parser and validation errors
+### `single_device_batch`
 
-Same session.
+*Batch submission and packing on a single device.*
 
-```
-qsubmit test_circuits/bell.qasm --exec=d5
-qsubmit test_circuits/bell.qasm --exec=d0 --no-exec=d1
-qsubmit test_circuits/bell.qasm --exec=[d0,d1]
-qsubmit test_circuits/bell.qasm --exec=sherbrooke
-qsubmit nofile.qasm test_circuits/bell.qasm
-qps
-```
+Two bells submitted together must pack onto **disjoint** qubit blocks in
+one cycle. The assertion is that their mappings differ; identical
+mappings would mean the pool handed out the same qubits twice, a
+correctness failure rather than a performance one.
 
-**Expect.** Each command prints a clear `[DevQ Error]` and creates
-**zero** jobs — the closing `qps` confirms the job count has not grown.
-Errors in order:
+### `single_device_rejection`
 
-1. Only 3 device(s) attached.
-2. `--exec` and `--no-exec` are mutually exclusive.
-3. Brackets are reserved for grouping.
-4. Unknown device **name** `sherbrooke` — the message lists the
-   attached named devices (`Named devices: nairobi, lagos`).
-5. Bad file path kills the whole batch, including the valid
-   `bell.qasm` alongside it.
+*Rejection on a single device names that device in the reason.*
+
+A Lagos-only session with a 0.03 qubit threshold. The job must be
+REJECTED — with no alternative device the router cannot fall back, and
+the terminal state must still be reached cleanly rather than leaving the
+job queued forever.
+
+### `single_device_devq`
+
+*The mock provider alone — no Qiskit involved in execution.*
+
+A fully-connected 5-qubit mock device named `mock`. This is the only
+block whose execution path never touches Qiskit, so it verifies DevQ's
+core runs without a quantum framework — the claim that
+`DevQSimulatedProvider` is a genuine zero-dependency reference
+implementation.
 
 ---
 
-## Block 6 — Round-robin router
+## Matrix and determinism
 
-**Config:** `round_robin.config.json` (global). Fresh session — job IDs
-restart at 1.
+### `plugin_matrix`
 
-```
-qconfig
-qsubmit test_circuits/bell.qasm test_circuits/bell.qasm test_circuits/bell.qasm
-qrunpack
-qps
-```
+*Every scheduler × allocator × router combination runs to completion.*
 
-**Expect.** `qconfig` shows `router = round_robin`
-`[Round Robin Router]` source User (global). After `qrunpack`, the
-routing sequence is exactly `d0`, `d1`, `d2` — check the Dispatching
-lines or the `qps` device column.
+Enumerates `_SCHEDULER_MAP` × `_ALLOCATOR_MAP` × `_ROUTER_MAP` — 18
+combinations today — writes a temporary config for each, and runs a bell
+and a ghz through a two-device federation. A combination passes only if
+both jobs reach FINISHED.
+
+**This is the most valuable block in the suite.** The default
+combination (`packing`/`noise_graph`/`noise`) is exercised constantly;
+every other combination previously ran only when someone hand-edited an
+entry point. Two real bugs lived in that gap:
+
+- `RoundRobinRouter.__init__` took no arguments while `_build_router`
+  passed four weight kwargs — **all 9** `*/round_robin` combinations
+  died at startup.
+- `PackingScheduler`'s inner `TempPool` implemented only 2 of
+  `QubitPool`'s 3 methods. `StaticAllocator` alone calls the missing
+  `available()`, so it raised `AttributeError`, which a bare
+  `except Exception` turned into "allocation didn't fit" — the job was
+  neither allocated nor rejected and `qrunpack` **hung forever**.
+
+Each combination runs under a `SIGALRM` watchdog so a hang fails the
+block instead of blocking the suite. Failures are reported per
+combination with the exception, e.g.
+`packing/static/noise: 0/2 jobs finished`.
+
+When adding a scheduler, allocator or router, this block covers it
+automatically — it reads the registry maps rather than a fixed list.
+
+### `determinism_seeded`
+
+*Identical seeds reproduce devices and counts exactly.*
+
+Builds three sessions and compares full transcripts: `seed=42` twice
+must be identical, `seed=43` must differ. This covers both randomness
+sources at once — `d0`'s generated topology and error maps, and Aer's
+sampling.
+
+It also asserts that two runs of the **same circuit within one session**
+produce **different** counts. That is the check on derived per-run seeds
+(`seed + k`): a single reused seed would clone results, which looks like
+determinism but is wrong.
+
+### `determinism_unseeded`
+
+*Without a seed, sessions stay non-deterministic.*
+
+The negative control. Two unseeded sessions must differ. Without this, a
+bug that seeded everything unconditionally would pass
+`determinism_seeded` and silently break the default path.
+
+### `bug_fix_witnesses`
+
+*Per-device noise models and allocator mappings reach the simulator.*
+
+Asserts error rates rather than mappings, because two Phase 5.1 bugs
+were invisible at the mapping level — the allocator computed the right
+answer and execution ignored it.
+
+| Observed bell error | Meaning |
+|---|---|
+| **~5%** on Nairobi | correct |
+| ~27% | executing under **Lagos's** noise model — shared-state leak |
+| ~10% | `v2p_map` dropped, job ran on physical qubits 0–1 |
+
+Lagos's ~15% is likewise real: physical qubit 1 carries 13.6% readout
+error, and the mapping `{0:1, 1:3}` uses it.
+
+Bands are asserted rather than exact counts, so the block survives minor
+Aer changes while still catching either regression.
 
 ---
 
-## Block 7 — Free routing with d0
+## Driving a session by hand
 
-**Qualitative** — `d0`'s random error map changes per launch.
-**Config:** `router_only.config.json` (global). Fresh session.
+The automated blocks cover everything above; this is for interactive
+exploration.
 
+```bash
+python example.py              # three-device session
+python example.py --seed 42    # reproducible
+python example.py --help
 ```
-qrun test_circuits/bell.qasm
-qps
-```
 
-**Expect.** The bell routes to whichever of `d0`/`d1` scores lower this
-launch; `d2` essentially never wins a free bell. The job FINISHES. If
-it lands on `d0`, counts are uniform mock counts (roughly equal across
-`00`/`01`/`10`/`11`); if on `d1`, counts are noisy Bell-like (heavy
-`00`/`11`).
-
----
-
-## Block 8 — Per-device config
-
-**Config:** `router_only.config.json` (global) **plus**
-`d1.static.config.json` as the per-device config on the Nairobi line.
-Change `example.py` to:
+Paste any block's commands into the shell. To reproduce a block that
+uses a different config or per-device file, edit the `DevQ(...)` call in
+`example.py` — for instance `per_device_config`'s setup is:
 
 ```python
 .add_device(ibm.get_device("FakeNairobiV2"),
@@ -250,134 +453,6 @@ Change `example.py` to:
             name="nairobi")
 ```
 
-Relaunch (fresh session), and revert `example.py` afterwards.
-
-```
-qconfig d1
-qconfig
-qrun test_circuits/bell.qasm --exec=d1
-qmap 1
-```
-
-**Expect.** `qconfig d1` shows `allocator = static` `[Static Allocator]`
-source User (d1) and `shots = 512` source User (d1), while `scheduler`
-stays packing [DevQ Core] and the weight pair stays 0.1/0.9 [DevQ Core].
-`d0` and `d2` are unaffected — confirm with the bare `qconfig`.
-
-The pinned bell on `d1` maps to the **first free block** `{0:0, 1:1}`
-instead of noise_graph's `{0:1, 1:2}` — Static ignores noise by design.
-
----
-
-## Block 9 — Common-scope noise cost weights
-
-**Config:** `weights_1_9.config.json` (global, as `example.py`'s
-`config_path`) **plus** `d1.edge_only.config.json` as the per-device
-config on the Nairobi line — same `example.py` edit as Block 8, swapping
-the path. Relaunch (fresh session); revert afterwards. The bonus check
-uses `zero_weights.config.json` as a per-device or global file in a
-separate launch.
-
-```
-qconfig d2
-qconfig d1
-qrun test_circuits/bell.qasm --exec=d1
-qrun test_circuits/bell.qasm --exec=d2
-qps
-```
-
-**Expect.** `qconfig d2` shows `qubit_error_weight` 0.1 /
-`edge_error_weight` 0.9 source User (global) — the raw 1/9 is
-**normalised to sum to 1** at resolution time. Any non-negative pair is
-accepted and normalised, so 1/9, 0.1/0.9 and 2/18 are equivalent; the
-same rule applies to the router weight pair. `qconfig d1` shows 0 / 1
-source User (d1), a per-device override of the common key.
-
-- **Job 1** (bell pinned `d1`) → `{0:1, 1:3}` — edge-only weighting
-  picks Nairobi's lowest-error edge (1,3)=0.0068 instead of the
-  default-weight choice `{0:1, 1:2}`.
-- **Job 2** (bell pinned `d2`) → `{0:1, 1:3}` — Lagos unchanged under
-  1/9, because the **ratio** equals the 0.1/0.9 default.
-
-**Bonus.** `zero_weights.config.json` prints a `[Config] Warning` and
-falls back to 0.1/0.9 [DevQ Core].
-
----
-
-## Block 10 — Determinism and seeding
-
-**Phase 5.1.** Same three devices and config as every other block
-(`router_only.config.json`); the only difference is `example.py`'s
-`--seed` flag, which passes a seed to both providers at construction.
-
-Run the command list **four times** as four separate fresh launches,
-saving each session's output:
-
-| Run | Command | Role |
-|---|---|---|
-| A | `python example.py --seed 42` | reproducibility |
-| B | `python example.py --seed 42` | reproducibility |
-| C | `python example.py` | unseeded control |
-| D | `python example.py` | unseeded control |
-
-Diff the full transcripts A vs B, then C vs D. This is the **only**
-block that asserts counts — seeding is what makes them assertable.
-`python example.py --help` should list `--seed`.
-
-```
-qerrors q d0
-qtopology d0
-qrun test_circuits/bell.qasm --exec=nairobi
-qrun test_circuits/bell.qasm --exec=d1
-qrun test_circuits/bell.qasm --exec=lagos
-qps
-```
-
-**Headline assertion.** Run A and Run B transcripts are **identical
-byte-for-byte** (diff clean), covering both `d0`'s generated device and
-all three jobs' counts.
-
-Specifics under `seed=42`, on `qiskit-ibm-runtime` 0.45.1 —
-`qerrors q d0`:
-
-| Qubit | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
-|---|---|---|---|---|---|---|---|
-| Error | 0.0352 | 0.0177 | 0.0086 | 0.0479 | 0.0175 | 0.0055 | 0.0057 |
-
-`qtopology d0`: `0--2`, `0--3`, `0--4`, `1--3`, `1--5`, `1--6`, `2--4`,
-`2--5`, `3--5`, `4--6` (10 edges).
-
-| Job | Device | Mapping | Counts |
-|---|---|---|---|
-| 1 | `d1` | `{0:1, 1:2}` | `{'00':1004, '11':937, '10':58, '01':49}` |
-| 2 | `d1` | `{0:1, 1:2}` | `{'00':996, '11':954, '01':50, '10':48}` |
-| 3 | `d2` | `{0:1, 1:3}` | `{'00':871, '11':867, '01':165, '10':145}` |
-
-All three FINISHED.
-
-**Negative control 1 — distinct runs stay distinct.** Jobs 1 and 2 are
-the same circuit on the same device and mapping, but their counts
-**differ** — derived per-run seeds (`seed+k`), not a single reused seed
-cloning results.
-
-**Negative control 2 — omitting `--seed` is unchanged.** Runs C and D
-differ from each other *and* from Run A, so unseeded behaviour is
-preserved exactly and every other block in this file still behaves as
-written. C and D's job mappings still match Blocks 1–2 (`{0:1,1:2}` on
-`d1`, `{0:1,1:3}` on `d2`); only counts and `d0`'s generated device vary
-between them.
-
-**Bug-fix witnesses.** Phase 5.1 fixed two execution bugs; these numbers
-only hold once both are in:
-
-- Job 1's error weight outside `00`/`11` is **~5%, not ~27%** — `d1`
-  executes under *Nairobi's* noise model, not Lagos's (fixed
-  shared-noise-model leak).
-- ~5% rather than ~10% reflects the allocator's mapping `{0:1, 1:2}`
-  actually reaching the simulator as `initial_layout=[1,2]` (fixed
-  dropped `v2p_map`).
-- Job 3's ~15% error on Lagos `{0:1, 1:3}` is likewise real: physical
-  qubit 1's 13.6% readout error dominates.
-
-If any of these three error rates is far off, suspect the pinned stack
-before the code — verify Block 1's calibration output first.
+All configs referenced above live in `config/config_examples/`. Job IDs
+restart at 1 in each fresh session, so blocks run out of order will
+number differently than described here.
