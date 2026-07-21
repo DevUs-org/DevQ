@@ -20,8 +20,8 @@ is handled by the DevQ core.
 
 Pass --seed to make a session reproducible:
 
-    python main.py                # unseeded (default)
-    python main.py --seed 42      # identical device + counts every launch
+    python example.py                # unseeded (default)
+    python example.py --seed 42      # identical device + counts every launch
 
 The seed goes to the providers at construction; d0's generated topology
 and error maps become fixed, and IBM execution counts replay job-for-job
