@@ -3,4 +3,4 @@ venv/
 */.pyc
 **/.DS_STORE
 *.zip
-test_results.txt
+.testout

@@ -31,8 +31,8 @@ import contextlib
 import io
 import itertools
 import re
-import signal
 import sys
+import threading
 import traceback
 
 from circuits.execution_result import shutdown_executor
@@ -120,13 +120,62 @@ class Trace:
 TRACE = Trace()
 
 
+# A runaway shell loop prints without bound. Capturing that into an
+# unbounded StringIO turns a hang into an out-of-memory kill, which is a
+# far worse failure mode — it takes the machine down instead of the test.
+MAX_CAPTURE = 4 * 1024 * 1024   # 4 MB per command is already absurd
+
+
+@contextlib.contextmanager
+def _capture(buf):
+    '''
+    Redirect stdout to buf for the duration of the block.
+
+    sys.stdout is process-wide, so a thread the runner has ABANDONED
+    (see _with_timeout) must not restore it later and clobber whatever
+    the runner set up in the meantime. The saved handle is therefore
+    only restored if sys.stdout is still the buffer this call installed;
+    otherwise someone else owns it now and we leave it alone.
+    '''
+    original   = sys.stdout
+    sys.stdout = buf
+    try:
+        yield buf
+    finally:
+        if sys.stdout is buf:
+            sys.stdout = original
+
+
+class BoundedBuffer(io.StringIO):
+    '''StringIO that raises once output exceeds MAX_CAPTURE.'''
+
+    def __init__(self):
+        super().__init__()
+        self._size = 0
+
+    def write(self, text):
+        self._size += len(text)
+        if self._size > MAX_CAPTURE:
+            raise Failure(
+                f"command produced over {MAX_CAPTURE // (1024*1024)}MB of "
+                f"output — the shell is almost certainly stuck in a loop"
+            )
+        return super().write(text)
+
+
 def run(shell, commands):
     '''
     Drive a shell through commands, returning everything it printed.
     Also records to TRACE so the runner can replay the session.
+
+    Note on redirection: contextlib.redirect_stdout patches sys.stdout
+    PROCESS-WIDE, so it must never be left active by a thread the runner
+    has abandoned — the runner's own prints would vanish into a dead
+    buffer. sys.stdout is therefore always restored in the finally
+    clause, even when the body raises.
     '''
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
+    buf = BoundedBuffer()
+    with _capture(buf):
         for c in commands:
             TRACE.commands.append(c)
             shell.onecmd(c)
@@ -480,15 +529,21 @@ def block_plugin_matrix():
                        .build())
                 out = _with_timeout(
                     lambda: run(sh, [f"qsubmit {BELL} {GHZ}", "qrunpack", "qps"]),
-                    seconds=60
+                    seconds=25
                 )
                 done = len(re.findall(r"\[Kernel\] Job \d+ FINISHED", out))
                 TRACE.note(done == 2, f"{combo}: {done}/2 jobs finished")
                 if done != 2:
                     broken.append(f"{combo}: {done}/2 jobs finished")
             except TimeoutError:
-                TRACE.note(False, f"{combo}: HUNG (qrunpack never returned)")
-                broken.append(f"{combo}: HUNG (qrunpack never returned)")
+                TRACE.note(False, f"{combo}: HUNG (never returned)")
+                broken.append(f"{combo}: HUNG (never returned)")
+            except Failure as e:
+                # e.g. the bounded buffer tripping on runaway output —
+                # a hang in a different costume. Record and keep going
+                # rather than aborting the remaining combinations.
+                TRACE.note(False, f"{combo}: {e}")
+                broken.append(f"{combo}: {e}")
             except Exception as e:
                 TRACE.note(False, f"{combo}: {type(e).__name__}: {e}")
                 broken.append(f"{combo}: {type(e).__name__}: {e}")
@@ -504,17 +559,39 @@ def block_plugin_matrix():
 
 
 def _with_timeout(fn, seconds):
-    '''Run fn under a SIGALRM watchdog so a hang fails instead of blocking.'''
-    def handler(signum, frame):
-        raise TimeoutError()
+    '''
+    Run fn on a daemon thread and give up on it after `seconds`.
 
-    old = signal.signal(signal.SIGALRM, handler)
-    signal.alarm(seconds)
-    try:
-        return fn()
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old)
+    NOT signal-based. A SIGALRM handler raises inside whatever code is
+    running at the time — and both QShell commands and Kernel.run_job sit
+    behind broad `except Exception` handlers, so the TimeoutError gets
+    swallowed as if it were an ordinary command error. The watchdog then
+    silently fails to stop anything while the job stays pending and the
+    shell keeps looping. Signals also only reach the main thread, so the
+    same code breaks outright under any threaded harness.
+
+    Abandoning a daemon thread leaks it for the rest of the process,
+    which is acceptable here: the combination is already broken, the
+    thread is blocked rather than spinning hot, and the alternative is
+    hanging the whole suite.
+    '''
+    box = {}
+
+    def target():
+        try:
+            box["value"] = fn()
+        except BaseException as e:      # noqa: BLE001 — re-raised below
+            box["error"] = e
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(seconds)
+
+    if t.is_alive():
+        raise TimeoutError(f"still running after {seconds}s")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 
 
 # ── Determinism ───────────────────────────────────────────────────────────────
@@ -619,6 +696,16 @@ BLOCKS = [
 
 
 def main():
+    # Abandoned worker threads (see _with_timeout) may still hold stdout
+    # redirected when the runner resumes. Print through a handle taken
+    # before any block runs, so reporting can never be swallowed.
+    console = sys.__stdout__
+
+    def emit(*args, **kwargs):
+        kwargs.setdefault("file", console)
+        kwargs.setdefault("flush", True)
+        print(*args, **kwargs)
+
     parser = argparse.ArgumentParser(
         description="Run the DevQ sanity blocks.")
     parser.add_argument("-k", metavar="PATTERN",
@@ -636,19 +723,19 @@ def main():
     if args.k:
         blocks = [b for b in blocks if args.k in b[0]]
         if not blocks:
-            print(f"no block matches {args.k!r}")
+            emit(f"no block matches {args.k!r}")
             return 1
 
     if args.list:
         for name, fn in blocks:
-            print(f"  {name:26} {(fn.__doc__ or '').strip().splitlines()[0]}")
+            emit(f"  {name:26} {(fn.__doc__ or '').strip().splitlines()[0]}")
         return 0
 
     detail = args.checks or args.verbose
     width  = max(len(n) for n, _ in blocks)
     failed = []
 
-    print(f"\nRunning {len(blocks)} block(s)\n")
+    emit(f"\nRunning {len(blocks)} block(s)\n")
     for name, fn in blocks:
         TRACE.reset()
         # Each block builds its own sessions; reclaim their executor
@@ -658,9 +745,9 @@ def main():
 
         if detail:
             summary = (fn.__doc__ or "").strip().splitlines()[0]
-            print(f"\n{'─' * 72}\n{name}\n  {summary}\n")
+            emit(f"\n{'─' * 72}\n{name}\n  {summary}\n")
         else:
-            print(f"  {name:<{width}}  ", end="", flush=True)
+            emit(f"  {name:<{width}}  ", end="", flush=True)
 
         status = "PASS"
         try:
@@ -675,43 +762,43 @@ def main():
 
         if detail:
             if args.verbose and TRACE.commands:
-                print("  commands")
+                emit("  commands")
                 for c in TRACE.commands:
-                    print(f"    devq> {c}")
-                print()
+                    emit(f"    devq> {c}")
+                emit()
                 transcript = TRACE.transcript().rstrip()
                 if transcript:
-                    print("  session output")
+                    emit("  session output")
                     for line in transcript.splitlines():
-                        print(f"    {line}")
-                    print()
+                        emit(f"    {line}")
+                    emit()
             if TRACE.checks:
-                print("  checks")
+                emit("  checks")
                 for ok, desc in TRACE.checks:
                     mark = "PASS" if ok else "FAIL"
                     head, *rest = desc.splitlines()
-                    print(f"    [{mark}] {head}")
+                    emit(f"    [{mark}] {head}")
                     for extra in rest:
-                        print(f"           {extra}")
-                print()
-            print(f"  → {status} ({sum(1 for ok, _ in TRACE.checks if ok)}"
+                        emit(f"           {extra}")
+                emit()
+            emit(f"  → {status} ({sum(1 for ok, _ in TRACE.checks if ok)}"
                   f"/{len(TRACE.checks)} checks)")
         else:
-            print(status)
+            emit(status)
 
     # Reclaim the final block's executor threads too. Without this the
     # interpreter blocks joining idle non-daemon workers at exit, which
     # looks exactly like a hang after the last line of output.
     shutdown_executor()
 
-    print()
+    emit()
     if failed:
         for name, msg in failed:
-            print(f"{name}\n    {msg}\n")
-        print(f"{len(failed)} of {len(blocks)} block(s) failed.")
+            emit(f"{name}\n    {msg}\n")
+        emit(f"{len(failed)} of {len(blocks)} block(s) failed.")
         return 1
 
-    print(f"All {len(blocks)} block(s) passed.")
+    emit(f"All {len(blocks)} block(s) passed.")
     return 0
 
 
