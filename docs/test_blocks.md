@@ -1,7 +1,7 @@
 # DevQ Sanity Test Plan
 
-Specification for the sanity blocks in `run_tests.py`, covering Phases
-0–5.1.
+Specification for the 30 sanity blocks in `run_tests.py`, covering
+Phases 0–5.1.
 
 `run_tests.py` asserts **what** each block expects. This document
 records **why** those values are correct — the S-cost arithmetic behind
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 20 blocks, one line each
+python run_tests.py              # all 30 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -220,6 +220,36 @@ Three outcomes that must stay distinct:
   aggregate `d1: ...` *and* `d2: ...`, so a user sees why every allowed
   device failed rather than just the first.
 
+### `edge_threshold_semantics`
+
+*`--max-edge-error` filters by coupling quality, independently of qubits.*
+
+The qubit-side threshold gets exercised by `rejection_semantics`; this is
+its sibling, and the two filters are genuinely independent code paths in
+`filtering.py`.
+
+Nairobi's edges make the assertion sharp: `(1,3)` at 0.0068 is the only
+one at or below a 0.0069 threshold, so the allocator is forced off its
+default `{1,2}` (edge 0.0070) onto `{0:1, 1:3}`. A mapping change driven
+purely by edge quality is the proof the filter is applied.
+
+A 0.005 threshold sits below every edge on both devices, producing a
+rejection whose reason reads `max_qubit_error=None, max_edge_error=0.005`
+— an edge-only failure with no qubit threshold involved.
+
+### `combined_thresholds`
+
+*Qubit and edge thresholds compose as independent hard filters.*
+
+Thresholds are **ANDed, never traded off**. Two cases:
+
+- `--max-qubit-error=0.03` with `--max-edge-error=0.0069` on Nairobi is
+  jointly satisfiable — qubits 1 and 3 pass, and so does edge `(1,3)` —
+  giving `{0:1, 1:3}`.
+- `--max-qubit-error=0.0185` with a generous `--max-edge-error=0.05` is
+  rejected, and the reason cites the *qubit* threshold. A satisfiable
+  edge constraint must not rescue an impossible qubit one.
+
 ### `packing_across_devices`
 
 *Bracket groups, batch packing and cross-device concurrency.*
@@ -324,6 +354,140 @@ every block score identically. Config resolution emits a
 The warning is printed during `build()`, before any command runs, so
 this block captures construction as well as command output — worth
 knowing if you add similar blocks.
+
+
+### `config_validation`
+
+*Malformed configs warn and fall back rather than crashing.*
+
+Seven table-driven cases, each asserting a specific warning **and** that
+a usable session was still built:
+
+| Case | Expected warning |
+|---|---|
+| file does not exist | `not found` |
+| invalid JSON | `is not valid JSON` |
+| JSON array, not object | `is not a JSON object` |
+| unknown key | `unknown config key` |
+| `shots: "many"` | `expected a positive integer` |
+| `scheduler: "nonexistent"` | `expected one of` |
+| negative weight | `expected a non-negative number` |
+
+This is the path a **new user** hits first when writing their own config,
+and the design commitment is that a bad config degrades to defaults
+rather than killing the session. Each case also asserts `DevQ Core`
+appears in `qconfig`, proving the fallback actually took effect rather
+than the bad value being silently adopted.
+
+Warnings are emitted during `build()`, so the block captures construction
+as well as command output.
+
+### `provider_global_key`
+
+*A provider may not set global-scope config keys.*
+
+A subclassed provider returns `{"shots": 2048, "router": "round_robin"}`
+from `preferred_config()`. `shots` is a device key it owns; `router` is
+global scope and off-limits.
+
+The block asserts all three consequences: the warning names the illegal
+key, the legitimate device key is still honoured (2048 shots), and the
+router stays `noise`. Without the last assertion a provider could
+silently override global policy — a scope violation that would be very
+hard to trace from a benchmark result.
+
+
+### `lifecycle_waiting`
+
+*WAITING is a distinct, reachable state for transient contention.*
+
+`WAITING` was deliberately kept separate from `READY` in Phase 3, and the
+distinction only matters if something asserts it. The block occupies the
+pool directly, leaving one free qubit, then submits a two-qubit job via
+`qrun`.
+
+Routing still succeeds — `feasible()` ignores pool state — so the job is
+**contended, not unsatisfiable**, and must land in `WAITING` rather than
+`REJECTED`. That difference is the whole point: `REJECTED` is terminal,
+`WAITING` is retried.
+
+The block then frees the pool and runs `qrunpack`, asserting the same job
+completes. A `WAITING` job that could never resume would be a
+`REJECTED` job wearing the wrong label.
+
+### `lifecycle_failed`
+
+*A provider error yields FAILED and still returns the qubits.*
+
+The provider's `execute` is swapped for one returning a failed
+`ExecutionResult`. `FAILED` is otherwise unreachable — every real
+provider in the tree succeeds — so this is the only coverage of the
+error path in `_resolve_pending`.
+
+Beyond the state itself, two invariants matter more:
+
+- **all qubits return to the pool** — a failed job that strands its
+  allocation silently shrinks the device for the rest of the session
+- **`running_jobs` is decremented** — otherwise the router's queue
+  pressure term drifts upward forever, quietly biasing every future
+  routing decision
+
+Both are asserted directly against the pool and context, not through
+printed output.
+
+
+### `mock_topologies`
+
+*Every mock topology kind builds a usable device.*
+
+`create_backend` supports four kinds; before this block only `random` and
+`fully_connected` were ever constructed. Edge counts are asserted
+structurally: linear on 7 qubits gives 6 edges, fully-connected gives 21
+(C(7,2)), and a 3×3 grid gives 12. Each kind also runs a job end to end,
+so a topology that builds but cannot host a circuit still fails.
+
+The block additionally checks that error maps cover every qubit and every
+edge — a topology whose error map disagrees with its coupling map would
+make allocator scoring silently wrong.
+
+### `backend_factory_errors`
+
+*Invalid backend requests fail loudly at construction.*
+
+Four cases that must raise rather than produce a degenerate device:
+fewer than 2 qubits, an unknown kind, a non-square qubit count for
+`grid`, and an unknown IBM fake backend name. Each asserts on the message
+fragment, since a `ValueError` with an unhelpful message is nearly as bad
+as no error — these are the messages a researcher sees when they typo a
+backend name.
+
+
+### `shell_input_handling`
+
+*Malformed or empty commands are handled without crashing.*
+
+Seven bad inputs in one session: `qrunpack` with nothing queued, `qmap`
+on a nonexistent job, `qmap` with a non-numeric id, `qmem` on an
+out-of-range device, `qtopology` with an out-of-range qubit, `qerrors`
+with an invalid flag, and bare `qrun` with no argument.
+
+Each must produce its specific message. The block then asserts **no jobs
+were created** and that a normal `qrun` still succeeds afterwards — the
+real risk is not a bad message but a session left in a broken state.
+
+### `many_device_federation`
+
+*Routing and indexing hold beyond the usual three devices.*
+
+Every other block uses one or three devices. This one attaches five —
+four named, one deliberately unnamed — to exercise index and name
+resolution over a longer list.
+
+Two assertions: `--exec=jakarta` resolves the fourth named device, and a
+four-way deny-list (`--no-exec=nairobi,lagos,casablanca,jakarta`) leaves
+only the unnamed `d4` as a candidate. The second case is the interesting
+one — it mixes name-based exclusion with index-based fallback, which is
+where an off-by-one in resolution would surface.
 
 ---
 

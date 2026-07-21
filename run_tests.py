@@ -47,7 +47,8 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
              "NUMEXPR_NUM_THREADS", "RAYON_NUM_THREADS"):
     os.environ.setdefault(_var, "1")
 
-from circuits.execution_result import shutdown_executor
+from circuits.execution_result import (ExecutionResult, shutdown_executor,
+                                        submit_async)
 from devq import DevQ, DevQError
 from providers.devq.devq_simulated_provider import DevQSimulatedProvider
 from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
@@ -684,18 +685,340 @@ def block_name_validation():
                         "(case-insensitive)")
 
 
+
+# ── Threshold and lifecycle coverage ─────────────────────────────────────────
+
+def block_edge_threshold_semantics():
+    '''--max-edge-error filters by coupling quality, independently of qubits'''
+    sh  = three_device()
+    out = run(sh, [f"qrun {BELL} --max-edge-error=0.0069 --exec=nairobi",
+                   f"qrun {BELL} --max-edge-error=0.005 --exec=nairobi,lagos",
+                   f"qrun {GHZ} --max-edge-error=0.0107 --exec=lagos"])
+
+    # Nairobi edges: (1,3)=0.0068 is the only one at or below 0.0069, so the
+    # allocator is forced off its default {1,2} (edge 0.0070) onto {1,3}.
+    check(mapping_of(out, 1) == "{0: 1, 1: 3}",
+          f"edge threshold 0.0069 forced nairobi onto its only qualifying "
+          f"edge (1,3)=0.0068, got {mapping_of(out, 1)}")
+
+    # 0.005 is below every edge on both devices — a pure edge-side rejection
+    # with no qubit threshold involved.
+    expect(out, "Job 2 REJECTED", "max_qubit_error=None",
+           "max_edge_error=0.005")
+    m = re.search(r"Job 2 REJECTED: ([^\n]*)", out)
+    check(m and "d1:" in m.group(1) and "d2:" in m.group(1),
+          "edge-only rejection aggregates both devices")
+
+    # Lagos at 0.0107 keeps (0,1), (1,2), (1,3) — a connected triple exists.
+    check(mapping_of(out, 3) == "{0: 0, 1: 1, 2: 2}",
+          f"ghz fits lagos's qualifying edges under 0.0107, "
+          f"got {mapping_of(out, 3)}")
+
+
+def block_combined_thresholds():
+    '''Qubit and edge thresholds compose as independent hard filters'''
+    sh  = three_device()
+    out = run(sh, [f"qrun {BELL} --max-qubit-error=0.03 "
+                   f"--max-edge-error=0.0069 --exec=nairobi",
+                   f"qrun {BELL} --max-qubit-error=0.0185 "
+                   f"--max-edge-error=0.05 --exec=nairobi"])
+
+    # Both thresholds satisfiable together: qubits 1 and 3 pass 0.03, and
+    # edge (1,3) passes 0.0069.
+    check(mapping_of(out, 1) == "{0: 1, 1: 3}",
+          f"both thresholds satisfied simultaneously, got {mapping_of(out, 1)}")
+
+    # A generous edge threshold cannot rescue an impossible qubit threshold —
+    # thresholds are ANDed, never traded off.
+    expect(out, "Job 2 REJECTED")
+    check("max_qubit_error=0.0185" in out,
+          "rejection cites the qubit threshold, not the satisfiable edge one")
+
+
+def block_lifecycle_waiting():
+    '''WAITING is a distinct, reachable state for transient contention'''
+    sh  = session("router_only.config.json",
+                  [("ibm", "FakeNairobiV2", "solo", None)])
+
+    # Occupy the pool so allocation must fail. Routing still succeeds —
+    # feasible() ignores pool state — so the job is contended, not
+    # unsatisfiable, and must land in WAITING rather than REJECTED.
+    ctx = sh.kernel.contexts[0]
+    ctx.memory_manager.pool.free_qubits = {0}
+
+    out = run(sh, [f"qrun {BELL}", "qps"])
+
+    expect(out, "WAITING for resources", "solo (d0)")
+    expect_absent(out, "REJECTED")
+    states = [j.state.value for j in sh.kernel.list_jobs()]
+    check(states == ["WAITING"],
+          f"job is WAITING, not READY or REJECTED — got {states}")
+
+    # Freeing the pool lets the same job proceed on the next cycle, which is
+    # what makes WAITING transient rather than terminal.
+    ctx.memory_manager.pool.free_qubits = set(range(ctx.device.num_qubits))
+    out2 = run(sh, ["qrunpack", "qps"])
+    check("FINISHED" in out2,
+          "the WAITING job ran once resources freed — state was transient")
+
+
+def block_lifecycle_failed():
+    '''A provider error yields FAILED and still returns the qubits'''
+    sh  = session("router_only.config.json",
+                  [("ibm", "FakeNairobiV2", "solo", None)])
+    ctx = sh.kernel.contexts[0]
+
+    def failing_execute(circuit, v2p_map, shots, device):
+        return submit_async(lambda: ExecutionResult(
+            counts=None, success=False, error="simulated provider failure"))
+
+    ctx.device.provider.execute = failing_execute
+
+    out = run(sh, [f"qrun {BELL}", "qps"])
+
+    expect(out, "FAILED", "simulated provider failure")
+    states = [j.state.value for j in sh.kernel.list_jobs()]
+    check(states == ["FAILED"], f"job reached FAILED, got {states}")
+
+    # The leak that matters: a failed job must not strand its qubits, or a
+    # device silently loses capacity for the rest of the session.
+    free = ctx.memory_manager.pool.free_qubits
+    check(free == set(range(ctx.device.num_qubits)),
+          f"all qubits returned to the pool after failure, got {sorted(free)}")
+    check(ctx.running_jobs == 0,
+          f"running_jobs decremented after failure, got {ctx.running_jobs}")
+
+
+# ── Configuration robustness ─────────────────────────────────────────────────
+
+def block_config_validation():
+    '''Malformed configs warn and fall back rather than crashing'''
+    import json
+    import os
+    import tempfile
+
+    cases = [
+        ("missing file",   None,
+         "not found"),
+        ("invalid JSON",   "{ not json at all",
+         "is not valid JSON"),
+        ("not an object",  "[1, 2, 3]",
+         "is not a JSON object"),
+        ("unknown key",    {"unknown_key_xyz": 1},
+         "unknown config key"),
+        ("bad shots",      {"shots": "many"},
+         "expected a positive integer"),
+        ("bad scheduler",  {"scheduler": "nonexistent"},
+         "expected one of"),
+        ("negative weight", {"qubit_error_weight": -5,
+                             "edge_error_weight": 1},
+         "expected a non-negative number"),
+    ]
+
+    tmpdir = tempfile.mkdtemp(prefix="devq_cfg_")
+    try:
+        for label, payload, expected in cases:
+            path = os.path.join(tmpdir, "cfg.json")
+            if payload is None:
+                path = os.path.join(tmpdir, "does_not_exist.json")
+            elif isinstance(payload, str):
+                with open(path, "w") as f:
+                    f.write(payload)
+            else:
+                with open(path, "w") as f:
+                    json.dump(payload, f)
+
+            # Construction emits the warning, so capture build() itself.
+            buf = BoundedBuffer()
+            with _capture(buf):
+                shell = (DevQ(config_path=path)
+                         .add_device(ibm_provider().get_device("FakeNairobiV2"))
+                         .build())
+                shell.onecmd("qconfig")
+            out = buf.getvalue()
+
+            check(expected in out,
+                  f"{label}: warned with {expected!r}")
+            # Whatever went wrong, the session must still be usable and the
+            # bad value must not have been adopted.
+            check("DevQ Core" in out,
+                  f"{label}: fell back to core defaults and built a session")
+    finally:
+        for f in os.listdir(tmpdir):
+            os.unlink(os.path.join(tmpdir, f))
+        os.rmdir(tmpdir)
+
+
+def block_provider_global_key_rejected():
+    '''A provider may not set global-scope config keys'''
+    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+
+    class OversteppingProvider(IBMSimulatedProvider):
+        def preferred_config(self):
+            # 'router' is global scope — providers own device keys only.
+            return {"shots": 2048, "router": "round_robin"}
+
+    provider = OversteppingProvider(seed=SEED)
+    buf = BoundedBuffer()
+    with _capture(buf):
+        shell = (DevQ(config_path=CONFIG + "router_only.config.json")
+                 .add_device(provider.get_device("FakeNairobiV2"))
+                 .build())
+        shell.onecmd("qconfig")
+    out = buf.getvalue()
+
+    expect(out, "attempted to set global key", "router")
+    # The device key it was entitled to set still applies.
+    check("2048" in out,
+          "the provider's legitimate device key (shots) was still honoured")
+    # And the global key it was not entitled to set did not take effect.
+    check("round_robin" not in out,
+          "the illegal global key was ignored, router stays 'noise'")
+
+
+# ── Backend factory ──────────────────────────────────────────────────────────
+
+def block_mock_topologies():
+    '''Every mock topology kind builds a usable device'''
+    from providers.devq.backend_factory import create_backend
+
+    expected_edges = {
+        "linear":           6,      # 7 qubits in a chain
+        "fully_connected":  21,     # C(7,2)
+    }
+    for kind, edges in expected_edges.items():
+        backend = create_backend(kind, 7, rng=None)
+        check(len(backend["coupling_map"]) == edges,
+              f"{kind} 7-qubit topology has {edges} edges, "
+              f"got {len(backend['coupling_map'])}")
+        check(len(backend["error_map"]) == 7,
+              f"{kind} generated an error map for every qubit")
+        check(set(backend["edge_error_map"]) == set(backend["coupling_map"]),
+              f"{kind} generated an error for every edge")
+
+    # Grid needs a perfect square; 9 qubits is 3x3 with 12 edges.
+    grid = create_backend("grid", 9, rng=None)
+    check(len(grid["coupling_map"]) == 12,
+          f"3x3 grid has 12 edges, got {len(grid['coupling_map'])}")
+
+    # And each kind actually runs a job end to end.
+    for kind, nq in (("linear", 5), ("grid", 4), ("fully_connected", 5)):
+        sh  = session(None, [("devq", kind, nq, None, None)])
+        out = run(sh, [f"qrun {BELL}", "qps"])
+        check("FINISHED" in out, f"a job completed on a {kind} mock device")
+
+
+def block_backend_factory_errors():
+    '''Invalid backend requests fail loudly at construction'''
+    from providers.devq.backend_factory import create_backend
+
+    cases = [
+        (("fully_connected", 1), "at least 2"),
+        (("nonexistent_kind", 5), "Unknown backend kind"),
+        (("grid", 5),             "perfect square"),
+    ]
+    for (kind, nq), fragment in cases:
+        try:
+            create_backend(kind, nq)
+            raised = None
+        except ValueError as e:
+            raised = str(e)
+        check(raised is not None and fragment in raised,
+              f"create_backend({kind!r}, {nq}) rejected with {fragment!r}, "
+              f"got {raised!r}")
+
+    # Unknown IBM backends are equally explicit.
+    try:
+        ibm_provider().get_device("FakeNotARealBackend")
+        raised = None
+    except ValueError as e:
+        raised = str(e)
+    check(raised is not None and "Unknown fake backend" in raised,
+          f"unknown IBM backend rejected, got {raised!r}")
+
+
+# ── Shell robustness ─────────────────────────────────────────────────────────
+
+def block_shell_input_handling():
+    '''Malformed or empty commands are handled without crashing'''
+    sh  = session("router_only.config.json",
+                  [("ibm", "FakeNairobiV2", None, None)])
+
+    out = run(sh, [
+        "qrunpack",              # nothing queued
+        "qmap 99",               # no such job
+        "qmap notanumber",       # not an id at all
+        "qmem d9",               # device out of range
+        "qtopology d0 99",       # qubit out of range
+        "qerrors z d0",          # invalid flag
+        "qrun",                  # no argument — usage
+    ])
+
+    expect(out,
+           "No jobs in queue.",
+           "Job 99 does not exist.",
+           "Invalid job id.",
+           "Device d9 does not exist",
+           "99 -- Doesn't exist",
+           "Invalid flag",
+           "Usage: qrun")
+
+    # None of it should have created a job or killed the session.
+    check(not sh.kernel.list_jobs(),
+          "malformed commands created no jobs")
+    after = run(sh, [f"qrun {BELL}"])
+    check("FINISHED" in after,
+          "the session still works after a run of bad input")
+
+
+def block_many_device_federation():
+    '''Routing and indexing hold beyond the usual three devices'''
+    ibm = ibm_provider()
+    sh  = (DevQ(config_path=CONFIG + "router_only.config.json")
+           .add_devices([
+               (ibm.get_device("FakeNairobiV2"), "nairobi"),
+               (ibm.get_device("FakeLagosV2"),   "lagos"),
+               (ibm.get_device("FakeCasablancaV2"), "casablanca"),
+               (ibm.get_device("FakeJakartaV2"),    "jakarta"),
+               ibm.get_device("FakeBelemV2"),
+           ])
+           .build())
+
+    out = run(sh, ["qdevices", f"qrun {BELL} --exec=jakarta",
+                   f"qrun {BELL} --no-exec=nairobi,lagos,casablanca,jakarta",
+                   "qps"])
+
+    # d4 is unnamed, so the deny-list leaves it as the only candidate —
+    # exercising index/name resolution across a five-device list.
+    check("jakarta" in device_of(out, 1),
+          f"named device 4 of 5 resolved, got {device_of(out, 1)}")
+    check(device_of(out, 2).startswith("d4"),
+          f"deny-list left only the unnamed d4, got {device_of(out, 2)}")
+    expect_re(out, r"\[Kernel\] Job \d+ FINISHED", 2)
+
+
 BLOCKS = [
     ("devices_and_config",       block_devices_and_config),
     ("noise_routing",            block_noise_routing),
     ("name_index_equivalence",   block_name_index_equivalence),
     ("name_validation",          block_name_validation),
     ("rejection_semantics",      block_rejection_semantics),
+    ("edge_threshold_semantics", block_edge_threshold_semantics),
+    ("combined_thresholds",      block_combined_thresholds),
     ("packing_across_devices",   block_packing_across_devices),
     ("parser_errors",            block_parser_errors),
     ("round_robin_router",       block_round_robin_router),
     ("per_device_config",        block_per_device_config),
     ("weight_normalisation",     block_weight_normalisation),
     ("zero_weight_fallback",     block_zero_weight_fallback),
+    ("config_validation",        block_config_validation),
+    ("provider_global_key",      block_provider_global_key_rejected),
+    ("lifecycle_waiting",        block_lifecycle_waiting),
+    ("lifecycle_failed",         block_lifecycle_failed),
+    ("mock_topologies",          block_mock_topologies),
+    ("backend_factory_errors",   block_backend_factory_errors),
+    ("shell_input_handling",     block_shell_input_handling),
+    ("many_device_federation",   block_many_device_federation),
     ("single_device_ibm",        block_single_device_ibm),
     ("single_device_named",      block_single_device_named),
     ("single_device_batch",      block_single_device_batch),
