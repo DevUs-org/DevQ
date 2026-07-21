@@ -20,7 +20,15 @@ from kernel.router.base_router import BaseRouter
 
 class RoundRobinRouter(BaseRouter):
 
-    def __init__(self):
+    def __init__(self, **kwargs):
+        '''
+        Accepts and ignores BaseRouter's scoring weights — round-robin
+        is noise- and load-oblivious by design, so the weight pair has
+        nothing to steer here. Forwarding them to super() keeps every
+        router constructible through the same call in DevQ._build_router,
+        the same precedent as StaticAllocator ignoring cost weights.
+        '''
+        super().__init__(**kwargs)
         self._last = -1   # index of the last device routed to
 
     def select(self, qcb, candidates):
