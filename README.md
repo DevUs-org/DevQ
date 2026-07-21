@@ -424,6 +424,10 @@ effective normalised values in both the global section and each device
 section. Allocators without a cost model (Static, Graph) ignore the
 weights — the same precedent as Static ignoring edge thresholds.
 
+The exact scoring formulas — the block cost `S`, the router's device
+score, and the normalisation rules — are stated formally, with worked
+values, in [`docs/cost-model.md`](docs/cost-model.md).
+
 One JSON file may freely mix both scopes; each loader reads only its own
 keys:
 
@@ -446,99 +450,6 @@ keys:
 Ready-made example config files — including the ones used by the sanity
 test blocks (`router_only`, `round_robin`, per-device overrides, weight
 variants) — live in `config/config_examples/`.
-
-### Cost Model & Routing Formulas
-
-This section states DevQ's two scoring formulas formally. Both are
-implemented in `NoiseGraphAllocator` (block selection) and `NoiseRouter`
-(device selection); the values below are what `qconfig` reports and what
-the test blocks assert against.
-
-**Notation.**
-
-| Symbol | Meaning |
-|---|---|
-| $Q$ | set of physical qubits on a device |
-| $E$ | set of undirected coupling edges $(u,v)$, $u < v$ |
-| $\varepsilon_q$ | readout error rate of qubit $q$ (`device.qubit_error(q)`) |
-| $\varepsilon_{uv}$ | two-qubit gate error rate on edge $(u,v)$ (`device.edge_error(u,v)`) |
-| $B \subseteq Q$ | a candidate block: a connected set of qubits, of size $n$ |
-| $n$ | qubits required by the circuit |
-| $\alpha, \beta$ | `qubit_error_weight`, `edge_error_weight`, with $\alpha + \beta = 1$ |
-| $w_q, w_n$ | `router_queue_weight`, `router_noise_weight`, with $w_q + w_n = 1$ |
-| $D$ | set of candidate devices for a job (already filtered by feasibility and `--exec`/`--no-exec`) |
-
-#### Block cost $S$
-
-The allocator scores each candidate block $B$ by summing its qubit
-errors and the errors of the edges *internal* to it (edges with exactly
-one endpoint in $B$ are not charged, since the circuit never uses them):
-
-$$S(B) \;=\; \alpha \sum_{q \in B} \varepsilon_q \;+\; \beta \sum_{(u,v) \in E(B)} \varepsilon_{uv}$$
-
-where $E(B) = \{(u,v) \in E : u \in B \text{ and } v \in B\}$ is the set
-of edges internal to the block.
-
-`NoiseGraphAllocator` returns $\arg\min_B S(B)$ over all connected
-blocks of size $n$ reachable from an eligible starting qubit. Thresholds
-are **hard constraints applied before scoring**, not penalty terms: with
-`--max-qubit-error` $\tau_q$ and `--max-edge-error` $\tau_e$, the
-eligible sets are $\{q : \varepsilon_q \le \tau_q\}$ and
-$\{(u,v) : \varepsilon_{uv} \le \tau_e\}$ (inclusive bounds), and a job
-with no feasible block is REJECTED rather than assigned a poor mapping.
-
-Weights are normalised so that $\alpha + \beta = 1$. Only the ratio
-affects $\arg\min_B S(B)$, so normalisation leaves allocator decisions
-unchanged while putting $S$ on one comparable scale across devices —
-which is what makes the router's use of $S$ meaningful. The defaults
-$\alpha = 0.1$, $\beta = 0.9$ reflect two-qubit gate error being the
-dominant NISQ noise source.
-
-#### Device score
-
-For each candidate device $d \in D$ the router computes two raw terms.
-Queue pressure counts both waiting and running work:
-
-$$p_d \;=\; \text{queued}(d) \;+\; \text{running}(d)$$
-
-Noise cost is a *best-case* estimate: the router dry-runs device $d$'s
-own configured allocator against a fresh, fully-free pool clone, and
-scores the mapping $B_d^\ast$ it returns using the **global-scope**
-$\alpha, \beta$:
-
-$$c_d \;=\; S\big(B_d^\ast\big), \qquad B_d^\ast = \text{allocate}_d(\text{circuit}, \text{free pool})$$
-
-Using one global $(\alpha, \beta)$ here rather than each device's own
-weights is deliberate — it is a single uniform ruler, so scores stay
-comparable across devices that may be configured differently. Note that
-$S$ is applied to whatever mapping the device's allocator actually
-returns, so a Static-configured device is scored on the noise-oblivious
-block Static would really pick. If allocation unexpectedly fails,
-$c_d = \infty$.
-
-Both terms are min-max normalised across the candidate set before
-weighting, because queue depths are small integers while noise costs sit
-around $0.01$–$0.1$ and raw mixing would let one term silently dominate.
-For a raw vector $x$ over $D$:
-
-$$\hat{x}_d \;=\; \frac{x_d - \min_{d' \in D} x_{d'}}{\max_{d' \in D} x_{d'} - \min_{d' \in D} x_{d'}}$$
-
-with $\hat{x}_d = 0$ for all $d$ when the span is zero, and
-$\hat{x}_d = 1$ for any $x_d = \infty$. The device score is then
-
-$$\text{score}(d) \;=\; w_q \, \hat{p}_d \;+\; w_n \, \hat{c}_d$$
-
-and the router selects $\arg\min_{d \in D} \text{score}(d)$, breaking
-ties by lower device index so routing is deterministic.
-
-**A consequence worth noting.** Min-max normalisation is relative to the
-candidate set, so with two candidates the better device always
-normalises to $0$ and the worse to $1$ on each term independently. Ties
-at $w_q = w_n = 0.5$ are therefore common in two-device sessions
-whenever one device wins on queue and the other on noise — both score
-$0.5$, and the lower index wins. This is expected behaviour, not a
-degenerate case, and it is why several test blocks pin `--exec` to make
-routing assertions unambiguous.
 
 ### Reproducibility & Seeding
 
