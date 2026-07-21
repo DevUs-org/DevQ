@@ -789,6 +789,50 @@ def block_lifecycle_failed():
           f"running_jobs decremented after failure, got {ctx.running_jobs}")
 
 
+def block_wedged_provider_timeout():
+    '''A future that never resolves fails cleanly instead of hanging'''
+    from circuits.qasm_loader import load_qasm
+
+    class NeverResolves:
+        '''A future stuck in flight forever — a wedged provider or a dead
+        executor looks exactly like this from the kernel's side.'''
+        def done(self):   return False
+        def result(self): return None
+
+    sh  = session("router_only.config.json",
+                  [("ibm", "FakeNairobiV2", "solo", None)])
+    ctx = sh.kernel.contexts[0]
+    ctx.device.execute = lambda circuit, v2p_map, shots: NeverResolves()
+
+    # Drive the qrun path directly so the timeout can be set to 1s rather
+    # than the 300s production deadline.
+    buf = BoundedBuffer()
+    with _capture(buf):
+        qcb = sh.kernel.submit_job(load_qasm(BELL))
+        ctx_routed, _ = sh.kernel._route(qcb)
+        qcb.v2p_map = ctx_routed.memory_manager.allocate(qcb.circuit)
+        sh.kernel._execute(qcb, ctx_routed)
+        dispatched_running = ctx_routed.running_jobs
+        sh.kernel._wait_for(qcb, poll_interval=0.05, timeout=1)
+    out = buf.getvalue()
+
+    check(dispatched_running == 1,
+          f"job was dispatched and counted, got {dispatched_running}")
+    check(qcb.state.value == "FAILED",
+          f"wedged job ends FAILED rather than spinning, "
+          f"got {qcb.state.value}")
+    expect(out, "did not resolve within", "wedged")
+
+    # Same cleanup invariants as an ordinary failure — a wedged provider
+    # must not permanently shrink the device.
+    free = ctx_routed.memory_manager.pool.free_qubits
+    check(free == set(range(ctx_routed.device.num_qubits)),
+          f"qubits returned after timeout, got {sorted(free)}")
+    check(ctx_routed.running_jobs == 0,
+          f"running_jobs decremented after timeout, "
+          f"got {ctx_routed.running_jobs}")
+
+
 # ── Configuration robustness ─────────────────────────────────────────────────
 
 def block_config_validation():
@@ -1015,6 +1059,7 @@ BLOCKS = [
     ("provider_global_key",      block_provider_global_key_rejected),
     ("lifecycle_waiting",        block_lifecycle_waiting),
     ("lifecycle_failed",         block_lifecycle_failed),
+    ("wedged_provider_timeout",  block_wedged_provider_timeout),
     ("mock_topologies",          block_mock_topologies),
     ("backend_factory_errors",   block_backend_factory_errors),
     ("shell_input_handling",     block_shell_input_handling),

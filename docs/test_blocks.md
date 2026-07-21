@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 30 sanity blocks in `run_tests.py`, covering
+Specification for the 31 sanity blocks in `run_tests.py`, covering
 Phases 0–5.1.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 30 blocks, one line each
+python run_tests.py              # all 31 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -355,6 +355,23 @@ The warning is printed during `build()`, before any command runs, so
 this block captures construction as well as command output — worth
 knowing if you add similar blocks.
 
+
+### `wedged_provider_timeout`
+
+*A future that never resolves fails cleanly instead of hanging.*
+
+`Kernel._wait_for` polls until a job's future resolves. Before Phase 5.1
+it had no exit condition, so a wedged provider or a dead executor would
+spin forever — the shell appeared to hang with no diagnosis. It now
+carries a 300s deadline.
+
+The block substitutes a future whose `done()` is permanently `False` and
+drives the `qrun` path directly, so the timeout can be set to 1s rather
+than the production deadline. It asserts the job ends `FAILED` with a
+message naming the cause, and — the part that matters — that the same
+cleanup invariants hold as for an ordinary failure: qubits returned,
+`running_jobs` decremented. A wedged provider must not permanently shrink
+the device it wedged on.
 
 ### `config_validation`
 
