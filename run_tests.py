@@ -35,6 +35,7 @@ import signal
 import sys
 import traceback
 
+from circuits.execution_result import shutdown_executor
 from devq import DevQ, DevQError
 from providers.devq.devq_simulated_provider import DevQSimulatedProvider
 from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
@@ -93,54 +94,101 @@ def three_device(config="router_only.config.json", seed=SEED, d1_config=None):
     ], seed)
 
 
+# ── Trace ─────────────────────────────────────────────────────────────────────
+# Blocks capture session output internally, so the runner cannot see it
+# unless blocks record it. TRACE collects, per block, the commands sent,
+# the transcript they produced, and every assertion as it fires — which
+# is what -v and --checks print. Recording is unconditional and cheap;
+# only the printing is conditional.
+
+class Trace:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.commands = []   # command strings sent this block
+        self.output   = []   # transcripts, one per run() call
+        self.checks   = []   # (ok, description) per assertion
+
+    def note(self, ok, description):
+        self.checks.append((ok, description))
+
+    def transcript(self):
+        return "".join(self.output)
+
+
+TRACE = Trace()
+
+
 def run(shell, commands):
-    '''Drive a shell through commands, returning everything it printed.'''
+    '''
+    Drive a shell through commands, returning everything it printed.
+    Also records to TRACE so the runner can replay the session.
+    '''
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         for c in commands:
+            TRACE.commands.append(c)
             shell.onecmd(c)
-    return buf.getvalue()
+    out = buf.getvalue()
+    TRACE.output.append(out)
+    return out
 
 
 # ── Assertion helpers ─────────────────────────────────────────────────────────
+# Each records what it verified before raising, so a passing block can
+# still report what it proved rather than only that it did not fail.
 
 class Failure(Exception):
     pass
 
 
+def check(ok, description, record=True):
+    '''
+    Record an assertion and raise if it failed.
+
+    record=False suppresses the trace entry for internal guards (e.g.
+    "was this job dispatched at all?") that would otherwise repeat
+    every time a helper is called inside an f-string. They still fail
+    loudly; they are just not worth listing as findings.
+    '''
+    if record:
+        TRACE.note(bool(ok), description)
+    if not ok:
+        raise Failure(description)
+    return ok
+
+
 def expect(out, *needles):
     for n in needles:
-        if n not in out:
-            raise Failure(f"expected to find: {n!r}")
+        check(n in out, f"output contains {n!r}")
 
 
 def expect_absent(out, *needles):
     for n in needles:
-        if n in out:
-            raise Failure(f"expected NOT to find: {n!r}")
+        check(n not in out, f"output does NOT contain {n!r}")
 
 
 def expect_re(out, pattern, count=None):
     hits = re.findall(pattern, out)
-    if not hits:
-        raise Failure(f"no match for /{pattern}/")
-    if count is not None and len(hits) != count:
-        raise Failure(f"/{pattern}/ matched {len(hits)}x, expected {count}x")
+    if count is None:
+        check(bool(hits), f"/{pattern}/ matches ({len(hits)}x)")
+    else:
+        check(len(hits) == count,
+              f"/{pattern}/ matches {count}x (got {len(hits)})")
     return hits
 
 
 def mapping_of(out, job_id):
     '''Extract the v2p map a job was dispatched with.'''
     m = re.search(rf"Dispatching job {job_id} .*? qubits (\{{[^}}]*\}})", out)
-    if not m:
-        raise Failure(f"job {job_id} was never dispatched")
+    check(m is not None, f"job {job_id} was dispatched", record=False)
     return m.group(1)
 
 
 def device_of(out, job_id):
     m = re.search(rf"Dispatching job {job_id} → (\S+)", out)
-    if not m:
-        raise Failure(f"job {job_id} was never dispatched")
+    check(m is not None, f"job {job_id} was dispatched", record=False)
     return m.group(1)
 
 
@@ -176,14 +224,18 @@ def block_noise_routing():
                    f"qrun {BELL} --exec=d2",
                    f"qrun {GHZ} --exec=d2"])
 
-    if "nairobi" not in device_of(out, 1):
-        raise Failure(f"job 1 should route to nairobi, got {device_of(out, 1)}")
-    if mapping_of(out, 1) != "{0: 1, 1: 2}":
-        raise Failure(f"job 1 mapping {mapping_of(out, 1)}, expected {{0: 1, 1: 2}}")
-    if mapping_of(out, 2) != "{0: 1, 1: 3}":
-        raise Failure(f"job 2 mapping {mapping_of(out, 2)}, expected {{0: 1, 1: 3}}")
-    if mapping_of(out, 3) != "{0: 3, 1: 4, 2: 5}":
-        raise Failure(f"job 3 mapping {mapping_of(out, 3)}")
+    check("nairobi" in device_of(out, 1),
+          f"job 1 routed to nairobi (S 0.0102 < lagos 0.0249), "
+          f"got {device_of(out, 1)}")
+    check(mapping_of(out, 1) == "{0: 1, 1: 2}",
+          f"job 1 mapped to nairobi's best bell block {{0: 1, 1: 2}}, "
+          f"got {mapping_of(out, 1)}")
+    check(mapping_of(out, 2) == "{0: 1, 1: 3}",
+          f"job 2 mapped to lagos's best bell block {{0: 1, 1: 3}}, "
+          f"got {mapping_of(out, 2)}")
+    check(mapping_of(out, 3) == "{0: 3, 1: 4, 2: 5}",
+          f"job 3 (ghz) mapped to lagos {{0: 3, 1: 4, 2: 5}}, "
+          f"got {mapping_of(out, 3)}")
     expect_re(out, r"\[Kernel\] Job \d+ FINISHED", 3)
 
 
@@ -192,14 +244,14 @@ def block_name_index_equivalence():
     sh  = three_device()
     by_name  = run(sh, ["qerrors q nairobi", "qtopology nairobi 1"])
     by_index = run(sh, ["qerrors q d1", "qtopology d1 1"])
-    if by_name != by_index:
-        raise Failure("name and index forms produced different output")
+    check(by_name == by_index,
+          "qerrors/qtopology give identical output for 'nairobi' and 'd1'")
 
     out = run(sh, [f"qrun {BELL} --exec=nairobi", f"qrun {BELL} --exec=d1"])
-    if device_of(out, 1) != device_of(out, 2):
-        raise Failure("--exec=nairobi and --exec=d1 routed differently")
-    if mapping_of(out, 1) != mapping_of(out, 2):
-        raise Failure("name/index runs produced different mappings")
+    check(device_of(out, 1) == device_of(out, 2),
+          "--exec=nairobi and --exec=d1 route to the same device")
+    check(mapping_of(out, 1) == mapping_of(out, 2),
+          "--exec=nairobi and --exec=d1 produce the same mapping")
 
 
 def block_rejection_semantics():
@@ -211,13 +263,13 @@ def block_rejection_semantics():
 
     expect(out, "Job 1 REJECTED", "no connected block of 2 qubits")
     # job 2: same threshold but Nairobi is feasible, so it runs
-    if "nairobi" not in device_of(out, 2):
-        raise Failure("job 2 should route to nairobi rather than reject")
+    check("nairobi" in device_of(out, 2),
+          "job 2 runs on nairobi at the same threshold that rejected lagos")
     # job 3: infeasible everywhere — both devices named in one reason
     expect(out, "Job 3 REJECTED")
     m = re.search(r"Job 3 REJECTED: ([^\n]*)", out)
-    if "d1:" not in m.group(1) or "d2:" not in m.group(1):
-        raise Failure(f"expected both devices in reason, got: {m.group(1)}")
+    check(m and "d1:" in m.group(1) and "d2:" in m.group(1),
+          "job 3's rejection reason aggregates both d1 and d2")
 
 
 def block_packing_across_devices():
@@ -227,20 +279,22 @@ def block_packing_across_devices():
                    "qrunpack", "qps", "qmap 1", "qmem"])
 
     # two bells packed into the same cycle on disjoint qubits
-    if mapping_of(out, 1) != "{0: 1, 1: 2}":
-        raise Failure(f"job 1 mapping {mapping_of(out, 1)}")
-    if mapping_of(out, 2) != "{0: 4, 1: 5}":
-        raise Failure(f"job 2 mapping {mapping_of(out, 2)}")
+    check(mapping_of(out, 1) == "{0: 1, 1: 2}",
+          f"job 1 packed onto {{0: 1, 1: 2}}, got {mapping_of(out, 1)}")
+    check(mapping_of(out, 2) == "{0: 4, 1: 5}",
+          f"job 2 packed onto disjoint {{0: 4, 1: 5}} in the same cycle, "
+          f"got {mapping_of(out, 2)}")
     # Job 3 cannot fit alongside the two bells, so it waits a cycle and
     # allocates once qubits are freed. Assert the invariant (it lands on
     # nairobi, on a connected triple) rather than a specific block, since
     # which qubits are free depends on async completion order.
-    if "nairobi" not in device_of(out, 3):
-        raise Failure(f"job 3 should route to nairobi, got {device_of(out, 3)}")
-    if len(eval(mapping_of(out, 3))) != 3:
-        raise Failure(f"job 3 needs 3 qubits, got {mapping_of(out, 3)}")
-    if "lagos" not in device_of(out, 4):
-        raise Failure("job 4 was pinned to lagos")
+    check("nairobi" in device_of(out, 3),
+          f"job 3 routed to nairobi, got {device_of(out, 3)}")
+    check(len(eval(mapping_of(out, 3))) == 3,
+          f"job 3 (ghz) allocated 3 qubits after waiting a cycle: "
+          f"{mapping_of(out, 3)}")
+    check("lagos" in device_of(out, 4),
+          f"job 4 honoured its --exec=lagos pin, got {device_of(out, 4)}")
     expect_re(out, r"\[Kernel\] Job \d+ FINISHED", 4)
     # all qubits returned to their pools afterwards
     expect_absent(out, "[X]")
@@ -264,8 +318,8 @@ def block_parser_errors():
            "'sherbrooke' is not a device",
            "Named devices: nairobi, lagos",
            "No such file or directory")
-    if "No jobs." not in out:
-        raise Failure("errors leaked jobs into the process table")
+    check("No jobs." in out,
+          "no jobs were created — all five batches rejected atomically")
 
 
 def block_round_robin_router():
@@ -275,10 +329,10 @@ def block_round_robin_router():
 
     expect(out, "round_robin", "Round Robin Router", "User (global)")
     devices = [device_of(out, i) for i in (1, 2, 3)]
-    if not (devices[0].startswith("d0")
-            and "nairobi" in devices[1]
-            and "lagos" in devices[2]):
-        raise Failure(f"expected d0, d1, d2 rotation, got {devices}")
+    check(devices[0].startswith("d0")
+          and "nairobi" in devices[1]
+          and "lagos" in devices[2],
+          f"three identical bells rotated d0 → d1 → d2, got {devices}")
 
 
 def block_per_device_config():
@@ -290,9 +344,10 @@ def block_per_device_config():
     # scheduler and weights still come from core
     expect(out, "packing", "DevQ Core")
     # static ignores noise: first free block, not noise_graph's {0:1, 1:2}
-    if mapping_of(out, 1) != "{0: 0, 1: 1}":
-        raise Failure(f"static allocator gave {mapping_of(out, 1)}, "
-                      f"expected {{0: 0, 1: 1}}")
+    check(mapping_of(out, 1) == "{0: 0, 1: 1}",
+          f"static allocator took the first free block {{0: 0, 1: 1}} "
+          f"(S 0.0155) rather than noise_graph's {{0: 1, 1: 2}} (S 0.0102), "
+          f"got {mapping_of(out, 1)}")
 
 
 def block_weight_normalisation():
@@ -307,12 +362,13 @@ def block_weight_normalisation():
     # per-device override, edge-only
     expect(out, "User (d1)")
     # edge-only picks Nairobi's lowest-error edge (1,3) instead of (1,2)
-    if mapping_of(out, 1) != "{0: 1, 1: 3}":
-        raise Failure(f"edge-only weighting gave {mapping_of(out, 1)}, "
-                      f"expected {{0: 1, 1: 3}}")
+    check(mapping_of(out, 1) == "{0: 1, 1: 3}",
+          f"edge-only weighting flipped nairobi to {{0: 1, 1: 3}} "
+          f"(edge 0.0068 < 0.0070), got {mapping_of(out, 1)}")
     # Lagos unchanged: 1/9 has the same ratio as the 0.1/0.9 default
-    if mapping_of(out, 2) != "{0: 1, 1: 3}":
-        raise Failure(f"lagos mapping {mapping_of(out, 2)}")
+    check(mapping_of(out, 2) == "{0: 1, 1: 3}",
+          f"lagos unchanged at {{0: 1, 1: 3}} — 1/9 has the same ratio as "
+          f"the 0.1/0.9 default, got {mapping_of(out, 2)}")
 
 
 def block_zero_weight_fallback():
@@ -344,8 +400,9 @@ def block_single_device_ibm():
     expect(out, "fakenairobiv2")
     expect_absent(out, "d1", "d2")
     # noise_graph still picks Nairobi's best pair
-    if mapping_of(out, 1) != "{0: 1, 1: 2}":
-        raise Failure(f"single-device mapping {mapping_of(out, 1)}")
+    check(mapping_of(out, 1) == "{0: 1, 1: 2}",
+          f"noise_graph still picks {{0: 1, 1: 2}} with no peer devices, "
+          f"got {mapping_of(out, 1)}")
     expect(out, "FINISHED")
 
 
@@ -355,14 +412,14 @@ def block_single_device_named():
                   [("ibm", "FakeNairobiV2", "solo", None)])
     out = run(sh, ["qdevices", "qerrors q solo", f"qrun {BELL} --exec=solo"])
     expect(out, "solo (d0)")
-    if "solo" not in device_of(out, 1):
-        raise Failure("job did not route to the named single device")
+    check("solo" in device_of(out, 1),
+          f"job routed to the named sole device, got {device_of(out, 1)}")
 
     sh2  = session("router_only.config.json",
                    [("ibm", "FakeNairobiV2", "solo", None)])
     out2 = run(sh2, [f"qrun {BELL} --exec=d0"])
-    if mapping_of(out2, 1) != mapping_of(out, 1):
-        raise Failure("name and index disagreed on a single-device session")
+    check(mapping_of(out2, 1) == mapping_of(out, 1),
+          "--exec=solo and --exec=d0 produce the same mapping")
 
 
 def block_single_device_batch():
@@ -372,8 +429,8 @@ def block_single_device_batch():
     out = run(sh, [f"qsubmit {BELL} {BELL}", "qrunpack", "qps"])
     # both bells packed onto one device in the same cycle, disjoint qubits
     m1, m2 = mapping_of(out, 1), mapping_of(out, 2)
-    if m1 == m2:
-        raise Failure(f"packed jobs overlap: both got {m1}")
+    check(m1 != m2,
+          f"two bells packed onto disjoint blocks ({m1} and {m2})")
     expect_re(out, r"\[Kernel\] Job \d+ FINISHED", 2)
 
 
@@ -426,11 +483,14 @@ def block_plugin_matrix():
                     seconds=60
                 )
                 done = len(re.findall(r"\[Kernel\] Job \d+ FINISHED", out))
+                TRACE.note(done == 2, f"{combo}: {done}/2 jobs finished")
                 if done != 2:
                     broken.append(f"{combo}: {done}/2 jobs finished")
             except TimeoutError:
+                TRACE.note(False, f"{combo}: HUNG (qrunpack never returned)")
                 broken.append(f"{combo}: HUNG (qrunpack never returned)")
             except Exception as e:
+                TRACE.note(False, f"{combo}: {type(e).__name__}: {e}")
                 broken.append(f"{combo}: {type(e).__name__}: {e}")
     finally:
         for f in os.listdir(tmpdir):
@@ -467,19 +527,17 @@ def block_determinism_seeded():
 
     a = run(three_device(seed=42), cmds)
     b = run(three_device(seed=42), cmds)
-    if a != b:
-        raise Failure("two seed=42 sessions produced different output")
+    check(a == b, "two seed=42 sessions produced byte-identical transcripts")
 
     c = run(three_device(seed=43), cmds)
-    if a == c:
-        raise Failure("seed=43 reproduced seed=42's output")
+    check(a != c, "seed=43 diverges from seed=42")
 
     # distinct runs of the same circuit must not clone counts
     counts = re.findall(r"\[Kernel\] Job \d+ FINISHED\. Counts: (\{[^}]*\})", a)
-    if len(counts) < 2:
-        raise Failure("expected at least two count sets")
-    if counts[0] == counts[1]:
-        raise Failure("identical circuits cloned counts — derived seeds broken")
+    check(len(counts) >= 2, f"at least two count sets recorded ({len(counts)})")
+    check(counts[0] != counts[1],
+          "identical circuits produced different counts — derived per-run "
+          "seeds (seed+k), not one reused seed")
 
 
 def block_determinism_unseeded():
@@ -487,8 +545,7 @@ def block_determinism_unseeded():
     cmds = ["qerrors q d0", f"qrun {BELL} --exec=d1"]
     a = run(three_device(seed=None), cmds)
     b = run(three_device(seed=None), cmds)
-    if a == b:
-        raise Failure("unseeded sessions were identical — seeding leaked")
+    check(a != b, "two unseeded sessions differ — default path stays random")
 
 
 def block_bug_fix_witnesses():
@@ -505,11 +562,12 @@ def block_bug_fix_witnesses():
 
     # ~27% would mean Nairobi ran under Lagos's noise model (shared-state bug);
     # ~10% would mean initial_layout was dropped (v2p_map bug).
-    if not 0.02 < nairobi < 0.08:
-        raise Failure(f"nairobi bell error {nairobi:.3f}, expected ~0.05 — "
-                      f"suspect noise-model leak or dropped v2p_map")
-    if not 0.10 < lagos < 0.22:
-        raise Failure(f"lagos bell error {lagos:.3f}, expected ~0.15")
+    check(0.02 < nairobi < 0.08,
+          f"nairobi bell error {nairobi:.1%} is ~5% — not ~27% (lagos noise "
+          f"model leak) and not ~10% (dropped v2p_map)")
+    check(0.10 < lagos < 0.22,
+          f"lagos bell error {lagos:.1%} is ~15% — qubit 1's 13.6% readout "
+          f"error dominates")
 
 
 def block_name_validation():
@@ -520,18 +578,20 @@ def block_name_validation():
     for bad in ["d0", "d7", "q", "e", "b", "", "   ", "has space", "has,comma"]:
         try:
             DevQ().add_device(dev, name=bad)
+            rejected = False
         except DevQError:
-            continue
-        raise Failure(f"name {bad!r} should have been rejected")
+            rejected = True
+        check(rejected, f"name {bad!r} rejected at attach time")
 
     # duplicates, case-insensitively
     try:
         (DevQ().add_device(dev, name="alpha")
                .add_device(ibm.get_device("FakeLagosV2"), name="ALPHA"))
+        dup_rejected = False
     except DevQError:
-        pass
-    else:
-        raise Failure("duplicate name differing only in case was accepted")
+        dup_rejected = True
+    check(dup_rejected, "duplicate name 'alpha'/'ALPHA' rejected "
+                        "(case-insensitive)")
 
 
 BLOCKS = [
@@ -565,8 +625,11 @@ def main():
                         help="only run blocks whose name contains PATTERN")
     parser.add_argument("--list", action="store_true",
                         help="list block names and exit")
+    parser.add_argument("-c", "--checks", action="store_true",
+                        help="print every assertion each block verified")
     parser.add_argument("-v", "--verbose", action="store_true",
-                        help="print each block's captured output")
+                        help="print the commands and full session transcript "
+                             "for each block (implies --checks)")
     args = parser.parse_args()
 
     blocks = BLOCKS
@@ -581,22 +644,65 @@ def main():
             print(f"  {name:26} {(fn.__doc__ or '').strip().splitlines()[0]}")
         return 0
 
+    detail = args.checks or args.verbose
     width  = max(len(n) for n, _ in blocks)
     failed = []
 
     print(f"\nRunning {len(blocks)} block(s)\n")
     for name, fn in blocks:
-        print(f"  {name:<{width}}  ", end="", flush=True)
+        TRACE.reset()
+        # Each block builds its own sessions; reclaim their executor
+        # threads before the next one rather than accumulating workers
+        # across every block in the suite.
+        shutdown_executor()
+
+        if detail:
+            summary = (fn.__doc__ or "").strip().splitlines()[0]
+            print(f"\n{'─' * 72}\n{name}\n  {summary}\n")
+        else:
+            print(f"  {name:<{width}}  ", end="", flush=True)
+
+        status = "PASS"
         try:
             with contextlib.redirect_stderr(io.StringIO()):
                 fn()
-            print("PASS")
         except Failure as e:
-            print("FAIL")
+            status = "FAIL"
             failed.append((name, str(e)))
         except Exception:
-            print("ERROR")
+            status = "ERROR"
             failed.append((name, traceback.format_exc()))
+
+        if detail:
+            if args.verbose and TRACE.commands:
+                print("  commands")
+                for c in TRACE.commands:
+                    print(f"    devq> {c}")
+                print()
+                transcript = TRACE.transcript().rstrip()
+                if transcript:
+                    print("  session output")
+                    for line in transcript.splitlines():
+                        print(f"    {line}")
+                    print()
+            if TRACE.checks:
+                print("  checks")
+                for ok, desc in TRACE.checks:
+                    mark = "PASS" if ok else "FAIL"
+                    head, *rest = desc.splitlines()
+                    print(f"    [{mark}] {head}")
+                    for extra in rest:
+                        print(f"           {extra}")
+                print()
+            print(f"  → {status} ({sum(1 for ok, _ in TRACE.checks if ok)}"
+                  f"/{len(TRACE.checks)} checks)")
+        else:
+            print(status)
+
+    # Reclaim the final block's executor threads too. Without this the
+    # interpreter blocks joining idle non-daemon workers at exit, which
+    # looks exactly like a hang after the last line of output.
+    shutdown_executor()
 
     print()
     if failed:

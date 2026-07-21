@@ -12,12 +12,32 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 20 blocks
+python run_tests.py              # all 20 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
-python run_tests.py -k matrix    # just the plugin sweep
-python run_tests.py -v           # also print captured output
+python run_tests.py -c           # every assertion each block verified
+python run_tests.py -v           # commands + full session transcript
 ```
+
+Default output is one line per block. `-c` / `--checks` expands that
+into the individual assertions, each stating the fact it proved:
+
+```
+noise_routing
+  Noise-aware routing picks Nairobi; Lagos mappings are correct
+
+  checks
+    [PASS] job 1 routed to nairobi (S 0.0102 < lagos 0.0249), got nairobi
+    [PASS] job 1 mapped to nairobi's best bell block {0: 1, 1: 2}, ...
+    ...
+  → PASS (5/5 checks)
+```
+
+`-v` additionally prints the commands sent and the raw session
+transcript — the same output you would see typing them into
+`example.py` by hand. Use it when a block fails and you want to read
+what the shell actually said, or when adding a block and you want to
+confirm it exercises what you think it does.
 
 Run from the project root — circuit paths are relative. Exit status is
 0 only when every block passes, so `python run_tests.py && git push`
@@ -25,6 +45,13 @@ works as a pre-push gate.
 
 The full suite takes a few minutes, most of it `plugin_matrix` running
 36 Aer simulations. While iterating, `-k <block>` is much faster.
+
+The runner calls `shutdown_executor()` between blocks and once more
+before returning. `submit_async`'s shared `ThreadPoolExecutor` uses
+non-daemon workers, so idle threads left behind by ~30 sessions would
+otherwise be joined at interpreter exit — the process appears to hang
+after printing its final line. Anything else that builds many sessions
+in one process should do the same.
 
 Each block builds its own session through `DevQ.build()`, which returns
 a wired `QShell` without entering the command loop, and drives it with

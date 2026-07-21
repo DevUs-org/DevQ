@@ -13,6 +13,7 @@ concurrent.futures.Future so execution genuinely overlaps with
 scheduling, routing, and shell interaction.
 '''
 
+import atexit
 import concurrent.futures
 
 
@@ -98,4 +99,26 @@ def submit_async(fn, *args, **kwargs) -> AsyncExecutionFuture:
         _EXECUTOR = concurrent.futures.ThreadPoolExecutor(
             max_workers=8, thread_name_prefix="devq-exec"
         )
+        atexit.register(shutdown_executor)
     return AsyncExecutionFuture(_EXECUTOR.submit(fn, *args, **kwargs))
+
+
+def shutdown_executor(wait=True):
+    '''
+    Shut the shared executor down and drop it, so a later submit_async()
+    builds a fresh one.
+
+    ThreadPoolExecutor workers are NON-daemon: without this, they stay
+    alive after the last job resolves and the interpreter blocks on them
+    at exit. One interactive session barely notices, but a process that
+    builds many sessions — the test runner, or any batch driver —
+    accumulates idle workers and appears to hang after its final output.
+
+    Registered with atexit on first use, so normal programs need not
+    call it. Call it directly to reclaim threads mid-process, e.g.
+    between independent sessions in a long-running harness.
+    '''
+    global _EXECUTOR
+    if _EXECUTOR is not None:
+        _EXECUTOR.shutdown(wait=wait)
+        _EXECUTOR = None

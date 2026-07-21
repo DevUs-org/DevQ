@@ -35,7 +35,8 @@ DevQ(config_path="~/devq.config.json") \
 ```
 
 `example.py` is a runnable reference session; `run_tests.py` verifies the
-whole plugin matrix (`python run_tests.py --list` to see the blocks).
+whole plugin matrix (`--list` to see the blocks, `-c` to see every
+assertion, `-v` for full session transcripts).
 
 Devices are indexed `d0..dn` in add order — stable for the session, shown by
 `qdevices`, and referenced by `--exec`/`--no-exec` flags and device-scoped
@@ -619,9 +620,9 @@ SDF) in an earlier phase of DevQ.
 ### Use of AI Tools
 
 Large language models were used as development aids in this work:
-Claude Fable 5 (Anthropic) for code generation, debugging, and figure
-preparation; GPT-5.5 (OpenAI) for architecture refinement and design
-brainstorming; and Gemini 3.5 Flash (Google) for literature search.
-All designs, AI-assisted code, and text were reviewed, tested, and
-validated by the author, who takes sole responsibility for the content
-and correctness of this project.
+Claude Fable 5/ Opus 4.8 (Anthropic) for code generation, debugging,
+documentation, and figure preparation; GPT-5.5 (OpenAI) for architecture
+refinement and design brainstorming; and Gemini 3.5 Flash (Google) for
+literature search. All designs, AI-assisted code, and text were reviewed,
+tested, and validated by the author, who takes sole responsibility for the
+content and correctness of this project.
