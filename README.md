@@ -462,6 +462,17 @@ IBMSimulatedProvider(seed=42)                            # reproducible counts
 `seed=None` (the default) preserves fully unseeded behaviour, byte-identical
 to a build without the parameter.
 
+The example `main.py` wires this to a `--seed` flag, so a whole session can
+be made reproducible without editing code:
+
+```bash
+python main.py              # unseeded (default)
+python main.py --seed 42    # identical devices and counts every launch
+```
+
+Two launches with the same seed produce byte-identical transcripts —
+d0's generated topology and error maps, and every job's counts.
+
 **What each provider does with it.** `DevQSimulatedProvider` holds a
 provider-local `random.Random(seed)` used for topology and error map
 generation, so a generated device is identical across launches. The global

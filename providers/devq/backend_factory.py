@@ -22,10 +22,17 @@ import random
 
 BASIS_GATES = ["cx", "rz", "sx", "x", "measure"]
 
-def create_backend(kind="fully_connected", num_qubits=5) -> dict:
+def create_backend(kind="fully_connected", num_qubits=5, rng=None) -> dict:
+    '''
+    Args:
+        rng : random.Random or None — source of randomness for topology
+              and error map generation. None (default) uses the global
+              random module, preserving unseeded behaviour.
+    '''
     if num_qubits < 2:
         raise ValueError("Number of qubits must be at least 2.")
 
+    rng  = rng if rng is not None else random
     kind = kind.lower()
 
     if kind == "fully_connected":
@@ -35,15 +42,15 @@ def create_backend(kind="fully_connected", num_qubits=5) -> dict:
     elif kind == "grid":
         coupling_map = _grid(num_qubits)
     elif kind == "random":
-        coupling_map = _random(num_qubits)
+        coupling_map = _random(num_qubits, rng=rng)
     else:
         raise ValueError(
             f"Unknown backend kind: '{kind}'. "
             "Choose from: fully_connected, linear, grid, random."
         )
 
-    error_map      = _generate_qubit_errors(num_qubits)
-    edge_error_map = _generate_edge_errors(coupling_map)
+    error_map      = _generate_qubit_errors(num_qubits, rng)
+    edge_error_map = _generate_edge_errors(coupling_map, rng)
 
     return {
         "name"         : f"{kind}_backend",
@@ -88,12 +95,12 @@ def _grid(num_qubits) -> list:
     return coupling_map
 
 
-def _random(num_qubits, edge_probability=0.3) -> list:
+def _random(num_qubits, edge_probability=0.3, rng=random) -> list:
     coupling_map = [
         (i, j)
         for i in range(num_qubits)
         for j in range(i + 1, num_qubits)
-        if random.random() < edge_probability
+        if rng.random() < edge_probability
     ]
 
     # Guarantee at least one edge so the device is never fully disconnected
@@ -105,24 +112,24 @@ def _random(num_qubits, edge_probability=0.3) -> list:
 
 # ── Error map generators ──────────────────────────────────────────────────────
 
-def _generate_qubit_errors(num_qubits) -> dict:
+def _generate_qubit_errors(num_qubits, rng=random) -> dict:
     '''
     Simulate per-qubit readout error rates.
     Range 0.1% to 5% — consistent with real NISQ device calibration data.
     '''
     return {
-        q: random.uniform(0.001, 0.05)
+        q: rng.uniform(0.001, 0.05)
         for q in range(num_qubits)
     }
 
 
-def _generate_edge_errors(coupling_map) -> dict:
+def _generate_edge_errors(coupling_map, rng=random) -> dict:
     '''
     Simulate per-edge two-qubit gate error rates.
     Range 0.5% to 5% — consistent with real NISQ device calibration data.
     Keys are raw tuples here — QuantumDevice normalises them to sorted tuples.
     '''
     return {
-        (u, v): random.uniform(0.005, 0.05)
+        (u, v): rng.uniform(0.005, 0.05)
         for (u, v) in coupling_map
     }

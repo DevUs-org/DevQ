@@ -171,14 +171,15 @@ the RATIO equals the 0.1/0.9 default. Bonus: zero_weights.config.json prints a
 
 Block 10
 ~
-Determinism / seeding (Phase 5.1). Uses main_seeded.py, NOT main.py — same three devices
-but both providers constructed with seed=42. Config is unchanged (router_only.config.json,
-already main_seeded.py's config_path). Run the command list THREE times as three separate
+Determinism / seeding (Phase 5.1). Same three devices and config as every other block
+(router_only.config.json); the only difference is main.py's --seed flag, which passes a
+seed to both providers at construction. Run the command list FOUR times as four separate
 fresh launches, saving each session's output:
-  Run A: python main_seeded.py   Run B: python main_seeded.py   Run C: python main.py
-Runs A and B are the reproducibility check; Run C is the negative control. Diff the full
-transcripts of A and B against each other. This is the ONLY block that asserts counts —
-seeding is what makes them assertable.
+  Run A: python main.py --seed 42    Run B: python main.py --seed 42
+  Run C: python main.py              Run D: python main.py
+Runs A and B are the reproducibility check; Runs C and D are the unseeded negative control.
+Diff the full transcripts A vs B, then C vs D. This is the ONLY block that asserts counts —
+seeding is what makes them assertable. `python main.py --help` should list --seed.
 ~
 qerrors q d0
 qtopology d0
@@ -198,10 +199,10 @@ d2 {0:1, 1:3} counts {'00':871, '11':867, '01':165, '10':145}. All three FINISHE
 NEGATIVE CONTROL 1 (distinct runs stay distinct): Jobs 1 and 2 are the SAME circuit on the
 SAME device and mapping, but their counts DIFFER — derived per-run seeds (seed+k), not a
 single reused seed cloning results.
-NEGATIVE CONTROL 2 (seed=None unchanged): Run C's d0 qerrors/qtopology differ from Run A's
-AND differ again on a further main.py launch — unseeded behaviour is preserved exactly.
-Run C's job mappings still match Blocks 1-2 ({0:1,1:2} on d1, {0:1,1:3} on d2); only counts
-and d0's device vary.
+NEGATIVE CONTROL 2 (omitting --seed is unchanged): Runs C and D DIFFER from each other and
+from Run A — unseeded behaviour is preserved exactly, so every other block in this file
+still behaves as written. C and D's job mappings still match Blocks 1-2 ({0:1,1:2} on d1,
+{0:1,1:3} on d2); only counts and d0's generated device vary between them.
 BUG-FIX WITNESSES (Phase 5.1 fixed two execution bugs; these numbers only hold after both):
 Job 1's error weight outside 00/11 is ~5%, NOT ~27% — d1 executes under NAIROBI's noise
 model, not Lagos's (fixed shared-noise-model leak). And ~5% rather than ~10% reflects the
