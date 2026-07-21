@@ -3,9 +3,15 @@ Tags: Main
 
 Example entry point — launches a multi-device DevQ session:
 
-    d0 — DevQ simulated provider, random 7-qubit topology
-    d1 — IBM FakeNairobiV2 (real Nairobi calibration data)
-    d2 — IBM FakeLagosV2   (real Lagos calibration data)
+    d0            — DevQ simulated provider, random 7-qubit topology
+    nairobi (d1)  — IBM FakeNairobiV2 (real Nairobi calibration data)
+    lagos   (d2)  — IBM FakeLagosV2   (real Lagos calibration data)
+
+Devices may be given an optional name. A name is an alias, never a
+replacement: d1 and nairobi refer to the same device everywhere, in
+--exec/--no-exec and in device-scoped commands alike. d0 below is left
+unnamed to show the mixed case. Names must be unique, cannot look like
+an index (d0, d7, ...), and cannot shadow a shell keyword (q, e, b).
 
 The NoiseRouter (default) binds each job to the best feasible device
 by noise quality and queue pressure; pin jobs with --exec/--no-exec.
@@ -43,6 +49,8 @@ if __name__ == "__main__":
 
     DevQ(config_path='./config/config_examples/router_only.config.json') \
         .add_device(DevQSimulatedProvider(seed=args.seed).get_device("random", 7)) \
-        .add_device(ibm.get_device("FakeNairobiV2")) \
-        .add_device(ibm.get_device("FakeLagosV2")) \
+        .add_devices([
+            (ibm.get_device("FakeNairobiV2"), "nairobi"),
+            (ibm.get_device("FakeLagosV2"),   "lagos"),
+        ]) \
         .start()

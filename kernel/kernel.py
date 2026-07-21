@@ -177,7 +177,7 @@ class Kernel:
 
     def _execute(self, qcb, ctx):
         print(f"[Kernel] Dispatching job {qcb.job_id} → "
-              f"d{ctx.index} ({ctx.device.name}) qubits {qcb.v2p_map}")
+              f"{ctx.label} qubits {qcb.v2p_map}")
         qcb.future = ctx.device.execute(qcb.circuit, qcb.v2p_map,
                                         shots=ctx.shots)
         qcb.state  = JobStates.RUNNING

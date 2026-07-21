@@ -9,7 +9,7 @@ Implemented in `kernel/memory/allocators/noise_graph_allocator.py`
 (block selection) and `kernel/router/noise_router.py` (device
 selection). Weight resolution and normalisation live in
 `config/config_loader.py`. The values below are what `qconfig` reports
-and what `test_blocks.txt` asserts against.
+and what [`test_blocks.md`](test_blocks.md) asserts against.
 
 **Scope.** Phase 5.1. Phase 5.3 will extend this file with the metrics
 layer (fidelity against closed-form ideals, throughput, queue latency,
@@ -112,7 +112,7 @@ routing assertions unambiguous.
 
 Reference values on the pinned stack (qiskit-ibm-runtime 0.45.1), with
 default weights $\alpha = 0.1$, $\beta = 0.9$. These reproduce the
-mappings asserted in `test_blocks.txt` Blocks 2 and 4.
+mappings asserted in [`test_blocks.md`](test_blocks.md) Blocks 2 and 4.
 
 **Bell circuit ($n = 2$).** Every connected pair is a candidate block.
 

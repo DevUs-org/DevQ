@@ -39,6 +39,36 @@ Devices are indexed `d0..dn` in add order — stable for the session, shown by
 commands. `add_devices([d1, d2, ...])` attaches several at once;
 `start()` raises `DevQError` if no device is attached.
 
+### Device names
+
+A device can be given a name, which acts as an **alias for its index** —
+never a replacement. `d1` and `nairobi` refer to the same device
+everywhere: in `--exec`/`--no-exec` lists and in every device-scoped
+command.
+
+```python
+DevQ() \
+    .add_device(sim_device) \
+    .add_devices([(nairobi_device, "nairobi"), (lagos_device, "lagos")]) \
+    .start()
+```
+
+`add_device(device, config_path, name)` names a device that also needs
+its own config file; `add_devices()` takes bare devices, `(device, name)`
+tuples, or a mix. Naming is optional and per-device — an unnamed device
+is simply referred to by index.
+
+```
+qerrors q nairobi          # same as: qerrors q d1
+qrun bell.qasm --exec=nairobi,d2
+```
+
+Named devices display as `nairobi (d1)`; unnamed ones as `d0`. Names are
+case-insensitive, must be unique, and are rejected at attach time if
+they are empty, contain whitespace or commas, look like an index
+(`d0`, `d7`, ...), or shadow a shell subcommand argument (`q`, `e`, `b`)
+— all of which would make a reference ambiguous.
+
 ---
 
 ## Code Tags
@@ -514,6 +544,15 @@ requires matching the pinned stack in `requirements.txt`.
 Because per-device FCFS queues sit below the router, FCFS ordering is
 per-device: global submission order is approximately preserved via routing
 order — the standard two-level-scheduling tradeoff.
+
+---
+
+## Further documentation
+
+| Document | Contents |
+|---|---|
+| [`docs/cost-model.md`](docs/cost-model.md) | Formal statement of the block cost `S` and the router's device score, with notation and worked values |
+| [`docs/test_blocks.md`](docs/test_blocks.md) | Manual sanity test plan — ten blocks covering routing, allocation, config cascade, error handling and determinism |
 
 ---
 

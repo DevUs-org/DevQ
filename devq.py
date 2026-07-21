@@ -49,6 +49,8 @@ Configuration priority:
         each device's copy steers that device's allocator.
 '''
 
+import re
+
 from hardware.device_loader import load_device
 from kernel.kernel import Kernel
 from kernel.device_context import DeviceContext
@@ -87,6 +89,62 @@ class DevQError(Exception):
     pass
 
 
+# Names that would shadow a subcommand keyword or positional argument in
+# the shell's device-token resolution (qerrors q|e|b, qtopology <int>).
+_RESERVED_NAMES = frozenset({"q", "e", "b"})
+
+_INDEX_NAME_RE = re.compile(r"^d\d+$")
+
+
+def _validate_device_name(name, taken):
+    '''
+    Validate a user-supplied device name and return its canonical
+    (lowercased) form.
+
+    Names are aliases for device indices and are resolved wherever a dN
+    token is accepted, so they must not be ambiguous with an index, with
+    each other, or with a shell subcommand keyword.
+
+    Raises:
+        DevQError: on any invalid or conflicting name.
+    '''
+    if not isinstance(name, str):
+        raise DevQError(f"Device name must be a string, got {type(name).__name__}.")
+
+    cleaned = name.strip().lower()
+
+    if not cleaned:
+        raise DevQError("Device name cannot be empty or whitespace only.")
+
+    if _INDEX_NAME_RE.match(cleaned):
+        raise DevQError(
+            f"Device name '{name}' is reserved — names matching d<number> "
+            f"would be ambiguous with device indices. Devices always keep "
+            f"their index reference (d0, d1, ...) alongside any name."
+        )
+
+    if cleaned in _RESERVED_NAMES:
+        raise DevQError(
+            f"Device name '{name}' is reserved — it would shadow a shell "
+            f"subcommand argument (e.g. 'qerrors q d1'). "
+            f"Reserved: {', '.join(sorted(_RESERVED_NAMES))}."
+        )
+
+    if any(c.isspace() for c in cleaned) or ',' in cleaned:
+        raise DevQError(
+            f"Device name '{name}' cannot contain whitespace or commas — "
+            f"names appear in comma-separated lists such as --exec=a,b."
+        )
+
+    if cleaned in taken:
+        raise DevQError(
+            f"Duplicate device name '{name}' — names must be unique "
+            f"(comparison is case-insensitive)."
+        )
+
+    return cleaned
+
+
 class DevQ:
 
     def __init__(self, device=None, config_path=None):
@@ -101,14 +159,15 @@ class DevQ:
                          (router policy).
         '''
         self._global_config_path = config_path
-        self._devices = []   # list of (QuantumDevice, device_config_path)
+        self._devices = []   # list of (QuantumDevice, config_path, name)
+        self._names   = set()   # canonical names taken, for uniqueness
 
         if device is not None:
             self.add_device(device)
 
     # ── Device attachment ─────────────────────────────────────────────────────
 
-    def add_device(self, device, config_path=None):
+    def add_device(self, device, config_path=None, name=None):
         '''
         Attach a device. Returns self for chaining.
 
@@ -117,17 +176,46 @@ class DevQ:
             config_path: optional per-device user JSON config file —
                          highest-priority level of the cascade, applies
                          to this device only.
+            name:        optional alias for this device, usable anywhere
+                         a dN token is accepted (--exec, --no-exec, and
+                         device-scoped commands). The index reference
+                         always keeps working; a name is an addition,
+                         never a replacement. Case-insensitive, must be
+                         unique, and may not look like an index or
+                         shadow a shell keyword.
         '''
-        self._devices.append((load_device(device), config_path))
+        resolved = None
+        if name is not None:
+            resolved = _validate_device_name(name, self._names)
+            self._names.add(resolved)
+
+        self._devices.append((load_device(device), config_path, resolved))
         return self
 
     def add_devices(self, devices):
         '''
-        Attach several devices at once (no per-device configs).
-        Returns self for chaining.
+        Attach several devices at once. Returns self for chaining.
+
+        Each entry is either a bare device or a (device, name) tuple;
+        the two forms may be mixed freely:
+
+            .add_devices([(d0, "nairobi"), (d1, "lagos"), d2, d3])
+
+        Per-device config paths are not available here — use
+        add_device(device, config_path, name) when a device needs one.
         '''
-        for device in devices:
-            self.add_device(device)
+        for entry in devices:
+            if isinstance(entry, tuple):
+                if len(entry) != 2:
+                    raise DevQError(
+                        f"add_devices entries are either a device or a "
+                        f"(device, name) tuple — got a {len(entry)}-tuple. "
+                        f"Per-device config paths need add_device()."
+                    )
+                device, name = entry
+                self.add_device(device, name=name)
+            else:
+                self.add_device(entry)
         return self
 
     # ── Session start ─────────────────────────────────────────────────────────
@@ -152,7 +240,7 @@ class DevQ:
         )
 
         contexts = []
-        for index, (device, device_config_path) in enumerate(self._devices):
+        for index, (device, device_config_path, name) in enumerate(self._devices):
             config, provenance = load_device_config(
                 device.provider,
                 index,
@@ -171,6 +259,7 @@ class DevQ:
 
             contexts.append(DeviceContext(
                 index          = index,
+                name           = name,
                 device         = device,
                 memory_manager = memory,
                 scheduler      = scheduler,

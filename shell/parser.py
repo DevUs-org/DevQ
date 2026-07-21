@@ -13,6 +13,7 @@ Syntax:
         job.qasm --max-qubit-error=0.05   qubit threshold only
         job.qasm --max-edge-error=0.1     edge threshold only
         job.qasm --exec=d0,d2             allow-list: may ONLY run on d0/d2;
+        job.qasm --exec=nairobi            names work wherever dN does;
                                           if infeasible on all of them the
                                           job is REJECTED — never re-routed
         job.qasm --no-exec=d1             deny-list: never routed to d1
@@ -26,8 +27,9 @@ Syntax:
 
 Rules:
     - Threshold values must be floats in [0, 1].
-    - Device lists are comma-separated d<int> tokens (no brackets —
-      brackets are reserved for job grouping): --exec=d0,d1
+    - Device lists are comma-separated tokens (no brackets — brackets
+      are reserved for job grouping): --exec=d0,d1 or --exec=nairobi,d2.
+      A token is either a dN index or a user-supplied device name.
     - --exec and --no-exec are mutually exclusive per job/group.
     - Device *existence* is validated at submit time by the shell
       (the parser cannot know how many devices are attached);
@@ -46,8 +48,11 @@ class JobSpec:
     file_path:       str
     max_qubit_error: float | None = None  # None = no qubit-error filtering
     max_edge_error:  float | None = None  # None = no edge-error filtering
-    exec_on:         list[int] | None = None  # allow-list of device indices
-    no_exec_on:      list[int] | None = None  # deny-list of device indices
+    # Device references as WRITTEN by the user — "d0" or a device name.
+    # The parser cannot resolve these (it does not know what is
+    # attached); the shell resolves them to indices at submit time.
+    exec_on:         list[str] | None = None  # allow-list of device refs
+    no_exec_on:      list[str] | None = None  # deny-list of device refs
 
     def __repr__(self):
         return (f"JobSpec(file={self.file_path}, "
@@ -242,11 +247,16 @@ def _parse_flag(flag: str) -> tuple:
     return key, val
 
 
-def _parse_device_list(key: str, raw_val: str) -> list[int]:
+def _parse_device_list(key: str, raw_val: str) -> list[str]:
     '''
-    Parse a comma-separated device list ("d0,d2") into sorted unique
-    device indices ([0, 2]). Format check only — existence against the
-    attached device count is the shell's job at submit time.
+    Parse a comma-separated device list ("d0,nairobi") into a list of
+    unique device reference tokens, order preserved.
+
+    Tokens are either dN indices or user-supplied device names. The
+    parser validates FORM only — that tokens are non-empty and bracket
+    free. Whether a token names an attached device (and what index it
+    resolves to) is the shell's job at submit time, since the parser
+    has no view of the device federation.
     '''
     if '[' in raw_val or ']' in raw_val:
         raise ValueError(
@@ -255,15 +265,15 @@ def _parse_device_list(key: str, raw_val: str) -> list[int]:
             f"(brackets are reserved for job grouping)."
         )
 
-    indices = []
+    refs = []
     for part in raw_val.split(','):
         part = part.strip()
-        if not (len(part) >= 2 and part[0] == 'd' and part[1:].isdigit()):
+        if not part:
             raise ValueError(
-                f"Invalid device '{part}' in '--{key}={raw_val}'. "
-                f"Devices are written d<index> — e.g. d0. "
-                f"Use qdevices to list attached devices."
+                f"Empty device reference in '--{key}={raw_val}'. "
+                f"Device lists are comma-separated — e.g. --{key}=d0,d1."
             )
-        indices.append(int(part[1:]))
+        if part.lower() not in [r.lower() for r in refs]:
+            refs.append(part)
 
-    return sorted(set(indices))
+    return refs

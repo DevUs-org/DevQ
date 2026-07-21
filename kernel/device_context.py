@@ -22,10 +22,14 @@ mechanisms.
 class DeviceContext:
 
     def __init__(self, index, device, memory_manager, scheduler,
-                 config, provenance):
+                 config, provenance, name=None):
         '''
         Args:
             index:          stable device index (d0..dn, add order)
+            name:           optional user-supplied device name — an
+                            alias for the index, usable anywhere dN is
+                            accepted. None means the device is referred
+                            to by index alone.
             device:         QuantumDevice
             memory_manager: MemoryManager bound to this device
             scheduler:      scheduler INSTANCE bound to this context
@@ -33,6 +37,7 @@ class DeviceContext:
             provenance:     per-key source labels for qconfig
         '''
         self.index          = index
+        self.name           = name
         self.device         = device
         self.memory_manager = memory_manager
         self.scheduler      = scheduler
@@ -45,6 +50,21 @@ class DeviceContext:
         self.running_jobs   = 0
 
     @property
+    def label(self):
+        '''
+        Display form for this device: "nairobi (d1)" when the user named
+        it, plain "d1" when they did not. Every user-facing print uses
+        this, so naming a device changes output everywhere at once.
+        '''
+        return f"{self.name} (d{self.index})" if self.name else f"d{self.index}"
+
+    @property
+    def ref(self):
+        '''Canonical index reference, "d1" — used where a bare token is
+        wanted regardless of naming (qps columns, error messages).'''
+        return f"d{self.index}"
+
+    @property
     def shots(self):
         return self.config["shots"]
 
@@ -53,5 +73,5 @@ class DeviceContext:
         return len(self.scheduler.queue)
 
     def __repr__(self):
-        return (f"DeviceContext(d{self.index}, {self.device.name}, "
+        return (f"DeviceContext({self.label}, {self.device.name}, "
                 f"{type(self.device.provider).__name__})")

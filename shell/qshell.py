@@ -85,21 +85,50 @@ class QShell(cmd.Cmd):
     def _contexts(self):
         return self.kernel.list_devices()
 
+    def _lookup_name(self, token):
+        '''Context whose user-supplied name matches token, or None.'''
+        needle = token.strip().lower()
+        for ctx in self._contexts():
+            if ctx.name and ctx.name == needle:
+                return ctx
+        return None
+
+    def _is_device_token(self, token):
+        '''
+        True if token refers to an attached device, by index or by name.
+
+        Used to DISCRIMINATE device tokens from other positional
+        arguments, so it must not raise: an out-of-range index like d9
+        is still recognisably a device reference (and reported as a bad
+        device later), while an arbitrary word is only a device if it
+        actually matches an attached name.
+        '''
+        return bool(_DEVICE_RE.match(token)) or self._lookup_name(token) is not None
+
     def _parse_device_token(self, token):
         '''
-        "d2" → context or raises ValueError with a user-facing message.
+        "d2" or a user-supplied name → context, or raises ValueError
+        with a user-facing message.
         '''
-        m = _DEVICE_RE.match(token)
-        if not m:
-            raise ValueError(f"'{token}' is not a device — expected dN "
-                             f"(see qdevices).")
-        index    = int(m.group(1))
         contexts = self._contexts()
-        if index >= len(contexts):
-            raise ValueError(f"Device d{index} does not exist — "
-                             f"{len(contexts)} device(s) attached "
-                             f"(d0..d{len(contexts)-1}).")
-        return contexts[index]
+
+        m = _DEVICE_RE.match(token)
+        if m:
+            index = int(m.group(1))
+            if index >= len(contexts):
+                raise ValueError(f"Device d{index} does not exist — "
+                                 f"{len(contexts)} device(s) attached "
+                                 f"(d0..d{len(contexts)-1}).")
+            return contexts[index]
+
+        ctx = self._lookup_name(token)
+        if ctx is not None:
+            return ctx
+
+        named = [c.name for c in contexts if c.name]
+        hint  = f" Named devices: {', '.join(named)}." if named else ""
+        raise ValueError(f"'{token}' is not a device — expected dN or a "
+                         f"device name (see qdevices).{hint}")
 
     def _select_contexts(self, arg):
         '''
@@ -110,7 +139,7 @@ class QShell(cmd.Cmd):
         device  = None
         rest    = []
         for t in tokens:
-            if _DEVICE_RE.match(t):
+            if self._is_device_token(t):
                 if device is not None:
                     raise ValueError("Specify at most one device.")
                 device = self._parse_device_token(t)
@@ -121,21 +150,31 @@ class QShell(cmd.Cmd):
 
     def _validate_spec_devices(self, specs):
         '''
-        Validate --exec/--no-exec indices against attached devices.
-        Raises ValueError on the first unknown index — before any
-        circuit is loaded, so the whole batch dies atomically.
+        Resolve --exec/--no-exec device references to indices, IN PLACE.
+
+        The parser leaves these as raw tokens ("d0", "nairobi") because
+        it has no view of the federation; this is where they become the
+        indices the kernel and QCB use. Raises ValueError on the first
+        unresolvable reference — before any circuit is loaded, so the
+        whole batch dies atomically and no partial submission occurs.
         '''
-        n = len(self._contexts())
         for spec in specs:
-            for indices, flag in ((spec.exec_on, "--exec"),
-                                  (spec.no_exec_on, "--no-exec")):
-                if not indices:
+            for attr, flag in (("exec_on", "--exec"),
+                               ("no_exec_on", "--no-exec")):
+                refs = getattr(spec, attr)
+                if not refs:
                     continue
-                for i in indices:
-                    if i >= n:
-                        raise ValueError(
-                            f"{flag} references d{i}, but only {n} device(s) "
-                            f"are attached (d0..d{n-1}). See qdevices.")
+
+                indices = []
+                for ref in refs:
+                    try:
+                        ctx = self._parse_device_token(ref)
+                    except ValueError as e:
+                        raise ValueError(f"{flag}: {e}")
+                    if ctx.index not in indices:
+                        indices.append(ctx.index)
+
+                setattr(spec, attr, sorted(indices))
 
     # ── Job commands ──────────────────────────────────────────────────────────
 
@@ -174,7 +213,7 @@ class QShell(cmd.Cmd):
                 print(f"[-] Job {qcb.job_id} failed. See above for details.")
             elif qcb.state.value == "WAITING":
                 print(f"[~] Job {qcb.job_id} is WAITING for resources "
-                      f"on d{qcb.device_index}.")
+                      f"on {self._contexts()[qcb.device_index].label}.")
             elif qcb.state.value == "REJECTED":
                 print(f"[x] Job {qcb.job_id} REJECTED: {qcb.reject_reason}")
 
@@ -262,11 +301,17 @@ class QShell(cmd.Cmd):
     # ── Inspection commands ───────────────────────────────────────────────────
 
     def do_qdevices(self, arg):
-        '''List attached devices: index, name, provider, size, load.'''
+        '''List attached devices: index, name, backend, provider, size, load.'''
+        contexts = self._contexts()
+        show_names = any(ctx.name for ctx in contexts)
+        width = max((len(ctx.name) for ctx in contexts if ctx.name),
+                    default=0)
+
         print()
-        for ctx in self._contexts():
+        for ctx in contexts:
             provider = type(ctx.device.provider).__name__
-            print(f"  d{ctx.index}   {ctx.device.name:<20} {provider:<24}"
+            alias    = f"{(ctx.name or '-'):<{width}}   " if show_names else ""
+            print(f"  d{ctx.index}   {alias}{ctx.device.name:<20} {provider:<24}"
                   f"{ctx.device.num_qubits:>3} qubits   "
                   f"queued: {ctx.queue_depth()}  running: {ctx.running_jobs}")
         print()
@@ -279,9 +324,16 @@ class QShell(cmd.Cmd):
                 print("No jobs.")
                 return
 
+            contexts = self._contexts()
+            labels   = [c.label for c in contexts]
+            # Minimum 3 keeps unnamed sessions byte-identical to the
+            # pre-naming column layout; names widen it as needed.
+            width    = max([3] + [len(l) for l in labels])
+
             for job in jobs:
-                dev = f"d{job.device_index}" if job.device_index is not None else "-"
-                print(f"{job.job_id} | {dev:<3} | {job.state.value}")
+                dev = (labels[job.device_index]
+                       if job.device_index is not None else "-")
+                print(f"{job.job_id} | {dev:<{width}} | {job.state.value}")
 
         except Exception as e:
             print(f"[DevQ Error] {e}")
@@ -302,7 +354,7 @@ class QShell(cmd.Cmd):
         print(f"\nJob {job_id} mapping\n")
         if job.device_index is not None:
             ctx = self._contexts()[job.device_index]
-            print(f"device: d{ctx.index} ({ctx.device.name})\n")
+            print(f"device: {ctx.label} ({ctx.device.name})\n")
         else:
             print("device: - (not routed)\n")
 
@@ -321,7 +373,7 @@ class QShell(cmd.Cmd):
             print()
             for ctx in contexts:
                 free_set = ctx.memory_manager.pool.free_qubits
-                print(f"  d{ctx.index} ({ctx.device.name}):")
+                print(f"  {ctx.label} ({ctx.device.name}):")
                 for qubit in range(ctx.device.num_qubits):
                     status = "[]" if qubit in free_set else "[X]"
                     print(f"    {qubit} {status}")
@@ -348,7 +400,7 @@ class QShell(cmd.Cmd):
 
             print()
             for ctx in contexts:
-                print(f"  d{ctx.index} ({ctx.device.name}) topology:")
+                print(f"  {ctx.label} ({ctx.device.name}) topology:")
                 topology = ctx.device.coupling_map
                 total    = ctx.device.num_qubits
 
@@ -378,7 +430,7 @@ class QShell(cmd.Cmd):
                 return
 
             for ctx in contexts:
-                print(f"\n  d{ctx.index} ({ctx.device.name}):")
+                print(f"\n  {ctx.label} ({ctx.device.name}):")
 
                 if flag in ('q', 'b'):
                     print("\n  Qubit Error Map:\n")
@@ -425,7 +477,7 @@ class QShell(cmd.Cmd):
 
             for ctx in contexts:
                 provider = type(ctx.device.provider).__name__
-                print(f"  d{ctx.index}:")
+                print(f"  {ctx.label}:")
                 print(f"    provider   =  {provider}")
                 print(f"    device     =  {ctx.device.name}  "
                       f"({ctx.device.num_qubits} qubits)")
