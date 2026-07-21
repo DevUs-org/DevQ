@@ -168,3 +168,45 @@ Job 2 (bell pinned d2) maps to {0: 1, 1: 3} — Lagos behaviour unchanged under 
 the RATIO equals the 0.1/0.9 default. Bonus: zero_weights.config.json prints a
 [Config] Warning and falls back to 0.1/0.9 [DevQ Core].
 ~
+
+Block 10
+~
+Determinism / seeding (Phase 5.1). Uses main_seeded.py, NOT main.py — same three devices
+but both providers constructed with seed=42. Config is unchanged (router_only.config.json,
+already main_seeded.py's config_path). Run the command list THREE times as three separate
+fresh launches, saving each session's output:
+  Run A: python main_seeded.py   Run B: python main_seeded.py   Run C: python main.py
+Runs A and B are the reproducibility check; Run C is the negative control. Diff the full
+transcripts of A and B against each other. This is the ONLY block that asserts counts —
+seeding is what makes them assertable.
+~
+qerrors q d0
+qtopology d0
+qrun test_circuits/bell.qasm --exec=d1
+qrun test_circuits/bell.qasm --exec=d1
+qrun test_circuits/bell.qasm --exec=d2
+qps
+~
+Seeded reproducibility across launches. Run A and Run B transcripts are IDENTICAL
+byte-for-byte (diff clean) — this is the headline assertion, covering both d0's generated
+device and all three jobs' counts. Specifics, on qiskit-ibm-runtime 0.45.1:
+d0 qerrors q under seed=42: 0->0.0352 1->0.0177 2->0.0086 3->0.0479 4->0.0175 5->0.0055
+6->0.0057. d0 qtopology under seed=42: 0--2, 0--3, 0--4, 1--3, 1--5, 1--6, 2--4, 2--5,
+3--5, 4--6 (10 edges). Job 1 -> d1 {0:1, 1:2} counts {'00':1004, '11':937, '10':58,
+'01':49}. Job 2 -> d1 {0:1, 1:2} counts {'00':996, '11':954, '01':50, '10':48}. Job 3 ->
+d2 {0:1, 1:3} counts {'00':871, '11':867, '01':165, '10':145}. All three FINISHED.
+NEGATIVE CONTROL 1 (distinct runs stay distinct): Jobs 1 and 2 are the SAME circuit on the
+SAME device and mapping, but their counts DIFFER — derived per-run seeds (seed+k), not a
+single reused seed cloning results.
+NEGATIVE CONTROL 2 (seed=None unchanged): Run C's d0 qerrors/qtopology differ from Run A's
+AND differ again on a further main.py launch — unseeded behaviour is preserved exactly.
+Run C's job mappings still match Blocks 1-2 ({0:1,1:2} on d1, {0:1,1:3} on d2); only counts
+and d0's device vary.
+BUG-FIX WITNESSES (Phase 5.1 fixed two execution bugs; these numbers only hold after both):
+Job 1's error weight outside 00/11 is ~5%, NOT ~27% — d1 executes under NAIROBI's noise
+model, not Lagos's (fixed shared-noise-model leak). And ~5% rather than ~10% reflects the
+allocator's mapping {0:1, 1:2} actually reaching the simulator as initial_layout=[1,2]
+(fixed dropped v2p_map). Job 3's ~15% error on Lagos {0:1, 1:3} is likewise real: physical
+qubit 1's 13.6% readout error dominates. If any of these three error rates is far off,
+suspect the pinned stack before the code — verify Block 1's calibration output first.
+~

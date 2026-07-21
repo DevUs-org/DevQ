@@ -100,7 +100,11 @@ qubit indices remain local to their device everywhere in the system.
   FakeNairobiV2, FakeLagosV2, …) with **real IBM calibration data** extracted
   from the Target API. The native 2-qubit gate is auto-discovered per backend
   (ECR on Eagle/Heron, CX on older Falcon devices), and execution runs on
-  AerSimulator with the backend's noise model.
+  AerSimulator with the backend's noise model, honouring the allocator's
+  physical qubit mapping via `initial_layout`.
+
+Both providers accept an optional `seed` for reproducible runs — see
+[Reproducibility & Seeding](#reproducibility--seeding).
 
 ### ✅ Phase 1 — QCB, Process Table & QShell (done)
 Quantum Control Block (the quantum PCB): job_id, circuit, v2p_map, state,
@@ -443,6 +447,42 @@ Ready-made example config files — including the ones used by the sanity
 test blocks (`router_only`, `round_robin`, per-device overrides, weight
 variants) — live in `config/config_examples/`.
 
+### Reproducibility & Seeding
+
+Providers accept an optional `seed` at construction for reproducible runs.
+It is a **constructor parameter, not a config key** — providers are built
+before configuration is resolved and never consume the user config, so a
+config key would be a layer violation.
+
+```python
+DevQSimulatedProvider(seed=42).get_device("random", 7)   # reproducible topology
+IBMSimulatedProvider(seed=42)                            # reproducible counts
+```
+
+`seed=None` (the default) preserves fully unseeded behaviour, byte-identical
+to a build without the parameter.
+
+**What each provider does with it.** `DevQSimulatedProvider` holds a
+provider-local `random.Random(seed)` used for topology and error map
+generation, so a generated device is identical across launches. The global
+`random` state is never touched — seeding DevQ will not perturb randomness
+elsewhere in your program. `IBMSimulatedProvider` derives a per-run seed
+`seed + k`, where `k` is a provider-local submission counter incremented on
+the shell thread, and passes it to both the transpiler and the Aer
+simulator. Because all job dispatch happens on the shell thread, submission
+order is deterministic: an identical session replays identical counts
+job-for-job, while two runs of the *same* circuit within one session still
+produce distinct counts rather than cloned ones.
+
+Providers with no stochastic behaviour inherit `seed` from `BaseProvider`
+and ignore it — the same precedent as `StaticAllocator` ignoring cost
+weights.
+
+**Scope.** Seeding makes DevQ's *own* randomness reproducible. It does not
+pin your dependency versions: fake-backend calibration data is tied to the
+`qiskit-ibm-runtime` release, so reproducing counts across machines also
+requires matching the pinned stack in `requirements.txt`.
+
 ### Scheduler, Allocator & Router Reference
 
 | Config key | Class | Tag | Scope | Behaviour |
@@ -465,11 +505,28 @@ order — the standard two-level-scheduling tradeoff.
 ## Extending DevQ
 
 **New provider** — subclass `BaseProvider`, implement `get_device()` and
-`execute()`. Return either a synchronous `ExecutionFuture` or (preferred)
-an `AsyncExecutionFuture` via `circuits.execution_result.submit_async(fn)`
-— the kernel polls `done()`/`result()` and never knows the difference. No
-knowledge of the kernel, allocators, schedulers, or routers required;
+`execute(circuit, v2p_map, shots, device)`. Return either a synchronous
+`ExecutionFuture` or (preferred) an `AsyncExecutionFuture` via
+`circuits.execution_result.submit_async(fn)` — the kernel polls
+`done()`/`result()` and never knows the difference. No knowledge of the
+kernel, allocators, schedulers, or routers required;
 `DevQSimulatedProvider` is the reference template.
+
+Two contract points matter for correctness. First, **one provider instance
+may serve many devices** (`ibm.get_device("FakeNairobiV2")` and
+`ibm.get_device("FakeLagosV2")` on the same object), so any per-device
+state — backend handles, noise models, sessions — must be keyed by device
+name, never stored flat on the instance; `execute()` receives the
+`QuantumDevice` precisely so it can look that state up. Second, `v2p_map`
+is the allocator's placement decision and **must be applied at execution**,
+not ignored: `IBMSimulatedProvider` translates it into a transpiler
+`initial_layout` so virtual qubit `v` runs on physical qubit `v2p_map[v]`.
+A provider that drops it silently erases the allocator's effect on
+fidelity.
+
+If your provider is stochastic, accept `seed=None` in `__init__`, call
+`super().__init__(seed)`, and derive all randomness from a provider-local
+generator — see [Reproducibility & Seeding](#reproducibility--seeding).
 
 **New allocator** — subclass `BaseAllocator`, implement `allocate()` per the
 documented contract (reserve via `pool.allocate()` on success; raise on

@@ -43,6 +43,23 @@ from hardware.device import QuantumDevice
 
 class IBMSimulatedProvider(BaseProvider):
 
+    def __init__(self, seed=None):
+        '''
+        Args:
+            seed : int or None — base seed for reproducible execution.
+                   Each run derives seed + k (k = provider-local
+                   submission counter) and passes it to both the
+                   transpiler and the Aer simulator, so identical
+                   sessions reproduce counts job-for-job while distinct
+                   runs of identical circuits stay distinct.
+                   None (default) preserves unseeded behaviour.
+        '''
+        super().__init__(seed)
+        # Per-device execution state, keyed by device name — one
+        # provider instance may serve multiple devices (Bug A fix).
+        self._sessions = {}
+        self._submission_count = 0
+
     def get_device(self, backend_name="FakeSherbrooke") -> QuantumDevice:
         '''
         Build a QuantumDevice from a Qiskit IBM Runtime V2 fake backend.
@@ -69,10 +86,13 @@ class IBMSimulatedProvider(BaseProvider):
 
         backend = self._load_backend(backend_name)
 
-        # Store backend for execute() — noise model built once here
-        self._backend      = backend
-        self._backend_name = backend_name
-        self._noise_model  = NoiseModel.from_backend(backend)
+        # Per-device session for execute() — noise model built once
+        # here, keyed by device name so multiple devices served by this
+        # instance never share noise state.
+        self._sessions[backend_name.lower()] = {
+            "backend"    : backend,
+            "noise_model": NoiseModel.from_backend(backend),
+        }
 
         num_qubits   = backend.num_qubits
         coupling_map = self._extract_coupling_map(backend)
@@ -90,7 +110,7 @@ class IBMSimulatedProvider(BaseProvider):
             provider       = self
         )
 
-    def execute(self, circuit, v2p_map, shots):
+    def execute(self, circuit, v2p_map, shots, device):
         '''
         Execute a CircuitRep on AerSimulator with IBM device noise model.
 
@@ -103,6 +123,8 @@ class IBMSimulatedProvider(BaseProvider):
             circuit : CircuitRep — the circuit to execute
             v2p_map : dict — virtual to physical qubit mapping
             shots : number of shots
+            device : QuantumDevice — selects this device's session
+                     (backend + noise model)
 
         Returns:
             AsyncExecutionFuture resolving to an ExecutionResult
@@ -120,6 +142,31 @@ class IBMSimulatedProvider(BaseProvider):
 
         from circuits.execution_result import ExecutionResult, submit_async
 
+        session = self._sessions.get(device.name)
+        if session is None:
+            return submit_async(lambda: ExecutionResult(
+                counts  = {},
+                success = False,
+                error   = (
+                    f"No session for device '{device.name}' on this "
+                    f"provider instance. Devices must be created via "
+                    f"get_device() on the same provider that executes them."
+                )
+            ))
+        noise_model = session["noise_model"]
+
+        # The allocator's physical placement (Bug B fix): virtual qubit
+        # v runs on physical qubit v2p_map[v] of the noise model.
+        initial_layout = [v2p_map[v] for v in sorted(v2p_map)]
+
+        # Derived per-run seed — incremented on the shell thread (all
+        # dispatch happens there, so submission order is deterministic
+        # and derived seeds reproduce across identical sessions).
+        run_seed = None
+        if self.seed is not None:
+            self._submission_count += 1
+            run_seed = self.seed + self._submission_count
+
         def _run():
             try:
                 num_virtual = circuit.num_qubits
@@ -131,9 +178,12 @@ class IBMSimulatedProvider(BaseProvider):
 
                 qc.measure(range(num_virtual), range(num_virtual))
 
-                sim    = AerSimulator(noise_model=self._noise_model)
-                t_circ = transpile(qc, sim)
-                counts = sim.run(t_circ, shots=shots).result().get_counts()
+                sim    = AerSimulator(noise_model=noise_model)
+                t_circ = transpile(qc, sim,
+                                   initial_layout = initial_layout,
+                                   seed_transpiler = run_seed)
+                counts = sim.run(t_circ, shots=shots,
+                                 seed_simulator=run_seed).result().get_counts()
 
                 return ExecutionResult(counts=counts, success=True)
 

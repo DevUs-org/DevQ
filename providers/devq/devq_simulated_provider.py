@@ -9,7 +9,7 @@ execute() returns mocked results to verify allocation and scheduling
 behaviour without any dependency on an external quantum framework.
 
 Usage:
-    from hardware.providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
     from hardware.device_loader import load_device
 
     device = load_device(DevQSimulatedProvider().get_device("random", num_qubits=10))
@@ -23,6 +23,19 @@ from providers.devq.backend_factory import create_backend
 
 
 class DevQSimulatedProvider(BaseProvider):
+
+    def __init__(self, seed=None):
+        '''
+        Args:
+            seed : int or None — seeds a provider-local random.Random
+                   used for topology and error map generation, making
+                   generated devices reproducible. Global random state
+                   is never touched. None (default) preserves today's
+                   unseeded behaviour.
+        '''
+        super().__init__(seed)
+        import random
+        self._rng = random.Random(seed) if seed is not None else None
 
     def get_device(self, kind="fully_connected", num_qubits=5) -> QuantumDevice:
         '''
@@ -38,7 +51,7 @@ class DevQSimulatedProvider(BaseProvider):
         Returns:
             QuantumDevice with all parameters populated and self as provider
         '''
-        backend = create_backend(kind, num_qubits)
+        backend = create_backend(kind, num_qubits, rng=self._rng)
 
         return QuantumDevice(
             name           = backend["name"],
@@ -50,7 +63,7 @@ class DevQSimulatedProvider(BaseProvider):
             provider       = self
         )
 
-    def execute(self, circuit, v2p_map, shots):
+    def execute(self, circuit, v2p_map, shots, device):
         '''
         Mock execution for DevQ's simulated provider.
 
@@ -64,6 +77,8 @@ class DevQSimulatedProvider(BaseProvider):
             circuit : CircuitRep — the circuit to execute
             v2p_map : dict — virtual to physical qubit mapping
             shots : number of shots
+            device : QuantumDevice — unused here; mock execution has no
+                     per-device backend state
 
         Returns:
             AsyncExecutionFuture resolving to a mocked ExecutionResult

@@ -32,10 +32,11 @@ class QuantumDevice:
 
     def execute(self, circuit, v2p_map, shots):
         '''
-        Delegate execution to the provider.
+        Delegate execution to the provider, passing self so providers
+        serving multiple devices can select per-device state.
         Returns an ExecutionFuture.
         '''
-        return self.provider.execute(circuit, v2p_map, shots)
+        return self.provider.execute(circuit, v2p_map, shots, self)
 
     def qubit_error(self, q):
         return self.error_map.get(q, 0.01)
