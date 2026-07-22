@@ -22,6 +22,10 @@ from .filtering import eligible_qubits, edge_allowed, has_connected_block
 
 class NoiseGraphAllocator(BaseAllocator):
 
+    # Human-readable name shown by qconfig. Any registered component
+    # may define one; the registry falls back to the class name.
+    LABEL = "Noise Aware Graph Allocator"
+
     def allocate(self, circuit, device, pool,
                  max_qubit_error=None, max_edge_error=None):
         ALPHA = self.qubit_error_weight  # node cost factor

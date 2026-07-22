@@ -20,6 +20,10 @@ from kernel.router.base_router import BaseRouter
 
 class RoundRobinRouter(BaseRouter):
 
+    # Human-readable name shown by qconfig. Any registered component
+    # may define one; the registry falls back to the class name.
+    LABEL = "Round Robin Router"
+
     def __init__(self, **kwargs):
         '''
         Accepts and ignores BaseRouter's scoring weights — round-robin

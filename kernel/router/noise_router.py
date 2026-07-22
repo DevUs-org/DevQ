@@ -39,6 +39,10 @@ from kernel.memory.qubit_pool import QubitPool
 
 class NoiseRouter(BaseRouter):
 
+    # Human-readable name shown by qconfig. Any registered component
+    # may define one; the registry falls back to the class name.
+    LABEL = "Noise Aware Router"
+
     def select(self, qcb, candidates):
         pressures = [self._queue_pressure(ctx) for ctx in candidates]
         costs     = [self._best_case_cost(ctx, qcb) for ctx in candidates]

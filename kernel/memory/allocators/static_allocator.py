@@ -16,6 +16,10 @@ from .filtering import eligible_qubits
 
 class StaticAllocator(BaseAllocator):
 
+    # Human-readable name shown by qconfig. Any registered component
+    # may define one; the registry falls back to the class name.
+    LABEL = "Static Allocator"
+
     def allocate(self, circuit, device, pool,
                  max_qubit_error=None, max_edge_error=None):
         # Static allocation has no topology concept — the edge threshold

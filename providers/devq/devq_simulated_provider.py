@@ -24,6 +24,10 @@ from providers.devq.backend_factory import create_backend
 
 class DevQSimulatedProvider(BaseProvider):
 
+    # Human-readable name shown by qconfig. Any registered component
+    # may define one; the registry falls back to the class name.
+    LABEL = "DevQ Simulated Provider"
+
     def __init__(self, seed=None):
         '''
         Args:

@@ -43,6 +43,10 @@ from hardware.device import QuantumDevice
 
 class IBMSimulatedProvider(BaseProvider):
 
+    # Human-readable name shown by qconfig. Any registered component
+    # may define one; the registry falls back to the class name.
+    LABEL = "IBM Simulated Provider"
+
     def __init__(self, seed=None):
         '''
         Args:

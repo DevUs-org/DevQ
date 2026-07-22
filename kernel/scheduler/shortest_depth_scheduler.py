@@ -14,6 +14,10 @@ from .base_scheduler import BaseScheduler
 from kernel.process.lifecycle import JobStates
 
 class ShortestDepthScheduler(BaseScheduler):
+
+    # Human-readable name shown by qconfig. Any registered component
+    # may define one; the registry falls back to the class name.
+    LABEL = "Shortest Depth First"
     def schedule(self):
         """
         Sorts the queue so that circuits with the lowest depth

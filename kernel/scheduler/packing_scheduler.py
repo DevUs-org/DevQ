@@ -21,6 +21,10 @@ from kernel.process.lifecycle import JobStates
 
 class PackingScheduler(BaseScheduler):
 
+    # Human-readable name shown by qconfig. Any registered component
+    # may define one; the registry falls back to the class name.
+    LABEL = "Circuit Packing Scheduler"
+
     def schedule(self):
         if not self.queue:
             return []

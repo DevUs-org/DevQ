@@ -13,6 +13,10 @@ from .base_scheduler import BaseScheduler
 from kernel.process.lifecycle import JobStates
 
 class FCFSScheduler(BaseScheduler):
+
+    # Human-readable name shown by qconfig. Any registered component
+    # may define one; the registry falls back to the class name.
+    LABEL = "First Come First Served"
     def schedule(self):
         """
         Processes the queue in strict order.
