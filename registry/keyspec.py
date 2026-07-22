@@ -156,9 +156,16 @@ class NormaliseGroup:
 
 
 def positive_int(value):
-    '''Accept integers strictly greater than zero.'''
+    '''
+    Accept integers strictly greater than zero.
+
+    Both failure paths report the full contract rather than only the
+    check that failed: a user who wrote "many" is better served by
+    "expected a positive integer" than by "expected an integer", which
+    would invite them to try 0 next.
+    '''
     if isinstance(value, bool) or not isinstance(value, int):
-        return "expected an integer"
+        return "expected a positive integer"
     if value <= 0:
         return "expected a positive integer"
     return None
@@ -167,7 +174,7 @@ def positive_int(value):
 def non_negative(value):
     '''Accept any number >= 0. Used for cost weights before normalisation.'''
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return "expected a number"
+        return "expected a non-negative number"
     if float(value) < 0.0:
         return "expected a non-negative number"
     return None
@@ -176,9 +183,9 @@ def non_negative(value):
 def unit_interval(value):
     '''Accept any number in the closed interval [0, 1].'''
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return "expected a number"
+        return "expected a float in [0, 1]"
     if not 0.0 <= float(value) <= 1.0:
-        return "expected a number in [0, 1]"
+        return "expected a float in [0, 1]"
     return None
 
 
@@ -193,7 +200,7 @@ def one_of(*permitted):
     rather than requiring a second edit here.
     '''
     permitted = tuple(permitted)
-    rendered  = ", ".join(repr(p) for p in permitted)
+    rendered  = "[" + ", ".join(repr(p) for p in permitted) + "]"
 
     def _validate(value):
         if value in permitted:
