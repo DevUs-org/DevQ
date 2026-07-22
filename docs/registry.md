@@ -286,6 +286,62 @@ Without one, the class name is used.
 
 ---
 
+## What to implement
+
+Registration is how a component becomes addressable; this is what the
+component itself must do. Each kind has a small contract, and a couple of
+points below are load-bearing for correctness rather than style.
+
+**New provider** — subclass `BaseProvider`, implement `get_device()` and
+`execute(circuit, v2p_map, shots, device)`. Return either a synchronous
+`ExecutionFuture` or (preferred) an `AsyncExecutionFuture` via
+`circuits.execution_result.submit_async(fn)` — the kernel polls
+`done()`/`result()` and never knows the difference. No knowledge of the
+kernel, allocators, schedulers, or routers required;
+`DevQSimulatedProvider` is the reference template.
+
+Two contract points matter for correctness. First, **one provider instance
+may serve many devices** (`ibm.get_device("FakeNairobiV2")` and
+`ibm.get_device("FakeLagosV2")` on the same object), so any per-device
+state — backend handles, noise models, sessions — must be keyed by device
+name, never stored flat on the instance; `execute()` receives the
+`QuantumDevice` precisely so it can look that state up. Second, `v2p_map`
+is the allocator's placement decision and **must be applied at execution**,
+not ignored: `IBMSimulatedProvider` translates it into a transpiler
+`initial_layout` so virtual qubit `v` runs on physical qubit `v2p_map[v]`.
+A provider that drops it silently erases the allocator's effect on
+fidelity.
+
+If your provider is stochastic, accept `seed=None` in `__init__`, call
+`super().__init__(seed)`, and derive all randomness from a provider-local
+generator — see [Reproducibility & Seeding](configuration.md#reproducibility--seeding).
+
+**New allocator** — subclass `BaseAllocator`, implement `allocate()` per the
+documented contract (reserve via `pool.allocate()` on success; raise on
+failure; honour thresholds as hard constraints). Every allocator is
+constructed with the device's resolved cost weights
+(`self.qubit_error_weight` / `self.edge_error_weight`, normalised to sum
+to 1) — use them for cost scoring or ignore them freely. Optionally override
+`feasible(circuit, device, max_qubit_error, max_edge_error) → None | reason`
+— the base default checks eligible-qubit count; override it if your
+allocator has stricter existence requirements (see the graph allocators'
+connected-block check). `feasible()` powers both scheduler-level
+classification and router-level candidate filtering.
+
+**New scheduler** — subclass `BaseScheduler`, implement `schedule()`.
+
+**New router** — subclass `BaseRouter`, implement
+`select(qcb, candidates) → DeviceContext`. Candidates arrive already
+filtered by the job's device constraints and per-device feasibility; the
+base class handles rejection-reason aggregation. Keep `select()`
+deterministic (break ties by lower device index). `RoundRobinRouter` is the
+minimal reference; `NoiseRouter` shows how to reuse the per-device allocator
+machinery for scoring.
+
+---
+
+---
+
 ## Providers and declarative devices
 
 Registering a provider makes it addressable **by name**, which is what

@@ -1,618 +1,296 @@
-# DevQ — A Microkernel & Job Orchestrator for the Quantum World
+# DevQ Component Registry
 
-DevQ is an open-source quantum execution middleware that applies classical
-operating-system abstractions to quantum computing: a microkernel with a
-process table, noise-aware qubit allocators, pluggable job schedulers, a
-noise-aware device router for distributed execution across multiple
-backends, a hardware-agnostic device abstraction, and an interactive
-inspection shell.
+How to extend DevQ with your own scheduler, allocator, router or
+provider — without editing DevQ core.
 
-Quantum platforms today are fragmented, vendor-locked, and opaque — qubit
-selection, scheduling, and topology decisions happen inside closed runtimes.
-DevQ is the transparent layer beneath them: **Linux for quantum computing**.
-It does not compete with Qiskit or Braket; it makes the execution decisions
-they hide *inspectable, controllable, and extensible* — type `qerrors` to see
-every device's noise map, `qmap <id>` to see exactly which device and physical
-qubits your circuit used, and read the source that made that decision.
+This is the reference for the extensibility surface. The formulas the
+built-in policies implement are in [`cost-model.md`](cost-model.md); the
+tests that pin this behaviour are in
+[`test_blocks.md`](test_blocks.md#registry-and-plugin-extension).
 
-The entire system initialises in three lines of user code:
+---
+
+## The short version
 
 ```python
 from devq import DevQ
-from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+from registry.keyspec import KeySpec, NormaliseGroup, positive_int
 
-DevQ(DevQSimulatedProvider().get_device("random", 10)).start()
-```
+class MyScheduler(BaseScheduler):
+    LABEL = "My Scheduler"
 
-Attaching multiple backends is one chained call per device:
+    CONFIG_SCHEMA = {
+        "mine.batch_window": KeySpec("device", 5, positive_int,
+                                     "Batch window"),
+    }
 
-```python
-DevQ(config_path="~/devq.config.json") \
-    .add_device(DevQSimulatedProvider().get_device("random", 7)) \
-    .add_device(ibm.get_device("FakeNairobiV2")) \
-    .add_device(ibm.get_device("FakeLagosV2"), "~/lagos.config.json") \
-    .start()
-```
+    def schedule(self):
+        ...
 
-`example.py` is a runnable reference session; `run_tests.py` verifies the
-whole plugin matrix (`--list` to see the blocks, `-c` to see every
-assertion, `-v` for full session transcripts).
-
-Devices are indexed `d0..dn` in add order — stable for the session, shown by
-`qdevices`, and referenced by `--exec`/`--no-exec` flags and device-scoped
-commands. `add_devices([d1, d2, ...])` attaches several at once;
-`start()` raises `DevQError` if no device is attached.
-
-### Device names
-
-A device can be given a name, which acts as an **alias for its index** —
-never a replacement. `d1` and `nairobi` refer to the same device
-everywhere: in `--exec`/`--no-exec` lists and in every device-scoped
-command.
-
-```python
-DevQ() \
-    .add_device(sim_device) \
-    .add_devices([(nairobi_device, "nairobi"), (lagos_device, "lagos")]) \
-    .start()
-```
-
-`add_device(device, config_path, name)` names a device that also needs
-its own config file; `add_devices()` takes bare devices, `(device, name)`
-tuples, or a mix. Naming is optional and per-device — an unnamed device
-is simply referred to by index.
-
-```
-qerrors q nairobi          # same as: qerrors q d1
-qrun bell.qasm --exec=nairobi,d2
-```
-
-Named devices display as `nairobi (d1)`; unnamed ones as `d0`. Names are
-case-insensitive, must be unique, and are rejected at attach time if
-they are empty, contain whitespace or commas, look like an index
-(`d0`, `d7`, ...), or shadow a shell subcommand argument (`q`, `e`, `b`)
-— all of which would make a reference ambiguous.
-
----
-
-## Code Tags
-
-Every source file carries a tag in its module docstring describing its role:
-
-| Tag | Meaning |
-|---|---|
-| **Main** | Part of the core DevQ abstraction. Hardware-independent; should support most existing quantum infrastructure. |
-| **Default** | The default implementation of a pluggable component (NoiseGraphAllocator, PackingScheduler, NoiseRouter). Part of the core distribution; swappable via config. |
-| **Alt** | Configurable alternatives to the Default components (Static/Graph allocators, FCFS/SDF schedulers, RoundRobin router) usable for debugging, testing, baselines, and optimisation comparisons. |
-| **Provider** | Hardware-provider code: everything that adapts a specific backend or framework to DevQ, including simulated/testing backends. Not part of the core abstraction; grows as more hardware support is added. |
-
----
-
-## Architecture
-
-Seven layers, strict separation of concerns — each layer talks only to its
-immediate neighbours. Two-level scheduling, the classical cluster pattern:
-the **router** decides *which* device a job runs on; each device's local
-**scheduler** decides *when* it runs there. The kernel never knows which
-provider backs a device; the shell never touches the scheduler directly;
-providers know nothing about job IDs or lifecycle states.
-
-```
-User layer          qrun · qsubmit · qrunpack · qdevices · QShell CLI
-Circuit rep         CircuitRep · QASM parser · get_depth() · [Silq, Q#, Qiskit …]
-DevQ kernel         ProcessTable · QCB · federation host (step / futures)
-Device router       NoiseRouter (default) · RoundRobin — binds job → device
-Device context      per-device: MemoryManager · QubitPool · Scheduler
-Qubit allocator     Static · Graph · Noise-Graph (default)
-Device abstraction  BaseProvider · QuantumDevice · load_device()
-Hardware provider   DevQSimulatedProvider · IBMSimulatedProvider · [Cirq, IonQ …]
-```
-
-Every pluggable layer has an enforced contract:
-- `BaseProvider` — providers implement exactly `get_device()` + `execute()`
-- `BaseAllocator` — allocators implement `allocate(circuit, device, pool, max_qubit_error=None, max_edge_error=None)`; optionally override `feasible()` (default provided) to classify unsatisfiable jobs
-- `BaseScheduler` — schedulers implement `schedule()`, returning the jobs processed in a cycle — dispatched (RUNNING) and/or rejected (REJECTED)
-- `BaseRouter` — routers implement `select(qcb, candidates)`, choosing among feasible candidate devices; the base class handles device constraints, per-device feasibility, and rejection-reason aggregation
-
-**One circuit, one device.** There are no quantum links between backends, so
-a circuit never spans devices. DevQ therefore federates rather than merges:
-each attached device keeps its own qubit pool, allocator, and scheduler
-instance inside a `DeviceContext` — a node in the cluster — and physical
-qubit indices remain local to their device everywhere in the system.
-
----
-
-## Development Phases
-
-### ✅ Phase 0 — Hardware Abstraction (done)
-`QuantumDevice` (pure data container), `load_device()` validation,
-`TopologyGraph` (NetworkX), `BaseProvider` ABC. Two working providers:
-- **DevQSimulatedProvider** — pure-Python backend factory, four topologies
-  (fully_connected, linear, grid, random), generated error maps, mocked
-  execution. Doubles as the reference implementation for provider authors.
-- **IBMSimulatedProvider** — wraps Qiskit V2 fake backends (FakeSherbrooke,
-  FakeNairobiV2, FakeLagosV2, …) with **real IBM calibration data** extracted
-  from the Target API. The native 2-qubit gate is auto-discovered per backend
-  (ECR on Eagle/Heron, CX on older Falcon devices), and execution runs on
-  AerSimulator with the backend's noise model, honouring the allocator's
-  physical qubit mapping via `initial_layout`.
-
-Both providers accept an optional `seed` for reproducible runs — see
-[Reproducibility & Seeding](#reproducibility--seeding).
-
-### ✅ Phase 1 — QCB, Process Table & QShell (done)
-Quantum Control Block (the quantum PCB): job_id, circuit, v2p_map, state,
-device binding, future, result, job-level noise thresholds and device
-constraints. Six-state lifecycle: READY → WAITING / REJECTED / RUNNING →
-FINISHED / FAILED. READY covers a queued job that has not yet attempted
-allocation; WAITING is transient (attempted, blocked on resources,
-retried); REJECTED is the umbrella terminal state for any kernel-level
-rejection, whatever stage produced it — device constraints excluding
-every device, unsatisfiable thresholds on every allowed device, or
-allocation classification inside a scheduler. Future-based execution
-(`ExecutionFuture` / `AsyncExecutionFuture` behind one `done()`/`result()`
-interface). QShell with full inspection command set (see below). Job IDs
-are global across all devices.
-
-### ✅ Phase 2 — Qubit Allocation (done)
-Three interchangeable allocators behind `BaseAllocator`:
-- **StaticAllocator** *(Alt)* — first available block, no topology awareness.
-  Baseline; sensible for all-to-all devices (e.g. IonQ).
-- **GraphAllocator** *(Alt)* — BFS over the topology graph; guarantees a
-  connected subgraph.
-- **NoiseGraphAllocator** *(default)* — BFS + weighted cost
-  `S = α·Σ(qubit_error) + β·Σ(edge_error)`. α and β are the common-scope
-  config keys `qubit_error_weight` / `edge_error_weight` (defaults 0.1 /
-  0.9 — two-qubit gate fidelity dominates NISQ noise), so the cost
-  balance is tunable per device through the full config cascade.
-
-All allocators honour **hard noise thresholds**: qubits/edges whose error
-exceeds the job's `max_qubit_error` / `max_edge_error` are excluded from
-consideration entirely, before cost optimisation. Each allocator also
-answers feasibility via `feasible()` — whether a job could *ever* be
-allocated on the device under its thresholds, pool state aside. The base
-default checks eligible-qubit count (exactly right for Static); the graph
-allocators additionally require a connected block among eligible qubits.
-
-### ✅ Phase 3 — Job Scheduling (done)
-Three schedulers behind `BaseScheduler`:
-- **FCFSScheduler** *(Alt)* — strict submission order; head-of-line blocking
-  applies to WAITING (feasible-but-blocked) jobs only — unsatisfiable jobs
-  are REJECTED, removed from the queue, and never block it.
-- **ShortestDepthScheduler** *(Alt)* — shallowest circuit first.
-- **PackingScheduler** *(default)* — SDF + greedy bin-packing via a temporary
-  reservation pool (TempPool) with two-phase commit; multiple circuits run
-  concurrently on disjoint qubit sets.
-
-Plus the **configuration cascade** (see Configuration) and the **QShell job
-parser** (JobSpec, bracket groups, per-job threshold and device flags —
-fully wired end-to-end).
-
-### ✅ Phase 4 — Distributed Scheduling (done)
-Distributed execution across heterogeneous quantum backends, following the
-classical cluster pattern (DevQ = the node kernel, the router = the cluster
-scheduler):
-
-- **DeviceContext** — the federation unit: one per attached device, bundling
-  the device, its MemoryManager/QubitPool, its allocator instance, its
-  scheduler instance, and its resolved per-device configuration. Per-device
-  config is therefore real: d0 can pack with NoiseGraph while d1 runs FCFS
-  over Static.
-- **Device router** behind `BaseRouter` — a pluggable decision layer
-  mirroring the allocator/scheduler contracts:
-  - **NoiseRouter** *(default)* — scores every feasible candidate device by
-    `w_queue · queue_pressure + w_noise · best_case_cost` (both min-max
-    normalised across candidates) and routes to the lowest score. Queue
-    pressure = queued + running jobs on the device. Best-case cost dry-runs
-    the device's *own configured allocator* on an empty pool clone and
-    scores the returned mapping with the S yardstick (α/β = the
-    global-scope copy of `qubit_error_weight` / `edge_error_weight` — one
-    uniform ruler across all candidates, deliberately not each device's
-    own allocator weights, so cross-device scores stay comparable) — the
-    score reflects the mapping quality the job would actually receive
-    under that device's real policy. Ties break deterministically by lower device index (note:
-    with exactly two candidates and equal weights, normalisation makes the
-    terms mirror each other, so the index tiebreak frequently decides).
-  - **RoundRobinRouter** *(Alt)* — cycles through feasible devices in index
-    order; load- and noise-oblivious fairness baseline.
-- **Sticky routing** — a job is routed exactly once, at its first scheduling
-  cycle, and the binding is recorded on the QCB. Re-routing WAITING jobs to
-  less-loaded devices (work migration) is deliberate future work and an open
-  research knob.
-- **Cross-device rejection semantics** — REJECTED now means unsatisfiable on
-  *every device the job is allowed to run on*: the router calls each
-  candidate's pool-state-independent `feasible()` and, if none passes,
-  aggregates one reason per device. With sticky routing, rejection
-  concentrates at the router — post-routing allocation failures classify
-  WAITING, since routing already established feasibility on the chosen
-  device.
-- **Job-level device constraints** — `--exec` (allow-list; no fallback
-  outside it) and `--no-exec` (deny-list); see JobSpec below.
-- **Truly asynchronous execution** — `AsyncExecutionFuture` wraps a real
-  thread-pool future behind the same `done()`/`result()` interface; both
-  simulated providers now execute asynchronously, so circuits genuinely run
-  concurrently across devices while the kernel keeps routing and scheduling.
-  The kernel required no changes to its resolution loop — the future-based
-  lifecycle was designed for this from the start. Worker threads only
-  compute; all state mutation happens on the shell thread inside the
-  kernel's resolution step, so the system needs no locks.
-
-### 🔬 Phase 5 — Research Benchmarking Mode (in progress)
-A `qbench` command: run circuit workloads through every
-router/scheduler/allocator combination and report comparative results. The
-goal is for DevQ to serve as an **algorithm evaluation playground** for
-quantum scheduling and allocation researchers — write an allocator against
-`BaseAllocator` or a router against `BaseRouter`, register it with
-`devq.register_allocator(...)`, and benchmark it against the built-ins
-without touching DevQ core. Open research problems that live at the router
-layer: cross-backend shot aggregation, coherence-window scheduling, and
-work migration of WAITING jobs.
-
-### 🔭 Phase 6 — Interchangeable Frontends (planned)
-Today circuits enter DevQ as OpenQASM files. Phase 6 opens the top of the
-stack the same way `BaseProvider` opens the bottom: a frontend adapter
-contract that converts any source representation — **Silq, Q#, Qiskit
-circuits**, and other quantum languages — into `CircuitRep`, DevQ's
-hardware-independent internal format. Frontends need no knowledge of the
-kernel, allocators, or schedulers; the existing QASM loader becomes the
-reference frontend. Write in the language you prefer, and DevQ handles
-routing, allocation, scheduling, and execution identically.
-
-### 🔭 Phase 7 — Expanded Provider Ecosystem (planned)
-More hardware providers behind the same two-method `BaseProvider` contract:
-- **IBMRealProvider** — live IBM hardware via `QiskitRuntimeService`;
-  `get_device()` pulls live calibration data, `execute()` submits to IBM's
-  job queue. The `AsyncExecutionFuture` interface naturally absorbs real
-  queue wait times.
-- **CirqProvider** — Google's Cirq framework and its gate representation.
-- **IonQProvider** — trapped-ion hardware with all-to-all connectivity and
-  native gates (gpi, gpi2, ms); pairs naturally with the Static allocator,
-  since the connectivity constraint is irrelevant.
-
-Together, Phases 6 and 7 make both ends of the stack interchangeable: any
-frontend in, any hardware out, with the DevQ kernel unchanged in between.
-
----
-
-## QShell Command Reference
-
-QShell commands deliberately mirror classical OS tools. Commands marked
-`[dN]` take an optional device argument: with it, output covers that device
-only; without it, output is sectioned per attached device (a single-device
-session simply shows one `d0` section — the format is uniform).
-
-| Command | Classical analogue | Purpose |
-|---|---|---|
-| `qrun` | — | Priority-execute a **single** job immediately, bypassing the queue |
-| `qsubmit` | — | Enqueue one or more jobs without executing |
-| `qrunpack` | — | Drain all queues via the router and per-device schedulers |
-| `qdevices` | `lscpu` | List attached devices: index, name, provider, qubits, queued/running load |
-| `qps` | `ps` | List all jobs with device binding and lifecycle state |
-| `qmap <job_id>` | — | Show a job's device and virtual → physical qubit mapping |
-| `qmem [dN]` | `free` | Show free `[]` vs allocated `[X]` qubits |
-| `qtopology [dN] [q …]` | — | Show device coupling map(s) (qubit filtering requires a device) |
-| `qerrors [q\|e\|b] [dN]` | `iostat` | Show qubit errors, edge errors, or both (default `b`) |
-| `qconfig [dN]` | — | Show global router policy and each device's scheduler/allocator/shots with the source of every value |
-| `!!` | `!!` | Repeat the last command |
-| `exit` / Ctrl-D | — | Exit DevQ |
-
-### Examples
-
-```
-devq> qdevices
-
-  d0   random_backend       DevQSimulatedProvider     7 qubits   queued: 0  running: 0
-  d1   fakenairobiv2        IBMSimulatedProvider      7 qubits   queued: 0  running: 0
-  d2   fakelagosv2          IBMSimulatedProvider      7 qubits   queued: 0  running: 0
-
-devq> qrun test_circuits/bell.qasm --exec=d1,d2
-Job 1 submitted to queue.
-[Kernel] Dispatching job 1 → d1 (fakenairobiv2) qubits {0: 1, 1: 2}
-[Kernel] Job 1 FINISHED. Counts: {'00': 1007, '11': 989, '01': 26, '10': 26}
-[+] Job 1 FINISHED.
-
-devq> qrun test_circuits/bell.qasm --max-qubit-error=0.03 --exec=d2
-Job 2 submitted to queue.
-[x] Job 2 REJECTED: unsatisfiable on every allowed device — d2: no connected
-    block of 2 qubits exists on this device under max_qubit_error=0.03,
-    max_edge_error=None
-
-devq> qps
-1 | d1  | FINISHED
-2 | -   | REJECTED
-
-devq> qmap 1
-
-Job 1 mapping
-
-device: d1 (fakenairobiv2)
-
-virtual → physical
-
-  0 → 1
-  1 → 2
-
-devq> qerrors e d1
-
-  d1 (fakenairobiv2):
-
-  Edge Error Map:
-
-    (0, 1) -> 0.0086
-    (1, 2) -> 0.0070
-    ...
-```
-
-`qrun` vs `qsubmit`/`qrunpack`: `qrun` is a priority path — it routes and
-attempts allocation immediately, executes, blocks until its own result
-resolves, and leaves all queued jobs untouched. If allocation fails but the
-job is feasible on its routed device, it stays WAITING in that device's
-queue for a later `qrunpack`; if it is unsatisfiable everywhere allowed, it
-is REJECTED. `qrun` accepts exactly one job (all flags, including
-`--exec`/`--no-exec`, are supported).
-
-**Command history.** Interactive sessions keep readline history in
-`~/.devq_history`, capped at the last 1000 commands. A file that has
-grown past 4 MB is trimmed on startup before being read, so an
-oversized history repairs itself rather than slowing every launch.
-Shells built programmatically via `DevQ.build()` skip readline
-entirely — history is meaningless for a driven session, and on macOS
-(where `readline` is backed by libedit) reading a large history file
-costs enormous amounts of memory.
-
----
-
-## JobSpec: Job-Level Noise Thresholds & Device Constraints
-
-`qrun` and `qsubmit` arguments are parsed into **JobSpec** objects:
-
-```python
-JobSpec(file_path, max_qubit_error=None, max_edge_error=None,
-        exec_on=None, no_exec_on=None)
-```
-
-**Noise thresholds** are **hard constraints**: any qubit whose readout error
-exceeds `max_qubit_error`, or edge whose gate error exceeds
-`max_edge_error`, is excluded from allocation for that job. `None` means no
-filtering on that dimension. Thresholds are **job-level only** — a
-deliberate design decision. Error filtering is a per-job user intent, not a
-platform property, so it is expressed at submission time; bracket groups
-cover applying one threshold across many jobs.
-(StaticAllocator applies the qubit threshold only — it has no topology
-concept, so the edge threshold is ignored there by design.)
-
-**Device constraints** bind jobs to devices:
-- `--exec=d0,d2` — allow-list: the job may **only** run on the listed
-  devices. If it is infeasible on all of them, it is REJECTED — never
-  re-routed elsewhere.
-- `--no-exec=d1` — deny-list: the job is never routed to the listed devices.
-- The two flags are mutually exclusive on the same job or group (an
-  allow-list already implies exclusion of every other device).
-- Device lists are comma-separated without brackets (brackets are reserved
-  for job grouping). Device *existence* is validated at submission —
-  referencing a device that is not attached rejects the whole batch.
-
-If constraints or filtering make allocation *temporarily* impossible on the
-routed device (resources busy), the job is set WAITING and retried. If they
-make allocation *permanently* impossible on every allowed device, the job is
-REJECTED with one router-aggregated reason per candidate device — detected
-via each device's allocator `feasible()` check, which deliberately ignores
-pool state.
-
-### Syntax
-
-```
-# Bare jobs — no thresholds, any device
-qsubmit bell.qasm
-qsubmit bell.qasm ghz.qasm
-
-# Trailing flags — bind ONLY to the job immediately before them
-qsubmit bell.qasm --max-qubit-error=0.05
-qsubmit bell.qasm --max-edge-error=0.1 --no-exec=d0
-qsubmit bell.qasm --exec=d1,d2
-
-# Bracket group — flags apply to ALL jobs in the group
-qsubmit [a.qasm b.qasm --max-qubit-error=0.05 --no-exec=d0]
-qsubmit [a.qasm b.qasm]                          # valid: group, no flags
-
-# Mixed — groups and bare jobs combine; flags never leak across
-qsubmit [a.qasm b.qasm --max-qubit-error=0.05] c.qasm d.qasm --exec=d2 e.qasm
-#   a: qe=0.05 | b: qe=0.05 | c: defaults | d: exec=d2 | e: defaults
-```
-
-Threshold values must be floats in `[0, 1]`; device references must match
-`d<int>`. Malformed input (unclosed brackets, unknown flags, out-of-range
-values, flags with no preceding file, bracketed or malformed device lists,
-`--exec` with `--no-exec`, references to unattached devices) is rejected
-with a clear error and no job is created.
-
----
-
-## Configuration
-
-Configuration keys are split into three scopes.
-
-**Device keys** (`scheduler`, `allocator`, `shots`) are resolved
-independently for every attached device through a four-level cascade,
-later levels overriding earlier ones:
-
-1. **DevQ core defaults**
-2. **That device's provider `preferred_config()`** (e.g. IBM prefers `shots: 2048`)
-3. **Global user config file** — `DevQ(config_path=...)`, applies to all devices
-4. **Per-device user config file** — `add_device(device, config_path)`, this device only
-
-**Global keys** (`router`, `router_queue_weight`, `router_noise_weight`)
-are resolved once for the whole system: core defaults ← global user file.
-Providers deliberately **cannot** set global keys — a provider expressing
-system routing policy would be a layer violation; such keys are warned
-about and ignored. Like the common keys below, the router weight pair
-accepts any non-negative numbers and is normalised to sum to 1 at
-resolution time (scaling both weights never changes which device wins).
-
-**Common keys** (`qubit_error_weight`, `edge_error_weight`) are the α / β
-of the noise cost `S = α·Σ(qubit_error) + β·Σ(edge_error)` — one concept
-with two consumers, so the pair is resolved in **both** scopes. The
-global-scope copy feeds the NoiseRouter's scoring yardstick (one uniform
-ruler across all candidate devices); each device's copy rides the full
-four-level device cascade and feeds that device's allocator. Setting the
-weights once in the global file therefore moves the yardstick and every
-device's allocator together; a per-device file overrides only that
-device's allocator copy. The keys accept any non-negative numbers and
-each resolved pair is **normalised to sum to 1** — only the ratio
-matters, so `1`/`9`, `0.1`/`0.9`, and `2`/`18` are all equivalent, and
-normalising keeps S values on one comparable scale everywhere. Keys
-cascade independently, *then* the pair is normalised (overriding only
-one of the two mixes it with the other's inherited value). A both-zero
-pair falls back to core defaults with a warning. `qconfig` shows the
-effective normalised values in both the global section and each device
-section. Allocators without a cost model (Static, Graph) ignore the
-weights — the same precedent as Static ignoring edge thresholds.
-
-**Plugin keys.** The three scopes above cover DevQ's own keys. A
-registered component may declare its own, which must be namespaced
-(`qos.batch_window`) and then behave exactly like core keys: they
-cascade, validate, carry provenance, and appear in `qconfig`. A plugin
-key is legal only once its owner is registered — before that it is an
-unknown key like any other. Plugins may also declare their own
-normalisation groups, N-ary rather than pairs. See
-[`docs/registry.md`](docs/registry.md).
-
-The exact scoring formulas — the block cost `S`, the router's device
-score, and the normalisation rules — are stated formally, with worked
-values, in [`docs/cost-model.md`](docs/cost-model.md).
-
-One JSON file may freely mix both scopes; each loader reads only its own
-keys:
-
-```json
-{
-    "scheduler": "packing",
-    "allocator": "noise_graph",
-    "shots": 1024,
-    "qubit_error_weight": 0.1,
-    "edge_error_weight": 0.9,
-    "router": "noise",
-    "router_queue_weight": 0.5,
-    "router_noise_weight": 0.5
-}
-```
-
-`qconfig` shows the provenance of every active value: `DevQ Core`,
-`<ProviderName>`, `User (global)`, or `User (dN)`.
-
-Ready-made example config files — including the ones used by the sanity
-test blocks (`router_only`, `round_robin`, per-device overrides, weight
-variants) — live in `config/config_examples/`.
-
-### Reproducibility & Seeding
-
-Providers accept an optional `seed` at construction for reproducible runs.
-It is a **constructor parameter, not a config key** — providers are built
-before configuration is resolved and never consume the user config, so a
-config key would be a layer violation.
-
-```python
-DevQSimulatedProvider(seed=42).get_device("random", 7)   # reproducible topology
-IBMSimulatedProvider(seed=42)                            # reproducible counts
-```
-
-`seed=None` (the default) preserves fully unseeded behaviour, byte-identical
-to a build without the parameter.
-
-The example `example.py` wires this to a `--seed` flag, so a whole session can
-be made reproducible without editing code:
-
-```bash
-python example.py              # unseeded (default)
-python example.py --seed 42    # identical devices and counts every launch
-```
-
-Two launches with the same seed produce byte-identical transcripts —
-d0's generated topology and error maps, and every job's counts.
-
-**What each provider does with it.** `DevQSimulatedProvider` holds a
-provider-local `random.Random(seed)` used for topology and error map
-generation, so a generated device is identical across launches. The global
-`random` state is never touched — seeding DevQ will not perturb randomness
-elsewhere in your program. `IBMSimulatedProvider` derives a per-run seed
-`seed + k`, where `k` is a provider-local submission counter incremented on
-the shell thread, and passes it to both the transpiler and the Aer
-simulator. Because all job dispatch happens on the shell thread, submission
-order is deterministic: an identical session replays identical counts
-job-for-job, while two runs of the *same* circuit within one session still
-produce distinct counts rather than cloned ones.
-
-Providers with no stochastic behaviour inherit `seed` from `BaseProvider`
-and ignore it — the same precedent as `StaticAllocator` ignoring cost
-weights.
-
-**Scope.** Seeding makes DevQ's *own* randomness reproducible. It does not
-pin your dependency versions: fake-backend calibration data is tied to the
-`qiskit-ibm-runtime` release, so reproducing counts across machines also
-requires matching the pinned stack in `requirements.txt`.
-
-### Scheduler, Allocator & Router Reference
-
-| Config key | Class | Tag | Scope | Behaviour |
-|---|---|---|---|---|
-| `fcfs` | `FCFSScheduler` | Alt | device | Strict submission order; head-of-line blocking on WAITING jobs (REJECTED jobs are removed, never block) |
-| `sdf` | `ShortestDepthScheduler` | Alt | device | Shallowest circuit first; better throughput under mixed-depth workloads |
-| `packing` | `PackingScheduler` | **default** | device | SDF + greedy bin-packing (TempPool, two-phase commit); concurrent circuits on disjoint qubits |
-| `static` | `StaticAllocator` | Alt | device | First available block; no topology/noise awareness; ignores edge thresholds by design |
-| `graph` | `GraphAllocator` | Alt | device | BFS over topology graph; guarantees connected subgraph |
-| `noise_graph` | `NoiseGraphAllocator` | **default** | device | BFS + weighted cost S = α·Σ(qubit_err) + β·Σ(edge_err); α/β via the common-scope `qubit_error_weight`/`edge_error_weight` (defaults 0.1/0.9, normalised to sum 1) |
-| `round_robin` | `RoundRobinRouter` | Alt | global | Cycles through feasible devices in index order; load/noise-oblivious baseline |
-| `noise` | `NoiseRouter` | **default** | global | Routes to lowest `w_q·queue_pressure + w_n·best_case_cost` over feasible devices; weights via `router_queue_weight` / `router_noise_weight` (any non-negative numbers, normalised to sum 1, default 0.5 each) |
-
-These are the components DevQ ships with, not a closed list: any
-registered component is equally addressable by its config key. See
-[`docs/registry.md`](docs/registry.md).
-
-Because per-device FCFS queues sit below the router, FCFS ordering is
-per-device: global submission order is approximately preserved via routing
-order — the standard two-level-scheduling tradeoff.
-
----
-
-## Further documentation
-
-| Document | Contents |
-|---|---|
-| [`docs/cost-model.md`](docs/cost-model.md) | Formal statement of the block cost `S` and the router's device score, with notation and worked values |
-| [`docs/registry.md`](docs/registry.md) | Plugin author reference — registering your own scheduler, allocator, router or provider, and declaring its configuration |
-| [`docs/test_blocks.md`](docs/test_blocks.md) | Sanity test plan — what each block checks and why; run it with `python run_tests.py` |
-
----
-
-## Extending DevQ
-
-Every pluggable part of DevQ is attached to a `DevQ` instance through
-the component registry, with no edits to DevQ core:
-
-```python
 devq = DevQ(config_path="my.config.json")
+devq.register_scheduler("mine", MyScheduler)
+devq.add_device(device)
+devq.start()
+```
+
+With `{"scheduler": "mine", "mine.batch_window": 12}` in the config
+file, your scheduler is constructed per device, `mine.batch_window`
+rides the full configuration cascade, and both appear in `qconfig` with
+their provenance. Nothing in DevQ core is edited or aware of your class.
+
+---
+
+## Why a registry
+
+Before this existed, adding a scheduler meant editing three things in
+two core files: the `_SCHEDULER_MAP` in `devq.py`, the `VALID_VALUES`
+list in `config/config_loader.py`, and the label table beside it. Miss
+the second and your scheduler is rejected as an invalid config value by
+a file you never looked at.
+
+The deeper problem was that the list of legal policy names was a
+**hand-maintained duplicate** of what actually existed. The registry
+collapses construction, validation and display into one fact: the set of
+legal values for the `scheduler` key *is* the set of registered
+schedulers, read live.
+
+---
+
+## Registration
+
+Four methods on the `DevQ` object, all chainable:
+
+```python
 devq.register_scheduler("mine", MyScheduler)
 devq.register_allocator("mine", MyAllocator)
 devq.register_router("mine",    MyRouter)
 devq.register_provider("ionq",  IonQProvider(api_key=KEY))
-devq.start()
 ```
 
-Registering a component makes its name a legal value of the
-corresponding config key immediately — `{"scheduler": "mine"}` — because
-the set of legal values is read from the registry rather than from a
-fixed list. A component may also declare its own namespaced config keys
-(`mine.batch_window`), which then cascade, validate and appear in
-`qconfig` exactly like core keys.
+**Registration is instance-scoped.** Each `DevQ` object owns its own
+registry. Two `DevQ` objects in one process do not share registrations,
+and nothing leaks between them. There is no global state and no import-
+time magic.
 
-Contracts are checked **at registration**, not when the component is
-eventually constructed: the ABC, the constructor signature DevQ will
-call, the methods the kernel invokes, and any declared configuration.
-DevQ's own components register through this same path.
+**Register before `build()` or `start()`.** Configuration is read at
+build time; registering afterwards could not affect the system that was
+built, so it raises `DevQError` rather than being silently ignored.
+There is no constraint relative to `add_device()` — attach devices and
+register components in whichever order suits you.
 
-Full reference, including scopes, validators and normalisation groups:
-[`docs/registry.md`](docs/registry.md). What follows is the contract for
-each kind.
+### Classes vs instances
+
+| Kind | Accepts | Why |
+|---|---|---|
+| scheduler | class only | one is constructed **per device**, bound to that device's memory manager and queue |
+| allocator | class only | same |
+| router | class or instance | exactly one router per system, so sharing is safe |
+| provider | class or instance | a provider may need credentials or a seed DevQ knows nothing about |
+
+Registering a scheduler *instance* is refused, and this is a correctness
+constraint rather than a style rule. A shared scheduler object would
+merge the per-device queues that the multi-device federation exists to
+keep separate — a system that appears to work and is quietly wrong.
+
+Register a provider or router **instance** when it needs construction
+arguments DevQ cannot supply:
+
+```python
+devq.register_provider("ionq", IonQProvider(api_key=KEY, region="us"))
+```
+
+A router registered as an instance keeps the weights you gave it; DevQ
+does not overwrite them from config.
+
+---
+
+## What is checked at registration
+
+A component that violates its contract is rejected **when you register
+it**, not when it is eventually constructed several layers down. This is
+deliberate: DevQ has been bitten twice by contract violations that
+surfaced far from their cause.
+
+| Level | Check |
+|---|---|
+| 1. Type | subclass (or instance) of the ABC for its kind |
+| 2. Bind | `__init__` accepts exactly what DevQ will pass |
+| 3. Methods | the methods DevQ calls exist and accept what DevQ passes |
+| 4. Schema | declared keys are namespaced, legally scoped, and their defaults pass their own validators |
+| 5. Groups | declared groups reference real keys, have ≥2 members, and agree with each member's `normalise_group` |
+
+Level 2 uses `inspect.signature().bind()` rather than trying to
+construct the object, so no user code runs and no side effects fire.
+
+**Level 3 checks both halves of each template-method pair.** The kernel
+calls `router.route()`, which is concrete on `BaseRouter` and delegates
+to your abstract `select()`. Checking only `route()` would pass a plugin
+whose `select()` has the wrong signature, because it inherits a valid
+`route()`. The same applies to `allocate()`/`feasible()` and
+`schedule()`/`enqueue()`.
+
+### What DevQ passes your constructor
+
+| Kind | `__init__` receives |
+|---|---|
+| scheduler | `(memory_manager, process_table)` positionally |
+| allocator | `qubit_error_weight=`, `edge_error_weight=` |
+| router | `router_queue_weight=`, `router_noise_weight=`, `qubit_error_weight=`, `edge_error_weight=` |
+| provider | `seed=` |
+
+Inheriting the base `__init__` satisfies all of these. If you define
+your own, accept the same parameters — or register an instance, for the
+kinds that allow it.
+
+---
+
+## Declaring configuration
+
+A component contributes tunables by declaring `CONFIG_SCHEMA` as a class
+attribute. Each entry is a `KeySpec`:
+
+```python
+KeySpec(scope, default, validate, label, normalise_group=None)
+```
+
+| Field | Meaning |
+|---|---|
+| `scope` | `"device"`, `"global"` or `"common"` — which cascade resolves it |
+| `default` | the DevQ Core value; must pass your own validator |
+| `validate` | callable returning `None` if acceptable, else a message |
+| `label` | human name shown by `qconfig` |
+| `normalise_group` | optional group name, see below |
+
+One declaration buys the key everything: a place in the cascade,
+validation, provenance tracking, and a `qconfig` line. There is no
+second table to keep in step.
+
+### Namespacing is mandatory
+
+Plugin keys must be `prefix.key` — `qos.batch_window`, not
+`batch_window`. Un-namespaced keys are reserved for DevQ core. This
+stops two independent plugins colliding on a name like `window`, keeps
+`qconfig` readable, and makes the plugin boundary visible in published
+benchmark artifacts.
+
+A namespaced key is not privileged for being namespaced: it is a legal
+config key only once its owner is registered. Before that, it is an
+unknown key like any other.
+
+### Scopes
+
+| Scope | Resolved |
+|---|---|
+| `device` | independently per device, through the full four-level cascade |
+| `global` | once for the whole system |
+| `common` | in **both** scopes independently |
+
+Which scopes you may declare depends on your component kind, enforced at
+registration:
+
+| Kind | May declare |
+|---|---|
+| scheduler, allocator | `device`, `common` |
+| router, provider | `global`, `common` |
+
+A per-device scheduler declaring a system-wide key would be a scheduler
+dictating global policy; a router declaring a per-device key would be
+meaningless, since there is one router.
+
+**Providers may never *set* a global key**, including one they declared
+themselves. `preferred_config()` returning a global key is warned about
+and ignored. Declaring a key and being entitled to set it are different
+things: a provider expressing system-level policy is a layer violation.
+
+### Validators
+
+A validator is a plain callable returning `None` when the value is
+acceptable, or a **string describing what was expected**:
+
+```python
+def even_int(value):
+    if not isinstance(value, int) or isinstance(value, bool):
+        return "expected an integer"
+    if value % 2:
+        return "expected an even integer"
+    return None
+```
+
+The string completes the sentence
+`... for 'key' from <source> — <message>. Ignoring.`
+
+Message-on-failure rather than a bare `False` so that a validator which
+can fail for several reasons reports the right one. A validator that
+forgets to return `None` would reject every value a user ever supplied
+while the default silently stood in — so the registry checks each key's
+own default against its own validator and rejects the pair if they
+disagree.
+
+Stock validators in `registry.keyspec`: `positive_int`, `non_negative`,
+`unit_interval`, `non_empty_string`, and `one_of(...)` for a fixed set
+of literals.
+
+Do **not** use `one_of` for policy names. A key whose legal values
+depend on what is registered gets a registry-backed validator from the
+loader, so registering a component makes its name legal immediately.
+
+---
+
+## Normalisation groups
+
+When several keys only carry meaning as a **ratio** — cost weights,
+blend factors — declare them as a group. The members are scaled to sum
+to 1 after the cascade completes, so a user may write them on any scale:
+`3/1`, `0.75/0.25` and `30/10` are equivalent.
+
+```python
+class MyScheduler(BaseScheduler):
+    CONFIG_SCHEMA = {
+        "mine.wait": KeySpec("device", 0.4, non_negative, "Wait weight",
+                             normalise_group="mine.blend"),
+        "mine.fid":  KeySpec("device", 0.6, non_negative, "Fidelity weight",
+                             normalise_group="mine.blend"),
+    }
+    CONFIG_GROUPS = {
+        "mine.blend": NormaliseGroup(["mine.wait", "mine.fid"]),
+    }
+```
+
+Two declarations: each member names its group, and the group lists its
+members. The registry checks they agree, that every member exists, and
+that a group has at least two members — a one-member group would be
+normalised to `1.0` whatever the user configured, and the only symptom
+would be a quietly wrong benchmark number.
+
+Groups are N-ary; three or more members work the same way. All members
+must share one scope, since members in different scopes are resolved by
+different passes and could never be scaled against each other.
+
+**If every member resolves to 0**, the ratio is undefined and every
+candidate would score identically — silently degrading the consuming
+policy to "first candidate found". DevQ warns and reverts the whole
+group to its declared defaults.
+
+---
+
+## Labels
+
+Any component may define a `LABEL` class attribute, shown by `qconfig`
+alongside the name:
+
+```
+scheduler          =  mine            [My Scheduler]  source: User (global)
+```
+
+Without one, the class name is used.
+
+---
+
+## What to implement
+
+Registration is how a component becomes addressable; this is what the
+component itself must do. Each kind has a small contract, and a couple of
+points below are load-bearing for correctness rather than style.
 
 **New provider** — subclass `BaseProvider`, implement `get_device()` and
 `execute(circuit, v2p_map, shots, device)`. Return either a synchronous
@@ -636,7 +314,7 @@ fidelity.
 
 If your provider is stochastic, accept `seed=None` in `__init__`, call
 `super().__init__(seed)`, and derive all randomness from a provider-local
-generator — see [Reproducibility & Seeding](#reproducibility--seeding).
+generator — see [Reproducibility & Seeding](configuration.md#reproducibility--seeding).
 
 **New allocator** — subclass `BaseAllocator`, implement `allocate()` per the
 documented contract (reserve via `pool.allocate()` on success; raise on
@@ -662,19 +340,75 @@ machinery for scoring.
 
 ---
 
-## Acknowledgements
+---
 
-The author thanks Prof. Yiming Zeng for guidance throughout CS 580Q:
-Quantum Computing and Networks at Binghamton University, and Karan Patil
-for his contributions to the baseline scheduling strategies (FCFS and
-SDF) in an earlier phase of DevQ.
+## Providers and declarative devices
 
-### Use of AI Tools
+Registering a provider makes it addressable **by name**, which is what
+lets devices be described in data rather than constructed in code:
 
-Large language models were used as development aids in this work:
-Claude Fable 5/ Opus 4.8 (Anthropic) for code generation, debugging,
-documentation, and figure preparation; GPT-5.5 (OpenAI) for architecture
-refinement and design brainstorming; and Gemini 3.5 Flash (Google) for
-literature search. All designs, AI-assisted code, and text were reviewed,
-tested, and validated by the author, who takes sole responsibility for the
-content and correctness of this project.
+```json
+{"provider": "ibm", "backend": {"name": "FakeNairobiV2"}}
+```
+
+The `backend` object is handed to `get_device_from_spec(spec)`, whose
+default implementation splats it into `get_device(**spec)`. Override it
+if your provider wants a different spec vocabulary or better errors than
+a bare `TypeError`:
+
+```python
+class IonQProvider(BaseProvider):
+    def get_device_from_spec(self, spec):
+        if "qpu" not in spec:
+            raise ValueError("IonQ device spec needs a 'qpu' key")
+        return self.get_device(qpu=spec["qpu"])
+```
+
+It is deliberately not abstract — it has a working default, and making
+it abstract would break providers written before it existed.
+
+---
+
+## Errors
+
+Every violation raises `DevQError` from the `register_*` methods, with a
+message naming the component, the specific rule broken, and where
+applicable the offending signature. A few examples:
+
+```
+scheduler 'qos' (QOSScheduler) cannot be constructed by DevQ: __init__
+must accept memory_manager, process_table, but binding them failed (got
+an unexpected keyword argument 'memory_manager'). Its signature is
+QOSScheduler(self).
+
+scheduler 'qos' (QOSScheduler): config key 'window' must be namespaced
+as '<prefix>.<key>' (for example 'qos.window'). Un-namespaced keys are
+reserved for DevQ core.
+
+scheduler 'qos' was registered as an instance, but schedulers must be
+registered as a CLASS. DevQ constructs one scheduler per attached
+device, each bound to that device's own memory manager and queue; a
+shared instance would merge state across devices.
+```
+
+---
+
+## Built-ins use this path
+
+DevQ's own schedulers, allocators, routers and the DevQ simulated
+provider are seeded into every new instance's registry through the same
+public `register()` call a third party uses, with the same validation.
+Nothing is privileged.
+
+This is not stylistic. If the extension path breaks, every built-in
+breaks at once and loudly, rather than the plugin path quietly rotting
+while the shipped system keeps working.
+
+The IBM provider is deliberately **not** seeded, since importing it
+pulls in `qiskit-ibm-runtime`, an optional dependency. Register it
+yourself if you need it addressable by name:
+
+```python
+from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+devq.register_provider("ibm", IBMSimulatedProvider(seed=42))
+```
