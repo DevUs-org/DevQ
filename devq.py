@@ -10,7 +10,7 @@ on start() wires everything into the Kernel and launches QShell.
 
 Usage:
     from devq import DevQ
-    from hardware.providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
 
     # Single device, default config — unchanged from Phase 0
     DevQ(DevQSimulatedProvider().get_device("random", 10)).start()
@@ -29,13 +29,21 @@ used by qdevices, --exec/--no-exec flags, and device-scoped commands.
 
 Config file format (JSON) — device keys and global keys may share one file:
     {
-        "scheduler":  "packing",      // fcfs | sdf | packing      (device)
-        "allocator":  "noise_graph",  // static | graph | noise_graph (device)
+        "scheduler":  "packing",      // any registered scheduler   (device)
+        "allocator":  "noise_graph",  // any registered allocator   (device)
         "shots":      1024,           //                            (device)
         "qubit_error_weight": 0.1,    // noise cost weight α        (common)
         "edge_error_weight":  0.9,    // noise cost weight β        (common)
-        "router":     "noise"         // noise | round_robin       (global)
+        "router":     "noise"         // any registered router      (global)
     }
+
+Legal values for scheduler/allocator/router are whatever is registered
+on this DevQ instance, not a fixed list. Built-ins ship registered;
+third-party components are attached with register_scheduler(),
+register_allocator(), register_router() and register_provider() before
+build() or start() is called. A component may also declare its own
+namespaced config keys, which then cascade and appear in qconfig exactly
+like core keys — see docs/registry.md.
 
 Configuration priority:
     DEVICE keys, resolved per device (later overrides earlier):
@@ -56,7 +64,8 @@ from kernel.kernel import Kernel
 from kernel.device_context import DeviceContext
 from kernel.memory.memory_manager import MemoryManager
 from shell.qshell import QShell
-from config.config_loader import load_global_config, load_device_config
+from config.config_loader import ConfigLoader
+from registry.registry import Registry, RegistryError
 
 from kernel.scheduler.fcfs_scheduler import FCFSScheduler
 from kernel.scheduler.shortest_depth_scheduler import ShortestDepthScheduler
@@ -66,22 +75,36 @@ from kernel.memory.allocators.graph_allocator import GraphAllocator
 from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
 from kernel.router.noise_router import NoiseRouter
 from kernel.router.round_robin_router import RoundRobinRouter
+from providers.devq.devq_simulated_provider import DevQSimulatedProvider
 
-_SCHEDULER_MAP = {
-    "fcfs":        FCFSScheduler,
-    "sdf":         ShortestDepthScheduler,
-    "packing":     PackingScheduler,
-}
-
-_ALLOCATOR_MAP = {
-    "static":      StaticAllocator,
-    "graph":       GraphAllocator,
-    "noise_graph": NoiseGraphAllocator,
-}
-
-_ROUTER_MAP = {
-    "noise": NoiseRouter,
-    "round_robin": RoundRobinRouter
+# DevQ's own components, seeded into every new DevQ instance's registry
+# through the SAME public register_*() path a third party uses. Nothing
+# here is privileged: if the extension path breaks, every built-in
+# breaks at once and loudly, rather than the plugin path quietly rotting
+# while the shipped system keeps working.
+#
+# The IBM provider is deliberately absent — importing it pulls in
+# qiskit-ibm-runtime, which is an optional dependency. Register it
+# yourself if you need it addressable by name:
+#     devq.register_provider("ibm", IBMSimulatedProvider())
+_BUILTINS = {
+    "scheduler": {
+        "fcfs":        FCFSScheduler,
+        "sdf":         ShortestDepthScheduler,
+        "packing":     PackingScheduler,
+    },
+    "allocator": {
+        "static":      StaticAllocator,
+        "graph":       GraphAllocator,
+        "noise_graph": NoiseGraphAllocator,
+    },
+    "router": {
+        "noise":       NoiseRouter,
+        "round_robin": RoundRobinRouter,
+    },
+    "provider": {
+        "devq":        DevQSimulatedProvider,
+    },
 }
 
 
@@ -161,9 +184,92 @@ class DevQ:
         self._global_config_path = config_path
         self._devices = []   # list of (QuantumDevice, config_path, name)
         self._names   = set()   # canonical names taken, for uniqueness
+        self._built   = False
+
+        # Registry and loader are per-DevQ-instance, never module state:
+        # two DevQ objects in one process must not share registrations,
+        # and a test that registers a mock component must not leak into
+        # the next one.
+        self._registry = Registry()
+        self._seed_builtins()
+        self._config = ConfigLoader(self._registry)
 
         if device is not None:
             self.add_device(device)
+
+    def _seed_builtins(self):
+        '''Register DevQ's own components through the public path.'''
+        for kind, entries in _BUILTINS.items():
+            for name, cls in entries.items():
+                self._registry.register(kind, name, cls)
+
+    # ── Extension ─────────────────────────────────────────────────────────────
+
+    def register_scheduler(self, name, scheduler):
+        '''
+        Register a scheduler class under a name usable as the value of
+        the "scheduler" config key. Returns self for chaining.
+
+        Must be a CLASS, not an instance: DevQ constructs one scheduler
+        per attached device, each bound to that device's own memory
+        manager and queue.
+        '''
+        return self._register("scheduler", name, scheduler)
+
+    def register_allocator(self, name, allocator):
+        '''
+        Register an allocator class under a name usable as the value of
+        the "allocator" config key. Returns self for chaining.
+
+        Must be a CLASS, not an instance — one allocator is constructed
+        per attached device.
+        '''
+        return self._register("allocator", name, allocator)
+
+    def register_router(self, name, router):
+        '''
+        Register a router under a name usable as the value of the
+        "router" config key. Returns self for chaining.
+
+        A class or a ready-made instance: there is exactly one router
+        for the whole system, so a shared instance is safe.
+        '''
+        return self._register("router", name, router)
+
+    def register_provider(self, name, provider):
+        '''
+        Register a provider under a name, so that devices can be named
+        declaratively (e.g. in a benchmark workload spec) rather than
+        constructed in code. Returns self for chaining.
+
+        A class or a ready-made instance. Register an instance when the
+        provider needs construction arguments DevQ knows nothing about,
+        such as credentials or a seed:
+
+            devq.register_provider("ionq", IonQProvider(api_key=KEY))
+        '''
+        return self._register("provider", name, provider)
+
+    def _register(self, kind, name, component):
+        '''
+        Shared body of the register_*() methods.
+
+        RegistryError is re-raised as DevQError so that callers of the
+        DevQ facade see one exception type regardless of which layer
+        rejected the component.
+        '''
+        if self._built:
+            raise DevQError(
+                f"cannot register {kind} '{name}' — build() has already run "
+                "and the configuration has been read. Register all components "
+                "before calling build() or start()."
+            )
+
+        try:
+            self._registry.register(kind, name, component)
+        except RegistryError as e:
+            raise DevQError(str(e)) from None
+        return self
 
     # ── Device attachment ─────────────────────────────────────────────────────
 
@@ -258,25 +364,31 @@ class DevQ:
                 "add_device()/add_devices() before start()."
             )
 
-        global_config, global_provenance = load_global_config(
+        # Configuration has now been read, so no further registration
+        # could affect the system being built. Refusing it is better
+        # than accepting it and silently doing nothing.
+        self._registry.freeze()
+        self._built = True
+
+        global_config, global_provenance = self._config.load_global(
             self._global_config_path
         )
 
         contexts = []
         for index, (device, device_config_path, name) in enumerate(self._devices):
-            config, provenance = load_device_config(
+            config, provenance = self._config.load_device(
                 device.provider,
                 index,
                 global_config_path=self._global_config_path,
                 device_config_path=device_config_path
             )
 
-            allocator = _ALLOCATOR_MAP[config["allocator"]](
+            allocator = self._registry.get("allocator", config["allocator"])(
                 qubit_error_weight = config["qubit_error_weight"],
                 edge_error_weight  = config["edge_error_weight"]
             )
             memory    = MemoryManager(device, allocator)
-            scheduler = _SCHEDULER_MAP[config["scheduler"]](
+            scheduler = self._registry.get("scheduler", config["scheduler"])(
                 memory, None   # process_table injected below by Kernel wiring
             )
 
@@ -301,11 +413,25 @@ class DevQ:
             kernel            = kernel,
             global_config     = global_config,
             global_provenance = global_provenance,
+            labels            = self._config.labels(),
             interactive       = interactive
         )
 
     def _build_router(self, global_config):
-        return _ROUTER_MAP[global_config["router"]](
+        '''
+        Construct the configured router, or return a registered instance.
+
+        A router registered as a ready-made instance was built by the
+        user with arguments DevQ knows nothing about, so its weights are
+        left exactly as the user set them rather than being overwritten
+        from config.
+        '''
+        router = self._registry.get("router", global_config["router"])
+
+        if not isinstance(router, type):
+            return router
+
+        return router(
             router_queue_weight = global_config["router_queue_weight"],
             router_noise_weight = global_config["router_noise_weight"],
             qubit_error_weight = global_config["qubit_error_weight"],

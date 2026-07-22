@@ -23,8 +23,6 @@ import time
 import readline
 import atexit
 from circuits.qasm_loader import load_qasm
-from config.config_loader import (SCHEDULER_LABELS, ALLOCATOR_LABELS,
-                                  ROUTER_LABELS)
 from shell.parser import parse_job_args
 
 _DEVICE_RE = re.compile(r"^d(\d+)$")
@@ -48,9 +46,16 @@ class QShell(cmd.Cmd):
     prompt = "devq> "
 
     def __init__(self, kernel, global_config=None, global_provenance=None,
-                 interactive=True):
+                 labels=None, interactive=True):
         '''
         Args:
+            labels:      display names for registered components, as
+                         {kind: {name: label}}, resolved once at build
+                         time. Passed as DATA rather than as a reference
+                         to the ConfigLoader: the shell renders
+                         configuration, it does not resolve it, and
+                         holding the loader would let it re-read config
+                         or reach the registry mid-session.
             interactive: whether this shell is driven by a human at a
                          terminal. False disables readline history —
                          command history is meaningless for a shell
@@ -67,6 +72,7 @@ class QShell(cmd.Cmd):
         self.kernel             = kernel
         self._global_config     = global_config     or {}
         self._global_provenance = global_provenance or {}
+        self._labels            = labels            or {}
         self._last_command = None
         self._history_file = None
 
@@ -528,7 +534,7 @@ class QShell(cmd.Cmd):
             print()
             if show_global:
                 router = self._global_config.get("router", "")
-                label  = ROUTER_LABELS.get(router, "")
+                label  = self._labels.get("router", {}).get(router, "")
                 source = self._global_provenance.get("router", "")
                 print(f"  router       =  {router:<14}  [{label}]  "
                       f"source: {source}")
@@ -550,14 +556,22 @@ class QShell(cmd.Cmd):
                       f"({ctx.device.num_qubits} qubits)")
 
                 rows = [
-                    ("scheduler", SCHEDULER_LABELS.get(
+                    ("scheduler", self._labels.get("scheduler", {}).get(
                         ctx.config.get("scheduler", ""), "")),
-                    ("allocator", ALLOCATOR_LABELS.get(
+                    ("allocator", self._labels.get("allocator", {}).get(
                         ctx.config.get("allocator", ""), "")),
                     ("shots",     ""),
                     ("qubit_error_weight", ""),
                     ("edge_error_weight",  ""),
                 ]
+
+                # Keys contributed by registered plugins. Namespaced, so
+                # they sort together under their owner's prefix and can
+                # never be confused with a core key. Listed after the
+                # core rows rather than interleaved, because a device
+                # not using that plugin still resolves its defaults.
+                rows += [(key, "") for key in sorted(ctx.config)
+                         if "." in key]
 
                 for key, label in rows:
                     val    = ctx.config.get(key, "")
@@ -566,10 +580,10 @@ class QShell(cmd.Cmd):
                     # long repeating decimals (e.g. 0.35714285714285715).
                     val_str = f"{val:g}" if isinstance(val, float) else str(val)
                     if label:
-                        print(f"    {key:<12} =  {val_str:<14}  [{label}]  "
+                        print(f"    {key:<18} =  {val_str:<14}  [{label}]  "
                               f"source: {source}")
                     else:
-                        print(f"    {key:<12} =  {val_str:<14}  "
+                        print(f"    {key:<18} =  {val_str:<14}  "
                               f"source: {source}")
                 print()
 

@@ -516,14 +516,17 @@ def block_single_device_devq_provider():
 
 def block_plugin_matrix():
     '''Every scheduler × allocator × router combination runs to completion'''
-    import devq as D
     import json
     import os
     import tempfile
 
-    schedulers = list(D._SCHEDULER_MAP)
-    allocators = list(D._ALLOCATOR_MAP)
-    routers    = list(D._ROUTER_MAP)
+    # Read the combinations from a registry rather than from a fixed
+    # list, so that the matrix automatically covers anything registered
+    # — including components a plugin adds.
+    probe      = DevQ()
+    schedulers = probe._registry.names("scheduler")
+    allocators = probe._registry.names("allocator")
+    routers    = probe._registry.names("router")
     broken     = []
 
     tmpdir = tempfile.mkdtemp(prefix="devq_matrix_")
