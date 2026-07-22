@@ -1,7 +1,7 @@
 '''
 Tags: Main
 
-DevQ sanity test runner — executes the blocks in docs/test_blocks.md
+DevQ sanity test runner — executes the blocks in docs/TEST_BLOCKS.md
 automatically, with no manual editing of any entry point.
 
 Each block declares the session it needs (devices, names, config files,

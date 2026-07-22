@@ -7,8 +7,8 @@ Kept out of the README so that the README stays an overview rather than a
 manual. Start a session with `python example.py`, or drive one
 programmatically with `DevQ(...).build()` and `shell.onecmd(...)`.
 
-Related: [`configuration.md`](configuration.md) for the config keys these
-commands report, [`cost-model.md`](cost-model.md) for the scoring
+Related: [`CONFIGURATION.md`](CONFIGURATION.md) for the config keys these
+commands report, [`COST_MODEL.md`](COST_MODEL.md) for the scoring
 mathematics behind routing and allocation decisions.
 
 ---

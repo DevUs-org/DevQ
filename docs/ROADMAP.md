@@ -27,7 +27,7 @@ log — each completed phase records the abstractions it introduced and why.
   physical qubit mapping via `initial_layout`.
 
 Both providers accept an optional `seed` for reproducible runs — see
-[Reproducibility & Seeding](configuration.md#reproducibility--seeding).
+[Reproducibility & Seeding](CONFIGURATION.md#reproducibility--seeding).
 
 ### ✅ Phase 1 — QCB, Process Table & QShell (done)
 Quantum Control Block (the quantum PCB): job_id, circuit, v2p_map, state,
@@ -192,7 +192,7 @@ the component registry (done); running it on a reproducible workload is
 is only the last layer — assert a claim and fail if it is false.
 
 The test suite already does something close to this internally.
-[`test_blocks.md`](test_blocks.md) does not merely check that things run;
+[`TEST_BLOCKS.md`](TEST_BLOCKS.md) does not merely check that things run;
 it records *why each expected value is right*, down to noting that
 `S(nairobi{1,2}) = 0.0102` beats the runner-up `{1,3} = 0.0103` by a
 margin of 0.0001 and would flip under re-weighting. That is already a

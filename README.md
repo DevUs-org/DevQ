@@ -139,7 +139,7 @@ qubit indices remain local to their device everywhere in the system.
 
 ✅ done · 🔬 in progress · 🔭 planned · 💡 idea, not committed
 
-What each phase delivered, and why: [`docs/roadmap.md`](docs/roadmap.md).
+What each phase delivered, and why: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -171,7 +171,7 @@ components register through this same path, so the extension path cannot
 rot while the shipped system keeps working.
 
 Full reference — the contract for each kind, config scopes, validators and
-normalisation groups: [`docs/registry.md`](docs/registry.md).
+normalisation groups: [`docs/REGISTRY.md`](docs/REGISTRY.md).
 
 ---
 
@@ -182,12 +182,12 @@ together they are the authoritative description of DevQ.
 
 | Document | Contents |
 |---|---|
-| [`docs/shell.md`](docs/shell.md) | Every QShell command, and the JobSpec syntax for per-job noise thresholds and device constraints |
-| [`docs/configuration.md`](docs/configuration.md) | The four-level config cascade, key scopes, seeding and reproducibility, and the components DevQ ships with |
-| [`docs/registry.md`](docs/registry.md) | Plugin author reference — registering your own scheduler, allocator, router or provider, and declaring its configuration |
-| [`docs/cost-model.md`](docs/cost-model.md) | Formal statement of the block cost `S` and the router's device score, with notation and worked values |
-| [`docs/test_blocks.md`](docs/test_blocks.md) | Sanity test plan — what each block checks and why; run it with `python run_tests.py` |
-| [`docs/roadmap.md`](docs/roadmap.md) | What each development phase delivered, and what the remaining phases are for |
+| [`docs/SHELL.md`](docs/SHELL.md) | Every QShell command, and the JobSpec syntax for per-job noise thresholds and device constraints |
+| [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | The four-level config cascade, key scopes, seeding and reproducibility, and the components DevQ ships with |
+| [`docs/REGISTRY.md`](docs/REGISTRY.md) | Plugin author reference — registering your own scheduler, allocator, router or provider, and declaring its configuration |
+| [`docs/COST_MODEL.md`](docs/COST_MODEL.md) | Formal statement of the block cost `S` and the router's device score, with notation and worked values |
+| [`docs/TEST_BLOCKS.md`](docs/TEST_BLOCKS.md) | Sanity test plan — what each block checks and why; run it with `python run_tests.py` |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | What each development phase delivered, and what the remaining phases are for |
 
 ---
 

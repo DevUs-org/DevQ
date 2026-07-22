@@ -52,12 +52,12 @@ Documentation, all under `docs/`:
 
 | Document | Read it when |
 |---|---|
-| `shell.md` | Driving a session; every command and the JobSpec grammar |
-| `configuration.md` | Config keys, the cascade, scopes, seeding |
-| `registry.md` | Writing a plugin — contracts, `KeySpec`, validation |
-| `cost-model.md` | The maths behind routing and allocation scores |
-| `test_blocks.md` | What each test block proves and why |
-| `roadmap.md` | What each phase delivered; where the project is going |
+| `SHELL.md` | Driving a session; every command and the JobSpec grammar |
+| `CONFIGURATION.md` | Config keys, the cascade, scopes, seeding |
+| `REGISTRY.md` | Writing a plugin — contracts, `KeySpec`, validation |
+| `COST_MODEL.md` | The maths behind routing and allocation scores |
+| `TEST_BLOCKS.md` | What each test block proves and why |
+| `ROADMAP.md` | What each phase delivered; where the project is going |
 
 ---
 
@@ -67,7 +67,7 @@ Check `requirements.txt` for the authoritative pinned versions before
 assuming anything. At time of writing the stack is pinned to
 `qiskit` / `qiskit-aer` / `qiskit-ibm-runtime`, and **fake-backend
 calibration data is tied to the `qiskit-ibm-runtime` version** — every
-reference value in `docs/test_blocks.md` assumes the pinned one. A
+reference value in `docs/TEST_BLOCKS.md` assumes the pinned one. A
 version bump silently changes expected noise numbers.
 
 Two traps that waste time if unknown:
@@ -106,7 +106,7 @@ the default and is correct for any non-interactive front end; passing
 real terminal session. Call `shutdown_executor()` between sessions in the
 same process.
 
-Commands, briefly — full reference in [`docs/shell.md`](docs/shell.md):
+Commands, briefly — full reference in [`docs/SHELL.md`](docs/SHELL.md):
 
 | Command | Does |
 |---|---|
@@ -131,7 +131,7 @@ Job lifecycle states: `READY`, `RUNNING`, `WAITING`, `FINISHED`,
 ## Task: constrain a job
 
 Per-job noise thresholds and device constraints are set with flags on
-`qsubmit`. Full grammar in [`docs/shell.md`](docs/shell.md).
+`qsubmit`. Full grammar in [`docs/SHELL.md`](docs/SHELL.md).
 
 ```
 qsubmit bell.qasm --max-qubit-error=0.05
@@ -155,7 +155,7 @@ created.
 ## Task: configure DevQ
 
 Configuration is JSON, resolved through a cascade. Detail in
-[`docs/configuration.md`](docs/configuration.md).
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
 Three scopes:
 
@@ -187,7 +187,7 @@ Rules worth stating outright:
 
 ## Task: write a plugin
 
-Full contract in [`docs/registry.md`](docs/registry.md) — read it before
+Full contract in [`docs/REGISTRY.md`](docs/REGISTRY.md) — read it before
 writing a component. The essentials:
 
 ```python
@@ -215,7 +215,7 @@ allocator is constructed per device and its key rides the full cascade.
 **Do not edit DevQ core to add a component.** There is no map to append
 to. If a change to `registry/registry.py` seems necessary to register
 something, the design has been misunderstood — re-read
-[`docs/registry.md`](docs/registry.md).
+[`docs/REGISTRY.md`](docs/REGISTRY.md).
 
 Rules the registry enforces at registration time, before anything is
 constructed:
@@ -267,19 +267,19 @@ Two facts that determine whether a comparison is meaningful:
 
 - **Seed the providers.** `DevQSimulatedProvider(seed=42)` makes a run
   reproducible; without a seed, results differ between runs and nothing
-  is comparable. See [`docs/configuration.md`](docs/configuration.md).
+  is comparable. See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 - **Reference noise values are tied to the pinned
   `qiskit-ibm-runtime`.** Comparing numbers produced under different
   versions is invalid.
 
 The cost model behind routing and allocation decisions — what the weights
 mean and how scores are computed — is in
-[`docs/cost-model.md`](docs/cost-model.md). Read it before interpreting
+[`docs/COST_MODEL.md`](docs/COST_MODEL.md). Read it before interpreting
 any result.
 
 A headless benchmark runner with a declarative workload spec and a
 structured event log is the next phase of work and does not exist yet;
-check `docs/roadmap.md` for current status before assuming a `qbench`
+check `docs/ROADMAP.md` for current status before assuming a `qbench`
 command is available.
 
 ---
@@ -297,11 +297,11 @@ python run_tests.py -v           # commands plus full session transcripts
 There is no pytest. `run_tests.py` is self-contained: each block is a
 function that drives a real shell session and raises on failure.
 
-Detail on every block: [`docs/test_blocks.md`](docs/test_blocks.md).
+Detail on every block: [`docs/TEST_BLOCKS.md`](docs/TEST_BLOCKS.md).
 
 Rules for adding a block — all four are load-bearing:
 
-- **Keep `docs/test_blocks.md` 1:1 with the block list.** One documented
+- **Keep `docs/TEST_BLOCKS.md` 1:1 with the block list.** One documented
   section per block, matching names exactly. Verify programmatically; the
   invariant has caught drift before.
 - **Mutation-test every new block before trusting it.** Break the code

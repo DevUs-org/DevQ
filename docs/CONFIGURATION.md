@@ -7,9 +7,9 @@ Kept out of the README so that the README stays an overview rather than a
 specification. Configuration is resolved by `config/config_loader.py`;
 `qconfig` in the shell reports every active value with its provenance.
 
-Related: [`registry.md`](registry.md) for declaring your own config keys,
-[`cost-model.md`](cost-model.md) for what the weight keys mean
-mathematically, [`shell.md`](shell.md) for the `qconfig` command itself.
+Related: [`REGISTRY.md`](REGISTRY.md) for declaring your own config keys,
+[`COST_MODEL.md`](COST_MODEL.md) for what the weight keys mean
+mathematically, [`SHELL.md`](SHELL.md) for the `qconfig` command itself.
 
 ---
 
@@ -60,11 +60,11 @@ cascade, validate, carry provenance, and appear in `qconfig`. A plugin
 key is legal only once its owner is registered — before that it is an
 unknown key like any other. Plugins may also declare their own
 normalisation groups, N-ary rather than pairs. See
-[`docs/registry.md`](docs/registry.md).
+[`docs/REGISTRY.md`](docs/REGISTRY.md).
 
 The exact scoring formulas — the block cost `S`, the router's device
 score, and the normalisation rules — are stated formally, with worked
-values, in [`docs/cost-model.md`](docs/cost-model.md).
+values, in [`docs/COST_MODEL.md`](docs/COST_MODEL.md).
 
 One JSON file may freely mix both scopes; each loader reads only its own
 keys:
@@ -151,7 +151,7 @@ requires matching the pinned stack in `requirements.txt`.
 
 These are the components DevQ ships with, not a closed list: any
 registered component is equally addressable by its config key. See
-[`docs/registry.md`](docs/registry.md).
+[`docs/REGISTRY.md`](docs/REGISTRY.md).
 
 Because per-device FCFS queues sit below the router, FCFS ordering is
 per-device: global submission order is approximately preserved via routing

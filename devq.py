@@ -43,7 +43,7 @@ third-party components are attached with register_scheduler(),
 register_allocator(), register_router() and register_provider() before
 build() or start() is called. A component may also declare its own
 namespaced config keys, which then cascade and appear in qconfig exactly
-like core keys — see docs/registry.md.
+like core keys — see docs/REGISTRY.md.
 
 Configuration priority:
     DEVICE keys, resolved per device (later overrides earlier):

@@ -4,9 +4,9 @@ How to extend DevQ with your own scheduler, allocator, router or
 provider — without editing DevQ core.
 
 This is the reference for the extensibility surface. The formulas the
-built-in policies implement are in [`cost-model.md`](cost-model.md); the
+built-in policies implement are in [`COST_MODEL.md`](COST_MODEL.md); the
 tests that pin this behaviour are in
-[`test_blocks.md`](test_blocks.md#registry-and-plugin-extension).
+[`TEST_BLOCKS.md`](TEST_BLOCKS.md#registry-and-plugin-extension).
 
 ---
 
@@ -314,7 +314,7 @@ fidelity.
 
 If your provider is stochastic, accept `seed=None` in `__init__`, call
 `super().__init__(seed)`, and derive all randomness from a provider-local
-generator — see [Reproducibility & Seeding](configuration.md#reproducibility--seeding).
+generator — see [Reproducibility & Seeding](CONFIGURATION.md#reproducibility--seeding).
 
 **New allocator** — subclass `BaseAllocator`, implement `allocate()` per the
 documented contract (reserve via `pool.allocate()` on success; raise on

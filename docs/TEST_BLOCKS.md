@@ -106,7 +106,7 @@ device-scoped command. Blocks mix the forms deliberately. Named devices
 display as `nairobi (d1)`; unnamed ones as `d0`.
 
 The cost function `S` used throughout is defined in
-[`cost-model.md`](cost-model.md).
+[`COST_MODEL.md`](COST_MODEL.md).
 
 ---
 
