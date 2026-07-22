@@ -1,7 +1,7 @@
 # DevQ Sanity Test Plan
 
-Specification for the 31 sanity blocks in `run_tests.py`, covering
-Phases 0–5.1.
+Specification for the 37 sanity blocks in `run_tests.py`, covering
+Phases 0–5.1 plus the component registry.
 
 `run_tests.py` asserts **what** each block expects. This document
 records **why** those values are correct — the S-cost arithmetic behind
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 31 blocks, one line each
+python run_tests.py              # all 37 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -637,6 +637,166 @@ error, and the mapping `{0:1, 1:3}` uses it.
 
 Bands are asserted rather than exact counts, so the block survives minor
 Aer changes while still catching either regression.
+
+---
+
+## Registry and plugin extension
+
+These blocks cover DevQ's extensibility surface: the registry that maps
+config names to components, and the contract a third-party component
+must satisfy. They matter more than their line coverage suggests —
+Phase 5.6 implements published scheduling policies *as DevQ plugins*, so
+a silent break in this path would not surface until the results that the
+paper depends on were already being generated.
+
+**The mocks are deliberately observable.** `MockScheduler` is LIFO and
+`MockAllocator` is first-fit, not because either is a sensible policy
+but because every built-in behaves differently. A mock indistinguishable
+from a built-in cannot demonstrate that the registry wired anything up:
+the block would pass just as happily with the plugin ignored. This was
+not hypothetical — the first version of `MockScheduler` was FIFO, and
+mutation-testing showed that replacing the registry lookup with a
+hardcoded `PackingScheduler` left the block green.
+
+### `registry_plugin_components`
+
+*Third-party scheduler, allocator and router run a job end to end.*
+
+Registers all three mocks on one `DevQ` instance, names them in a config
+file, and runs two circuits. Asserts three separate things:
+
+| Claim | Evidence |
+|---|---|
+| resolved by name | `scheduler = mock` in `qconfig` |
+| reported by declared label | `[Mock Scheduler]`, not `MockScheduler` |
+| actually in the execution path | dispatch order and mapping, below |
+
+The last is the one that carries weight. `MockScheduler` is LIFO, so
+job 2 must be dispatched before job 1 — every built-in dispatches 1
+first. And `MockAllocator` is first-fit, so job 1 maps to `{0:0, 1:1}`;
+the default `noise_graph` allocator would pick the lowest-noise pair
+instead. Both assertions fail if the registry lookup is bypassed.
+
+### `registry_validation`
+
+*Malformed components are rejected at registration, not at run time.*
+
+Fourteen cases, each a component violating the contract in exactly one
+way, paired with a phrase its rejection must contain. Defined inline
+rather than at module scope so that a violation and its expected message
+read together.
+
+| Case | Level | Rejected because |
+|---|---|---|
+| `NotAScheduler` | type | not a `BaseScheduler` subclass |
+| `NoInitArgs` | bind | `__init__` takes nothing; DevQ passes two args |
+| `BadSelectSignature` | methods | `select()` takes one arg; the router contract passes two |
+| `BadEnqueueSignature` | methods | `enqueue()` takes none; the kernel passes a QCB |
+| `UnNamespacedKey` | schema | `window` is not namespaced |
+| `IllegalScope` | schema | a scheduler declaring a `global` key |
+| `DefaultFailsValidator` | schema | default `-5` fails its own `positive_int` |
+| `ValidatorNeverAccepts` | schema | validator returns a message for every value |
+| `DanglingGroupMember` | groups | group names a key no schema declares |
+| `SingleMemberGroup` | groups | one member normalises to 1.0 regardless of config |
+| `GroupNeverDeclared` | groups | key names a group nothing declares |
+| scheduler instance | instance | per-device components must be classes |
+| router instance | *accepted* | one router per system, so sharing is safe |
+| duplicate name | naming | would change what existing config files mean |
+
+**Two of these are past bugs.** `NoInitArgs` is Phase 4's
+`RoundRobinRouter`, whose `__init__` took no arguments while
+`_build_router` passed four — all nine round-robin combinations died,
+and it was found only by `plugin_matrix`. `BadSelectSignature` and
+`BadEnqueueSignature` are the shape of the `TempPool` bug, where an
+object implemented two of the three methods its consumer called and the
+resulting `AttributeError` was swallowed by a bare `except`, hanging the
+shell forever. Both are now caught at registration, with the offending
+signature printed.
+
+**Why the method checks cover more than the abstract methods.** Three of
+the four component kinds use a template-method pattern: the kernel calls
+`router.route()`, which is concrete and delegates to the plugin's
+abstract `select()`. Checking only `route()` would pass a plugin whose
+`select()` has the wrong signature, because it inherits a perfectly
+valid `route()`. The same holds for `allocate()`/`feasible()` and
+`schedule()`/`enqueue()`, so both halves of each pair are checked.
+
+### `registry_frozen`
+
+*Registration after `build()` is refused rather than silently ignored.*
+
+`build()` reads the configuration and freezes the registry, so a later
+registration could not affect the system that was built. Accepting it
+and doing nothing would be the worse failure: the user would have a
+plugin they believe is active.
+
+Also asserts the freeze is **per-instance** — a fresh `DevQ` can still
+register after another has been built. The registry is instance-scoped
+precisely so that the test suite, which builds ~30 shells in one
+process, cannot leak registrations between blocks.
+
+### `plugin_config_keys`
+
+*Plugin-declared config keys cascade, validate and appear in `qconfig`.*
+
+The block runs the same config file twice, before and after registering
+the plugin that declares its keys:
+
+| | `mock.batch_window` | `"scheduler": "mock"` |
+|---|---|---|
+| before registering | unknown key, ignored | invalid value |
+| after registering | `12`, `User (global)` | accepted |
+
+Nothing in DevQ core changes between the two runs. That is the whole
+claim of the registry: the legal set of scheduler names and the legal
+set of config keys are both **derived from what is registered**, not
+from a hand-maintained list. A namespaced key is not privileged simply
+for being namespaced — it is legal only once its owner is registered.
+
+Also asserts an unset plugin key resolves to its declared default with
+`DevQ Core` provenance, and that a bad value is rejected by the
+**plugin's own validator**, quoting the message that validator supplied.
+
+**Scope isolation is asserted against the resolved config, not
+`qconfig`.** An earlier version of this block checked that a
+device-scope key was absent from `qconfig`'s global section — which
+passed regardless, because `qconfig` renders only the keys it iterates
+over, so a leaked key would never have appeared there. Mutation testing
+caught it. The check now reads `shell._global_config` and the device
+context's config directly, and asserts both directions: a device key is
+absent from the global scope, and a global key is absent from the device
+scope.
+
+### `plugin_normalise_group`
+
+*A plugin's own normalise group is scaled to sum to 1.*
+
+`mock.wait_weight: 3` and `mock.fid_weight: 1` must resolve to `0.75`
+and `0.25` — only the ratio between members carries meaning, so any
+scale is equivalent. Asserts the core `noise_cost` group normalises
+independently in the same pass, so groups do not interfere.
+
+The all-zero case then reverts the group to its declared defaults
+(`0.4`/`0.6`) with a warning. A group summing to zero has an undefined
+ratio and would make every candidate score identical, silently degrading
+the consuming policy to "first candidate found" — the same failure the
+core `zero_weight_fallback` block guards against, here proven to work
+for a group DevQ core has never heard of.
+
+### `component_labels`
+
+*`qconfig` shows declared human labels, not class names.*
+
+Asserts `[Circuit Packing Scheduler]` rather than `[PackingScheduler]`,
+and that a component declaring no `LABEL` falls back to its class name
+rather than showing nothing.
+
+This block exists because of a real regression. When the three
+module-level label tables were replaced by a `LABEL` class attribute,
+the attribute was added to the components but not committed. Every one
+of the then-31 blocks still passed — nothing asserted on label text —
+and `qconfig` silently degraded to class names on `main`. The block is
+cheap and would have caught it immediately.
 
 ---
 

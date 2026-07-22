@@ -237,13 +237,14 @@ scheduler):
   compute; all state mutation happens on the shell thread inside the
   kernel's resolution step, so the system needs no locks.
 
-### 🔭 Phase 5 — Research Benchmarking Mode (planned)
+### 🔬 Phase 5 — Research Benchmarking Mode (in progress)
 A `qbench` command: run circuit workloads through every
 router/scheduler/allocator combination and report comparative results. The
 goal is for DevQ to serve as an **algorithm evaluation playground** for
 quantum scheduling and allocation researchers — write an allocator against
-`BaseAllocator` or a router against `BaseRouter`, plug it in, benchmark it
-against the built-ins. Open research problems that live at the router
+`BaseAllocator` or a router against `BaseRouter`, register it with
+`devq.register_allocator(...)`, and benchmark it against the built-ins
+without touching DevQ core. Open research problems that live at the router
 layer: cross-backend shot aggregation, coherence-window scheduling, and
 work migration of WAITING jobs.
 
@@ -554,6 +555,10 @@ requires matching the pinned stack in `requirements.txt`.
 | `round_robin` | `RoundRobinRouter` | Alt | global | Cycles through feasible devices in index order; load/noise-oblivious baseline |
 | `noise` | `NoiseRouter` | **default** | global | Routes to lowest `w_q·queue_pressure + w_n·best_case_cost` over feasible devices; weights via `router_queue_weight` / `router_noise_weight` (any non-negative numbers, normalised to sum 1, default 0.5 each) |
 
+These are the components DevQ ships with, not a closed list: any
+registered component is equally addressable by its config key. See
+[`docs/registry.md`](docs/registry.md).
+
 Because per-device FCFS queues sit below the router, FCFS ordering is
 per-device: global submission order is approximately preserved via routing
 order — the standard two-level-scheduling tradeoff.
@@ -565,11 +570,40 @@ order — the standard two-level-scheduling tradeoff.
 | Document | Contents |
 |---|---|
 | [`docs/cost-model.md`](docs/cost-model.md) | Formal statement of the block cost `S` and the router's device score, with notation and worked values |
+| [`docs/registry.md`](docs/registry.md) | Plugin author reference — registering your own scheduler, allocator, router or provider, and declaring its configuration |
 | [`docs/test_blocks.md`](docs/test_blocks.md) | Sanity test plan — what each block checks and why; run it with `python run_tests.py` |
 
 ---
 
 ## Extending DevQ
+
+Every pluggable part of DevQ is attached to a `DevQ` instance through
+the component registry, with no edits to DevQ core:
+
+```python
+devq = DevQ(config_path="my.config.json")
+devq.register_scheduler("mine", MyScheduler)
+devq.register_allocator("mine", MyAllocator)
+devq.register_router("mine",    MyRouter)
+devq.register_provider("ionq",  IonQProvider(api_key=KEY))
+devq.start()
+```
+
+Registering a component makes its name a legal value of the
+corresponding config key immediately — `{"scheduler": "mine"}` — because
+the set of legal values is read from the registry rather than from a
+fixed list. A component may also declare its own namespaced config keys
+(`mine.batch_window`), which then cascade, validate and appear in
+`qconfig` exactly like core keys.
+
+Contracts are checked **at registration**, not when the component is
+eventually constructed: the ABC, the constructor signature DevQ will
+call, the methods the kernel invokes, and any declared configuration.
+DevQ's own components register through this same path.
+
+Full reference, including scopes, validators and normalisation groups:
+[`docs/registry.md`](docs/registry.md). What follows is the contract for
+each kind.
 
 **New provider** — subclass `BaseProvider`, implement `get_device()` and
 `execute(circuit, v2p_map, shots, device)`. Return either a synchronous

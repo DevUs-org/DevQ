@@ -255,6 +255,116 @@ def device_of(out, job_id):
     return m.group(1)
 
 
+# ── Mock components ──────────────────────────────────────────────────────────
+# Stand-ins for third-party plugins. These register through exactly the
+# public path a real plugin author uses, which is the point: testing by
+# UNREGISTERING built-ins would prove only that built-ins can be removed,
+# and would need registry API that exists for no other reason.
+#
+# Only the WORKING mocks live here, because several blocks share them.
+# The deliberately broken ones are defined inline in
+# block_registry_validation, next to the assertion that rejects each —
+# a violation and its expected message are far easier to audit side by
+# side than in two separate lists.
+
+from kernel.process.lifecycle import JobStates
+from kernel.scheduler.base_scheduler import BaseScheduler
+from kernel.memory.allocators.base_allocator import BaseAllocator
+from kernel.router.base_router import BaseRouter
+from registry.keyspec import (KeySpec, NormaliseGroup, positive_int,
+                              non_negative)
+
+
+class MockScheduler(BaseScheduler):
+    '''
+    A minimal third-party scheduler that declares its own config.
+
+    Deliberately LIFO — last submitted, first dispatched. Not because
+    that is a sensible policy, but because it is OBSERVABLE: every
+    built-in scheduler dispatches job 1 before job 2, so reversed
+    dispatch order in the transcript is proof this class was actually
+    the one making decisions. A mock whose behaviour is
+    indistinguishable from a built-in cannot demonstrate that the
+    registry wired anything up.
+    '''
+    LABEL = "Mock Scheduler"
+
+    CONFIG_SCHEMA = {
+        "mock.batch_window": KeySpec(
+            "device", 5, positive_int, "Mock batch window"),
+        "mock.wait_weight": KeySpec(
+            "device", 0.4, non_negative, "Mock wait weight", "mock.blend"),
+        "mock.fid_weight": KeySpec(
+            "device", 0.6, non_negative, "Mock fidelity weight", "mock.blend"),
+    }
+    CONFIG_GROUPS = {
+        "mock.blend": NormaliseGroup(["mock.wait_weight", "mock.fid_weight"]),
+    }
+
+    def schedule(self):
+        # _attempt_allocation is the base class's shared
+        # allocate-and-classify step: it sets v2p_map and RUNNING on
+        # success, and classifies failure as WAITING (transient) or
+        # REJECTED (terminal). A plugin that reimplements it instead of
+        # calling it will silently skip the lifecycle transitions.
+        processed = []
+
+        # Index -1: newest first. Otherwise identical to FCFS, including
+        # the use of _attempt_allocation, which is the base class's
+        # shared allocate-and-classify step — it sets v2p_map and
+        # RUNNING on success and classifies failure as WAITING
+        # (transient) or REJECTED (terminal). A plugin that
+        # reimplements it instead of calling it silently skips the
+        # lifecycle transitions.
+        while self.queue:
+            qcb = self.queue[-1]
+
+            if self._attempt_allocation(qcb):
+                processed.append(self.queue.pop())
+                return processed
+
+            if qcb.state == JobStates.REJECTED:
+                processed.append(self.queue.pop())
+                continue
+
+            break   # WAITING — head-of-line blocking
+
+        return processed or None
+
+
+class MockAllocator(BaseAllocator):
+    '''A third-party allocator: first contiguous free block that fits.'''
+    LABEL = "Mock Allocator"
+
+    def allocate(self, circuit, device, pool,
+                 max_qubit_error=None, max_edge_error=None):
+        need = circuit.num_qubits
+        free = sorted(pool.available())
+        if len(free) < need:
+            return None
+        return {v: p for v, p in enumerate(free[:need])}
+
+
+class MockRouter(BaseRouter):
+    '''A third-party router: always the first feasible candidate.'''
+    LABEL = "Mock Router"
+
+    def select(self, qcb, candidates):
+        return candidates[0]
+
+
+class MockProvider(DevQSimulatedProvider):
+    '''
+    A third-party provider registered by NAME.
+
+    Subclasses the DevQ simulated provider so it produces real devices
+    without needing a backend of its own; what matters here is that it
+    is addressable through the registry rather than constructed in code,
+    which is what a declarative workload spec will need.
+    '''
+    LABEL = "Mock Provider"
+
+
 # ── Blocks ────────────────────────────────────────────────────────────────────
 # Each returns None on success and raises Failure with a specific message
 # otherwise. Docstring first line is the description printed by the runner.
@@ -984,6 +1094,387 @@ def block_backend_factory_errors():
           f"unknown IBM backend rejected, got {raised!r}")
 
 
+# ── Registry and plugin extension ────────────────────────────────────────────
+
+def block_registry_plugin_components():
+    '''Third-party scheduler, allocator and router run a job end to end'''
+    import json
+    import os
+    import tempfile
+
+    tmpdir = tempfile.mkdtemp(prefix="devq_plugin_")
+    path   = os.path.join(tmpdir, "plugins.json")
+    try:
+        with open(path, "w") as f:
+            json.dump({"scheduler": "mock", "allocator": "mock",
+                       "router": "mock"}, f)
+
+        dq = DevQ(config_path=path)
+        dq.register_scheduler("mock", MockScheduler)
+        dq.register_allocator("mock", MockAllocator)
+        dq.register_router("mock",    MockRouter)
+        dq.register_provider("mock",  MockProvider)
+
+        sh = dq.add_device(
+            DevQSimulatedProvider(seed=SEED).get_device("random", 7)).build()
+
+        out = run(sh, ["qconfig", f"qsubmit {BELL} {GHZ}", "qrunpack", "qps"])
+
+        # Named in config, resolved through the registry, and reported
+        # under the LABEL the plugin declared rather than its class name.
+        expect(out, "scheduler          =  mock", "[Mock Scheduler]")
+        expect(out, "allocator          =  mock", "[Mock Allocator]")
+        expect(out, "router       =  mock", "[Mock Router]")
+
+        # Actually in the execution path, not merely constructed.
+        check(out.count("Dispatching job") == 2,
+              "both jobs were dispatched by the plugin scheduler")
+        expect_re(out, r"\d+ \| d0\s+\| FINISHED", count=2)
+
+        # MockScheduler is LIFO, so job 2 must be dispatched before job
+        # 1. Every built-in dispatches 1 first, so this ordering is what
+        # distinguishes "the plugin ran" from "something ran".
+        order = expect_re(out, r"Dispatching job (\d+)")
+        check(order == ["2", "1"],
+              f"plugin scheduler's LIFO order was used (dispatched {order})")
+
+        # MockAllocator is first-fit, so it takes the lowest free qubits
+        # regardless of noise — proof it displaced the noise-aware
+        # default rather than sitting alongside it.
+        check(mapping_of(out, 1) == "{0: 0, 1: 1}",
+              "plugin allocator's first-fit mapping was used, not noise_graph's")
+    finally:
+        for f in os.listdir(tmpdir):
+            os.unlink(os.path.join(tmpdir, f))
+        os.rmdir(tmpdir)
+
+
+def block_registry_validation():
+    '''Malformed components are rejected at registration, not at run time'''
+
+    # Each case is a component that violates the contract in exactly one
+    # way, paired with a phrase its rejection must contain. Defined here
+    # rather than at module scope so that a violation and its expected
+    # message can be read together.
+
+    class NotAScheduler:
+        pass
+
+    class NoInitArgs(BaseScheduler):
+        # Bug 3 in miniature: __init__ takes nothing while DevQ passes
+        # (memory_manager, process_table). Every combination using this
+        # scheduler would have died at build time.
+        def __init__(self):
+            pass
+
+        def schedule(self):
+            return None
+
+    class BadSelectSignature(BaseRouter):
+        # The kernel calls route(), which is concrete on BaseRouter and
+        # delegates to select(). Checking only route() would pass this.
+        def select(self, qcb):
+            return None
+
+    class BadEnqueueSignature(BaseScheduler):
+        def schedule(self):
+            return None
+
+        def enqueue(self):
+            pass
+
+    class UnNamespacedKey(BaseScheduler):
+        CONFIG_SCHEMA = {"window": KeySpec("device", 1, positive_int, "W")}
+
+        def schedule(self):
+            return None
+
+    class IllegalScope(BaseScheduler):
+        # A scheduler is per-device; a global key from one would be a
+        # scheduler dictating system-wide policy.
+        CONFIG_SCHEMA = {"m.k": KeySpec("global", 1, positive_int, "K")}
+
+        def schedule(self):
+            return None
+
+    class DefaultFailsValidator(BaseScheduler):
+        CONFIG_SCHEMA = {"m.k": KeySpec("device", -5, positive_int, "K")}
+
+        def schedule(self):
+            return None
+
+    class ValidatorNeverAccepts(BaseScheduler):
+        # A validator that forgets to return None on the happy path
+        # would reject every value a user ever supplied while the
+        # default silently stood in.
+        CONFIG_SCHEMA = {
+            "m.k": KeySpec("device", 1, lambda v: "never ok", "K")}
+
+        def schedule(self):
+            return None
+
+    class DanglingGroupMember(BaseScheduler):
+        CONFIG_SCHEMA = {
+            "m.a": KeySpec("device", 0.5, non_negative, "A", "m.g")}
+        CONFIG_GROUPS = {"m.g": NormaliseGroup(["m.a", "m.typo"])}
+
+        def schedule(self):
+            return None
+
+    class SingleMemberGroup(BaseScheduler):
+        # Normalising one key alone forces it to 1.0 whatever the user
+        # wrote — a wrong benchmark number with no other symptom.
+        CONFIG_SCHEMA = {
+            "m.a": KeySpec("device", 0.5, non_negative, "A", "m.g")}
+        CONFIG_GROUPS = {"m.g": NormaliseGroup(["m.a"])}
+
+        def schedule(self):
+            return None
+
+    class GroupNeverDeclared(BaseScheduler):
+        CONFIG_SCHEMA = {
+            "m.a": KeySpec("device", 0.5, non_negative, "A", "m.nope"),
+            "m.b": KeySpec("device", 0.5, non_negative, "B", "m.nope")}
+
+        def schedule(self):
+            return None
+
+    cases = [
+        ("scheduler", NotAScheduler,         "must subclass"),
+        ("scheduler", NoInitArgs,            "cannot be constructed"),
+        ("router",    BadSelectSignature,    "select() must accept"),
+        ("scheduler", BadEnqueueSignature,   "enqueue() must accept"),
+        ("scheduler", UnNamespacedKey,       "must be namespaced"),
+        ("scheduler", IllegalScope,          "not legal for a scheduler"),
+        ("scheduler", DefaultFailsValidator, "rejected by that key's own validator"),
+        ("scheduler", ValidatorNeverAccepts, "rejected by that key's own validator"),
+        ("scheduler", DanglingGroupMember,   "not declared in any CONFIG_SCHEMA"),
+        ("scheduler", SingleMemberGroup,     "needs at least two"),
+        ("scheduler", GroupNeverDeclared,    "no such group is declared"),
+    ]
+
+    register = {"scheduler": lambda d, c: d.register_scheduler("bad", c),
+                "router":    lambda d, c: d.register_router("bad", c)}
+
+    for kind, component, phrase in cases:
+        label = component.__name__
+        try:
+            register[kind](DevQ(), component)
+            check(False, f"{label}: rejected at registration")
+        except DevQError as e:
+            check(phrase in str(e),
+                  f"{label}: rejected with {phrase!r}")
+
+    # A per-device component registered as an INSTANCE would be shared
+    # across every device, merging the queues the federation exists to
+    # keep separate.
+    try:
+        DevQ().register_scheduler("bad", MockScheduler(None, None))
+        check(False, "scheduler instance: rejected at registration")
+    except DevQError as e:
+        check("must be registered as a CLASS" in str(e),
+              "scheduler instance: rejected, must be a class")
+
+    # A router is a system-wide singleton, so an instance is safe — and
+    # is how a user supplies construction arguments DevQ knows nothing
+    # about.
+    DevQ().register_router("ok", MockRouter(0.5, 0.5, 0.1, 0.9))
+    check(True, "router instance: accepted, one router per system")
+
+    # Re-registering a name would silently change what existing config
+    # files mean.
+    try:
+        DevQ().register_scheduler("packing", MockScheduler)
+        check(False, "duplicate name: rejected")
+    except DevQError as e:
+        check("already registered" in str(e),
+              "duplicate name: rejected")
+
+
+def block_registry_frozen():
+    '''Registration after build() is refused rather than silently ignored'''
+    dq = DevQ()
+    sh = dq.add_device(
+        DevQSimulatedProvider(seed=SEED).get_device("random", 5)).build()
+
+    # build() has read the configuration, so a later registration could
+    # not affect the system that was built.
+    try:
+        dq.register_scheduler("late", MockScheduler)
+        check(False, "registering after build() raises")
+    except DevQError as e:
+        check("build() has already run" in str(e),
+              "registering after build() raises, naming the cause")
+
+    # The session built before the attempt is unaffected.
+    out = run(sh, ["qdevices"])
+    expect(out, "random_backend")
+
+    # Registering BEFORE build() on a fresh instance still works — the
+    # freeze is per-instance, not global state leaking between them.
+    fresh = DevQ()
+    fresh.register_scheduler("late", MockScheduler)
+    check("late" in fresh._registry.names("scheduler"),
+          "a fresh DevQ instance is unaffected by another's freeze")
+
+
+def block_plugin_config_keys():
+    '''Plugin-declared config keys cascade, validate and appear in qconfig'''
+    import json
+    import os
+    import tempfile
+
+    tmpdir = tempfile.mkdtemp(prefix="devq_plugincfg_")
+    path   = os.path.join(tmpdir, "cfg.json")
+    try:
+        with open(path, "w") as f:
+            json.dump({"scheduler": "mock", "mock.batch_window": 12}, f)
+
+        # BEFORE registering: neither the key nor the scheduler name
+        # exists, so both are rejected. A namespaced key is not
+        # privileged simply for being namespaced.
+        buf = BoundedBuffer()
+        with _capture(buf):
+            (DevQ(config_path=path)
+             .add_device(DevQSimulatedProvider(seed=SEED)
+                         .get_device("random", 5))
+             .build())
+        before = buf.getvalue()
+        expect(before, "unknown config key 'mock.batch_window'")
+        expect(before, "invalid value 'mock' for 'scheduler'")
+
+        # AFTER registering: both are legal, with no second edit
+        # anywhere in DevQ core.
+        dq = DevQ(config_path=path)
+        dq.register_scheduler("mock", MockScheduler)
+        sh = dq.add_device(
+            DevQSimulatedProvider(seed=SEED).get_device("random", 5)).build()
+        out = run(sh, ["qconfig"])
+
+        expect_absent(out, "unknown config key")
+        expect(out, "mock.batch_window  =  12", "source: User (global)")
+
+        # The scheduler name itself was accepted, which it could only be
+        # if the legal set is read from the registry rather than from a
+        # fixed list of built-in names.
+        expect(out, "scheduler          =  mock")
+        expect_absent(out, "invalid value 'mock' for 'scheduler'")
+
+        # An unset plugin key still resolves to its declared default,
+        # with core provenance.
+        expect_re(out, r"mock\.wait_weight\s+=\s+0\.4\s+source: DevQ Core")
+
+        # A device-scope plugin key must not leak into the global
+        # scope. Asserted against the resolved config rather than
+        # against qconfig's output: qconfig renders only the keys it
+        # iterates over, so a leaked key would never appear there and
+        # the check would pass without testing anything.
+        global_config = sh._global_config
+        check("mock.batch_window" not in global_config,
+              "device-scope plugin key is absent from the resolved "
+              "global config")
+        check("mock.batch_window" in sh.kernel.contexts[0].config,
+              "the same key IS present in the device config")
+
+        # The mirror of that rule: a global-scope key must not appear in
+        # a device's resolved config.
+        check("router" not in sh.kernel.contexts[0].config,
+              "global-scope key is absent from the resolved device config")
+
+        # An invalid value for a plugin key is rejected by the plugin's
+        # OWN validator, with the message that validator supplied.
+        with open(path, "w") as f:
+            json.dump({"scheduler": "mock", "mock.batch_window": -3}, f)
+        buf = BoundedBuffer()
+        with _capture(buf):
+            dq2 = DevQ(config_path=path)
+            dq2.register_scheduler("mock", MockScheduler)
+            dq2.add_device(DevQSimulatedProvider(seed=SEED)
+                           .get_device("random", 5)).build()
+        expect(buf.getvalue(),
+               "invalid value '-3' for 'mock.batch_window'",
+               "expected a positive integer")
+    finally:
+        for f in os.listdir(tmpdir):
+            os.unlink(os.path.join(tmpdir, f))
+        os.rmdir(tmpdir)
+
+
+def block_plugin_normalise_group():
+    '''A plugin's own normalise group is scaled to sum to 1'''
+    import json
+    import os
+    import tempfile
+
+    tmpdir = tempfile.mkdtemp(prefix="devq_pluginnorm_")
+    path   = os.path.join(tmpdir, "cfg.json")
+    try:
+        # 3 and 1 are on an arbitrary scale; only the ratio matters, so
+        # they must come back as 0.75 / 0.25.
+        with open(path, "w") as f:
+            json.dump({"scheduler": "mock",
+                       "mock.wait_weight": 3, "mock.fid_weight": 1}, f)
+
+        dq = DevQ(config_path=path)
+        dq.register_scheduler("mock", MockScheduler)
+        sh = dq.add_device(
+            DevQSimulatedProvider(seed=SEED).get_device("random", 5)).build()
+        out = run(sh, ["qconfig"])
+
+        expect_re(out, r"mock\.wait_weight\s+=\s+0\.75")
+        expect_re(out, r"mock\.fid_weight\s+=\s+0\.25")
+
+        # The core group is normalised independently in the same pass —
+        # groups do not interfere with one another.
+        expect_re(out, r"qubit_error_weight\s+=\s+0\.1\s")
+
+        # An all-zero group has an undefined ratio and would make every
+        # candidate score identical; it reverts to declared defaults.
+        with open(path, "w") as f:
+            json.dump({"scheduler": "mock",
+                       "mock.wait_weight": 0, "mock.fid_weight": 0}, f)
+        buf = BoundedBuffer()
+        with _capture(buf):
+            dq2 = DevQ(config_path=path)
+            dq2.register_scheduler("mock", MockScheduler)
+            sh2 = dq2.add_device(DevQSimulatedProvider(seed=SEED)
+                                 .get_device("random", 5)).build()
+        expect(buf.getvalue(), "are both 0", "Falling back to core defaults")
+
+        out2 = run(sh2, ["qconfig"])
+        expect_re(out2, r"mock\.wait_weight\s+=\s+0\.4")
+        expect_re(out2, r"mock\.fid_weight\s+=\s+0\.6")
+    finally:
+        for f in os.listdir(tmpdir):
+            os.unlink(os.path.join(tmpdir, f))
+        os.rmdir(tmpdir)
+
+
+def block_component_labels():
+    '''qconfig shows declared human labels, not class names'''
+    # Nothing else asserts on label text, so a component losing its
+    # LABEL would degrade qconfig to class names with every other block
+    # still green — which is exactly what happened once already.
+    sh  = three_device()
+    out = run(sh, ["qconfig"])
+
+    expect(out, "[Noise Aware Router]",
+                "[Circuit Packing Scheduler]",
+                "[Noise Aware Graph Allocator]")
+    expect_absent(out, "[PackingScheduler]", "[NoiseRouter]",
+                       "[NoiseGraphAllocator]")
+
+    # A plugin declaring no LABEL falls back to its class name rather
+    # than showing nothing.
+    class Unlabelled(MockScheduler):
+        LABEL = None
+
+    dq = DevQ()
+    dq.register_scheduler("unlabelled", Unlabelled)
+    check(dq._config.labels()["scheduler"]["unlabelled"] == "Unlabelled",
+          "a component without a LABEL falls back to its class name")
+
+
 # ── Shell robustness ─────────────────────────────────────────────────────────
 
 def block_shell_input_handling():
@@ -1076,6 +1567,12 @@ BLOCKS = [
     ("determinism_seeded",       block_determinism_seeded),
     ("determinism_unseeded",     block_determinism_unseeded),
     ("bug_fix_witnesses",        block_bug_fix_witnesses),
+    ("registry_plugin_components", block_registry_plugin_components),
+    ("registry_validation",      block_registry_validation),
+    ("registry_frozen",          block_registry_frozen),
+    ("plugin_config_keys",       block_plugin_config_keys),
+    ("plugin_normalise_group",   block_plugin_normalise_group),
+    ("component_labels",         block_component_labels),
 ]
 
 
