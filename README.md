@@ -134,6 +134,10 @@ qubit indices remain local to their device everywhere in the system.
 | 5 | 🔬 | Research benchmarking mode — *in progress* |
 | 6 | 🔭 | Interchangeable frontends — Silq, Q#, Qiskit circuits |
 | 7 | 🔭 | Expanded provider ecosystem — real IBM hardware, Cirq, IonQ |
+| 8 | 💡 | Claims validation — algorithms ship executable claims a reviewer can run |
+| 9 | 💡 | Component distribution — a shared index, with claims re-verified on install |
+
+✅ done · 🔬 in progress · 🔭 planned · 💡 idea, not committed
 
 What each phase delivered, and why: [`docs/roadmap.md`](docs/roadmap.md).
 

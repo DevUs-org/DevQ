@@ -161,4 +161,115 @@ More hardware providers behind the same two-method `BaseProvider` contract:
 Together, Phases 6 and 7 make both ends of the stack interchangeable: any
 frontend in, any hardware out, with the DevQ kernel unchanged in between.
 
+### 💡 Phase 8 — Claims Validation Framework (idea, gated on Phase 5)
+A published scheduling or allocation result is currently prose: *"our
+approach reduces two-qubit gate error by 23%."* Nobody can check it
+without rebuilding the author's harness, which is why the algorithms in
+this space have never been compared on equal footing.
+
+Phase 8 would let an algorithm ship **executable claims** alongside its
+implementation — a declared workload, baseline, metric and expected
+direction, checked by a `devq validate` command that fails when the claim
+does not hold:
+
+```python
+class QOSAllocator(BaseAllocator):
+    CLAIMS = [
+        Claim("beats noise_graph on S-cost",
+              workload = "ghz_batch",
+              baseline = "noise_graph",
+              metric   = "mean_S",
+              assert_  = "lower",
+              margin   = 0.05),
+    ]
+```
+
+"Reproduce the paper" becomes one command.
+
+**Almost all of this is Phase 5.** Plugging in a competing algorithm is
+the component registry (done); running it on a reproducible workload is
+5.2; measuring it is 5.3; comparing it against baselines is 5.5. Phase 8
+is only the last layer — assert a claim and fail if it is false.
+
+The test suite already does something close to this internally.
+[`test_blocks.md`](test_blocks.md) does not merely check that things run;
+it records *why each expected value is right*, down to noting that
+`S(nairobi{1,2}) = 0.0102` beats the runner-up `{1,3} = 0.0103` by a
+margin of 0.0001 and would flip under re-weighting. That is already a
+falsifiable claim about an algorithm's behaviour on known hardware. Phase
+8 generalises the idea from DevQ's own correctness to anyone else's
+result.
+
+**Prerequisite: version-pinned calibration.** A claim is worthless if it
+is not reproducible, and the reference values above are tied to
+`qiskit-ibm-runtime 0.45.1` — fake-backend calibration data changes with
+the runtime version. Calibration snapshots would need pinning as data,
+not as a dependency range. A claim whose meaning shifts silently under a
+version bump is worse than no claim.
+
+**Gated on Phase 5.6.** A validation framework with no demonstrated wins
+to validate is infrastructure looking for a customer. 5.6 — implementing
+published baselines as DevQ plugins and measuring against them — is what
+makes the framework worth adopting. Phase 8 strengthens the work that
+follows the first paper, not the first paper itself.
+
+### 💡 Phase 9 — Component Distribution (idea, gated on adoption)
+Once anyone can write a DevQ component, the next question is how a second
+researcher gets hold of it. Phase 9 is the shared index that closes the
+loop:
+
+```
+devq> qget researcher_a/noise_router
+  installing devq-router-researcher-a 1.2.0
+  registered: router 'researcher_a/noise_router'
+  verifying declared claims against your devices...
+    ✓ beats noise_router on mean_S (ghz_batch, margin 0.05)
+    ✓ reduces queue latency vs round_robin (mixed_batch)
+    ✗ FAILED: fidelity improvement — claimed >8%, measured 3.1%
+```
+
+This is three separable systems, and only one of them is hard.
+
+**Distribution** is ordinary Python packaging. `pip install
+devq-router-researcher-a`, plus entry-point discovery so the component
+registers itself. No DevQ-specific infrastructure — `qget` is a thin
+wrapper over an index lookup and an install.
+
+**Discovery** is an index: names mapped to packages, versions and
+metadata. It can be a JSON file in a repository long before it is a
+service.
+
+**Trust** is the real work, and the Docker analogy misleads here. `docker
+pull` delivers a sandboxed artifact; `qget` would deliver **arbitrary
+Python running in-process with full privileges** — with access to the
+credentials of a user who, by construction, has paid quantum hardware
+quota. A flat namespace where anyone may claim `qos_scheduler` is a
+supply-chain problem, not a naming inconvenience. Namespacing, signing,
+provenance, and an explicit "this executes code you have not read" posture
+are design questions to settle before the command syntax, not after.
+
+**The composition with Phase 8 is the part worth building.** For a
+container image, *does it work* means *does it run*. For a scheduling
+algorithm, it means *does it do what the paper claimed* — and Phase 8
+gives DevQ the machinery to check exactly that, on the second
+researcher's own hardware, against their own devices. A component index
+where every entry's published claims are re-verified locally on install
+is not a packaging convenience; it is a reproducibility mechanism. It
+also softens the trust problem from one direction: you still cannot trust
+unread code, but you no longer have to trust the paper's numbers, because
+you re-derive them.
+
+**Gated on adoption, not on readiness.** An index containing three
+packages is worse than a README listing three repository links: the same
+information, plus maintenance and security burden. The order is 5.6
+produces results, results attract users, users write components,
+components justify an index. Building the index first is
+infrastructure-before-demand.
+
+Phases 8 and 9 are ideas rather than plans, recorded because the
+reasoning is worth keeping. Where 6 and 7 make both ends of the stack
+interchangeable, 8 and 9 would make the *results* portable: a claim
+anyone can re-run, and a component anyone can fetch. Both depend on
+Phase 5 producing something worth reproducing first.
+
 ---
