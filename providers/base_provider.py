@@ -48,7 +48,7 @@ class BaseProvider(ABC):
         rather than in code — a benchmark workload spec naming its
         devices, for example:
 
-            {"provider": "ibm", "backend": {"name": "FakeNairobiV2"}}
+            {"provider": "ibm", "backend": {"backend_name": "FakeNairobiV2"}}
             {"provider": "devq", "backend": {"kind": "random",
                                              "num_qubits": 7}}
 

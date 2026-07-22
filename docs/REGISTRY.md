@@ -348,7 +348,7 @@ Registering a provider makes it addressable **by name**, which is what
 lets devices be described in data rather than constructed in code:
 
 ```json
-{"provider": "ibm", "backend": {"name": "FakeNairobiV2"}}
+{"provider": "ibm", "backend": {"backend_name": "FakeNairobiV2"}}
 ```
 
 The `backend` object is handed to `get_device_from_spec(spec)`, whose
