@@ -40,6 +40,42 @@ class BaseProvider(ABC):
         '''
         pass
 
+    def get_device_from_spec(self, spec):
+        '''
+        Construct a QuantumDevice from a declarative spec dictionary.
+
+        This is the entry point used when devices are described in data
+        rather than in code — a benchmark workload spec naming its
+        devices, for example:
+
+            {"provider": "ibm", "backend": {"name": "FakeNairobiV2"}}
+            {"provider": "devq", "backend": {"kind": "random",
+                                             "num_qubits": 7}}
+
+        The `backend` object is passed here as `spec`. The default
+        implementation splats it into get_device(), which works for any
+        provider whose get_device() parameters are named the same as the
+        spec keys. Providers wanting a different spec vocabulary, or
+        validation with better errors than a bare TypeError, override
+        this.
+
+        Deliberately NOT abstract: it has a working default, and making
+        it abstract would break every provider written before it
+        existed.
+
+        Args:
+            spec: dict of construction arguments for this provider
+
+        Returns:
+            QuantumDevice
+        '''
+        if not isinstance(spec, dict):
+            raise TypeError(
+                f"{type(self).__name__}.get_device_from_spec() expects a "
+                f"dict, got {type(spec).__name__}."
+            )
+        return self.get_device(**spec)
+
     @abstractmethod
     def execute(self, circuit, v2p_map, shots, device):
         '''
