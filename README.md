@@ -468,6 +468,15 @@ effective normalised values in both the global section and each device
 section. Allocators without a cost model (Static, Graph) ignore the
 weights — the same precedent as Static ignoring edge thresholds.
 
+**Plugin keys.** The three scopes above cover DevQ's own keys. A
+registered component may declare its own, which must be namespaced
+(`qos.batch_window`) and then behave exactly like core keys: they
+cascade, validate, carry provenance, and appear in `qconfig`. A plugin
+key is legal only once its owner is registered — before that it is an
+unknown key like any other. Plugins may also declare their own
+normalisation groups, N-ary rather than pairs. See
+[`docs/registry.md`](docs/registry.md).
+
 The exact scoring formulas — the block cost `S`, the router's device
 score, and the normalisation rules — are stated formally, with worked
 values, in [`docs/cost-model.md`](docs/cost-model.md).

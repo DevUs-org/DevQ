@@ -569,10 +569,15 @@ implementation.
 
 *Every scheduler × allocator × router combination runs to completion.*
 
-Enumerates `_SCHEDULER_MAP` × `_ALLOCATOR_MAP` × `_ROUTER_MAP` — 18
+Enumerates every registered scheduler × allocator × router — 18
 combinations today — writes a temporary config for each, and runs a bell
 and a ghz through a two-device federation. A combination passes only if
 both jobs reach FINISHED.
+
+The combinations are read from the registry rather than from a fixed
+list, so anything registered is covered automatically. A plugin
+registered before this block runs would widen the matrix without the
+block changing.
 
 **This is the most valuable block in the suite.** The default
 combination (`packing`/`noise_graph`/`noise`) is exercised constantly;
