@@ -38,6 +38,11 @@ DevQ(config_path="~/devq.config.json") \
 whole plugin matrix (`--list` to see the blocks, `-c` to see every
 assertion, `-v` for full session transcripts).
 
+> **Working with an AI assistant?** Point it at
+> [`AGENTS.md`](AGENTS.md) — task-oriented orientation for using,
+> extending, testing and benchmarking DevQ, routing into the reference
+> documents in `docs/`.
+
 Devices are indexed `d0..dn` in add order — stable for the session, shown by
 `qdevices`, and referenced by `--exec`/`--no-exec` flags and device-scoped
 commands. `add_devices([d1, d2, ...])` attaches several at once;
@@ -188,6 +193,7 @@ together they are the authoritative description of DevQ.
 | [`docs/COST_MODEL.md`](docs/COST_MODEL.md) | Formal statement of the block cost `S` and the router's device score, with notation and worked values |
 | [`docs/TEST_BLOCKS.md`](docs/TEST_BLOCKS.md) | Sanity test plan — what each block checks and why; run it with `python run_tests.py` |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | What each development phase delivered, and what the remaining phases are for |
+| [`AGENTS.md`](AGENTS.md) | Orientation for AI coding assistants — task-oriented routing into the documents above |
 
 ---
 
