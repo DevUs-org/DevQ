@@ -114,7 +114,15 @@ class ComponentKind:
                           for per-device components.
         methods:          methods DevQ calls on the component, mapped to
                           the parameter names DevQ passes. Checked for
-                          existence and signature compatibility.
+                          existence and signature compatibility. This
+                          includes BOTH the concrete template methods
+                          DevQ invokes and the abstract hooks a plugin
+                          actually implements: the kernel calls
+                          router.route(), but route() delegates to the
+                          plugin's select(), so a plugin whose select()
+                          has the wrong signature would inherit a
+                          perfectly valid route() and pass every other
+                          check, only to fail at execution time.
         label:            human name for the kind, used in messages.
     '''
     base:             type
@@ -146,7 +154,8 @@ def _build_kinds():
             init_params      = ("memory_manager", "process_table"),
             scopes           = frozenset({"device", "common"}),
             accepts_instance = False,
-            methods          = {"schedule": ()},
+            methods          = {"schedule": (),
+                                "enqueue":  ("qcb",)},
             label            = "scheduler",
         ),
         "allocator": ComponentKind(
@@ -155,6 +164,8 @@ def _build_kinds():
             scopes           = frozenset({"device", "common"}),
             accepts_instance = False,
             methods          = {"allocate": ("circuit", "device", "pool",
+                                             "max_qubit_error", "max_edge_error"),
+                                "feasible": ("circuit", "device",
                                              "max_qubit_error", "max_edge_error")},
             label            = "allocator",
         ),
@@ -164,7 +175,8 @@ def _build_kinds():
                                 "qubit_error_weight", "edge_error_weight"),
             scopes           = frozenset({"global", "common"}),
             accepts_instance = True,
-            methods          = {"route": ("qcb", "contexts")},
+            methods          = {"route":  ("qcb", "contexts"),
+                                "select": ("qcb", "candidates")},
             label            = "router",
         ),
         "provider": ComponentKind(
