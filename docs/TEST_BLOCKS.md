@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 37 sanity blocks in `run_tests.py`, covering
+Specification for the 39 sanity blocks in `run_tests.py`, covering
 Phases 0–5.1 plus the component registry.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 37 blocks, one line each
+python run_tests.py              # all 39 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
