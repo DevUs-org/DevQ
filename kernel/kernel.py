@@ -31,25 +31,46 @@ WAITING, since routing already established feasibility on the chosen
 device and feasible() ignores pool state.
 '''
 
+import sys
 import time
 
 from circuits.execution_result import ExecutionResult
 from kernel.process.process_table import ProcessTable
 from kernel.process.lifecycle import JobStates
+from kernel.events import PrintSink
 
 
 class Kernel:
-    def __init__(self, contexts, router):
+    def __init__(self, contexts, router, sink=None):
         '''
         Args:
             contexts: list of DeviceContext, indexed d0..dn in add order
             router:   BaseRouter instance (from global config)
+            sink:     event sink (see kernel/events.py). None means
+                      PrintSink — the console output DevQ has always
+                      produced.
         '''
         self.contexts      = contexts
         self.router        = router
         self.process_table = ProcessTable()
         self.router_queue  = []   # READY QCBs awaiting device binding
         self._pending      = []   # RUNNING QCBs awaiting future resolution
+
+        # Event sink. Defaults to PrintSink so an interactive session
+        # behaves exactly as it did before events existed; a benchmark
+        # runner swaps in a MultiSink(PrintSink(), RecordSink()).
+        self.sink = sink if sink is not None else PrintSink()
+
+        # Cycle counter. Incremented once per scheduling cycle — at the
+        # top of step(), and once per run_job() since qrun bypasses
+        # step() entirely. Every event belongs to exactly one cycle.
+        self._cycle = 0
+
+        # Monotonic event sequence. This is the log's notion of TIME:
+        # deterministic and byte-comparable across identical seeded
+        # runs, which wall-clock timestamps are not. Real durations
+        # belong on QCB timestamps, not here.
+        self._seq = 0
 
     # ── Job submission ────────────────────────────────────────────────────────
 
@@ -71,7 +92,43 @@ class Kernel:
             no_exec_on=no_exec_on
         )
         self.router_queue.append(qcb)
+        self._emit("submit",
+                   job_id          = qcb.job_id,
+                   num_qubits      = circuit.num_qubits,
+                   max_qubit_error = max_qubit_error,
+                   max_edge_error  = max_edge_error,
+                   exec_on         = exec_on,
+                   no_exec_on      = no_exec_on)
+        qcb.submitted_seq = self._seq - 1
         return qcb
+
+    # ── Events ────────────────────────────────────────────────────────────────
+
+    def _emit(self, event, **fields):
+        '''
+        Emit one structured event record.
+
+        cycle and seq are stamped HERE, not at call sites, so no emit
+        site can forget them or disagree about what cycle it is in.
+
+        The sink call is wrapped: observability must never be able to
+        kill a job. A raising sink is reported once and then ignored.
+        '''
+        record = {"event": event, "cycle": self._cycle, "seq": self._seq}
+        record.update(fields)
+        self._seq += 1
+
+        try:
+            self.sink.emit(record)
+        except Exception as exc:
+            if not getattr(self, "_sink_broken", False):
+                self._sink_broken = True
+                print(f"[DevQ Warning] event sink "
+                      f"{type(self.sink).__name__} raised "
+                      f"{type(exc).__name__}: {exc}. Further failures "
+                      f"suppressed; execution is unaffected.",
+                      file=sys.stderr)
+        return record
 
     # ── Execution cycle ───────────────────────────────────────────────────────
 
@@ -89,6 +146,8 @@ class Kernel:
         Callers must not assume every returned job was dispatched —
         check qcb.state.
         '''
+        self._cycle += 1
+
         self._resolve_pending()
 
         processed = self._route_ready_jobs()
@@ -107,6 +166,10 @@ class Kernel:
 
             processed.extend(jobs)
 
+        # Emitted even when nothing happened, so a consumer can tell a
+        # cycle that did no work from a cycle missing from the log.
+        self._emit("cycle_end", processed=len(processed))
+
         return processed
 
     def run_job(self, qcb):
@@ -121,6 +184,11 @@ class Kernel:
         opportunistically. On allocation failure the job stays WAITING
         in the routed context's queue for a later qrunpack.
         '''
+        # qrun bypasses step(), so it owns its cycle. Without this every
+        # qrun event would carry the previous cycle's number and appear
+        # to belong to a scheduling cycle it took no part in.
+        self._cycle += 1
+
         self.router_queue.remove(qcb)
         ctx, reason = self._route(qcb)
 
@@ -167,9 +235,29 @@ class Kernel:
         Bind a job to a device context (sticky) or return a reason.
         Does NOT touch the router queue — callers own queue membership.
         '''
+        # Recompute the candidate set so the log can record what the
+        # router was choosing BETWEEN, not just what it chose. Scores
+        # come from explain(), which returns None for routers that do
+        # not score — a round-robin decision has no margin to report.
+        candidates, _ = self.router._candidates(qcb, self.contexts)
+        scores = self.router.explain(qcb, candidates) if candidates else None
+
         ctx, reason = self.router.route(qcb, self.contexts)
+
         if ctx is not None:
             qcb.device_index = ctx.index
+            self._emit("route",
+                       job_id     = qcb.job_id,
+                       device     = ctx.index,
+                       candidates = [c.index for c in candidates],
+                       scores     = scores)
+        else:
+            self._emit("reject",
+                       job_id     = qcb.job_id,
+                       candidates = [c.index for c in candidates],
+                       scores     = scores,
+                       reason     = reason)
+
         return ctx, reason
 
     def _reject(self, qcb, reason):
@@ -177,8 +265,13 @@ class Kernel:
         qcb.reject_reason = reason
 
     def _execute(self, qcb, ctx):
-        print(f"[Kernel] Dispatching job {qcb.job_id} → "
-              f"{ctx.label} qubits {qcb.v2p_map}")
+        self._emit("dispatch",
+                   job_id       = qcb.job_id,
+                   device       = ctx.index,
+                   device_label = ctx.label,
+                   v2p_map      = qcb.v2p_map,
+                   shots        = ctx.shots)
+        qcb.dispatched_seq = self._seq - 1
         qcb.future = ctx.device.execute(qcb.circuit, qcb.v2p_map,
                                         shots=ctx.shots)
         qcb.state  = JobStates.RUNNING
@@ -203,14 +296,16 @@ class Kernel:
                 ctx.memory_manager.free(list(qcb.v2p_map.values()))
                 ctx.running_jobs -= 1
 
-                if result.success:
-                    qcb.state = JobStates.FINISHED
-                    print(f"[Kernel] Job {qcb.job_id} FINISHED. "
-                          f"Counts: {result.counts}")
-                else:
-                    qcb.state = JobStates.FAILED
-                    print(f"[Kernel] Job {qcb.job_id} FAILED. "
-                          f"Error: {result.error}")
+                qcb.state = (JobStates.FINISHED if result.success
+                             else JobStates.FAILED)
+                qcb.resolved_seq = self._seq
+                self._emit("resolve",
+                           job_id  = qcb.job_id,
+                           device  = ctx.index,
+                           state   = qcb.state.value,
+                           success = result.success,
+                           counts  = result.counts,
+                           error   = result.error)
             else:
                 still_pending.append(qcb)
 
@@ -244,8 +339,14 @@ class Kernel:
                     error   = (f"execution did not resolve within {timeout}s "
                                f"— provider or executor may be wedged")
                 )
-                print(f"[Kernel] Job {qcb.job_id} FAILED. "
-                      f"Error: {qcb.result.error}")
+                qcb.resolved_seq = self._seq
+                self._emit("resolve",
+                           job_id  = qcb.job_id,
+                           device  = qcb.device_index,
+                           state   = qcb.state.value,
+                           success = False,
+                           counts  = None,
+                           error   = qcb.result.error)
                 return
             time.sleep(poll_interval)
 

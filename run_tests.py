@@ -1450,6 +1450,106 @@ def block_plugin_normalise_group():
         os.rmdir(tmpdir)
 
 
+def block_event_log():
+    '''Kernel events record the full job lifecycle without changing output'''
+    import io, contextlib
+    from devq import DevQ
+    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from kernel.events import PrintSink, RecordSink, MultiSink
+
+    def session(sink=None):
+        p = DevQSimulatedProvider(seed=SEED)
+        dq = DevQ().add_devices([(p.get_device("fully_connected", 7), "alpha"),
+                                 (p.get_device("linear", 7), "bravo")])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sh = dq.build()
+            if sink is not None:
+                sh.kernel.sink = sink
+            sh.onecmd(f"qsubmit {BELL} {GHZ}")
+            sh.onecmd("qrunpack")
+            sh.onecmd(f"qrun {BELL}")
+        return buf.getvalue(), sh
+
+    # THE CENTRAL GUARANTEE: attaching a sink must not change what the
+    # console prints. If this drifts, every existing block's expected
+    # output becomes a function of whether logging is on.
+    baseline, _ = session()
+    rec = RecordSink()
+    logged, shell = session(MultiSink(PrintSink(), rec))
+    check(baseline == logged,
+          "console output is byte-identical with a RecordSink attached")
+
+    kinds = [r["event"] for r in rec.records]
+    for kind in ("submit", "route", "dispatch", "resolve", "cycle_end"):
+        check(kind in kinds, f"'{kind}' events are emitted")
+
+    # cycle and seq are stamped centrally, so no record can lack them
+    # and seq must be a dense monotonic range — a gap means an emit
+    # site bypassed _emit.
+    check(all("cycle" in r and "seq" in r for r in rec.records),
+          "every record carries cycle and seq")
+    seqs = [r["seq"] for r in rec.records]
+    check(seqs == list(range(len(seqs))),
+          "seq is dense and monotonic — every event went through _emit")
+
+    # Cycles must never go backwards; qrun takes its own cycle rather
+    # than inheriting the previous one.
+    cycles = [r["cycle"] for r in rec.records]
+    check(cycles == sorted(cycles), "cycle never decreases")
+    check(len(set(cycles)) > 1, "work spans multiple cycles")
+
+    # Every dispatched job resolves exactly once, paired by job_id
+    # rather than by cycle — under qrunpack the two land in different
+    # cycles by design.
+    dispatched = [r["job_id"] for r in rec.records if r["event"] == "dispatch"]
+    resolved   = [r["job_id"] for r in rec.records if r["event"] == "resolve"]
+    check(sorted(dispatched) == sorted(resolved),
+          f"every dispatch has one resolve, got {dispatched} vs {resolved}")
+
+    # Route records must name what was chosen BETWEEN, not just what
+    # won — this is what makes 5.5's weight sweep answerable from a
+    # recorded run.
+    routes = [r for r in rec.records if r["event"] == "route"]
+    check(routes and all(r["device"] in r["candidates"] for r in routes),
+          "route records the chosen device among its candidates")
+    check(all(r.get("scores") and len(r["scores"]) == len(r["candidates"])
+              for r in routes),
+          "route records one score per candidate")
+
+    # A sink that raises is observability failing, not execution
+    # failing: the job must still run.
+    class Exploding:
+        def emit(self, record):
+            raise RuntimeError("sink is broken")
+
+    p = DevQSimulatedProvider(seed=SEED)
+    dq = DevQ().add_devices([(p.get_device("fully_connected", 7), "solo")])
+    buf, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+        sh = dq.build()
+        sh.kernel.sink = Exploding()
+        sh.onecmd(f"qrun {BELL}")
+    states = [j.state.value for j in sh.kernel.process_table.list_jobs()]
+    check("FINISHED" in states,
+          f"a raising sink cannot kill a job, got {states}")
+    check("broken" in err.getvalue() or "raised" in err.getvalue(),
+          "a raising sink is reported on stderr")
+
+    # MultiSink isolates its members: one failing must not stop another
+    # from receiving records.
+    rec2 = RecordSink()
+    p = DevQSimulatedProvider(seed=SEED)
+    dq = DevQ().add_devices([(p.get_device("fully_connected", 7), "solo")])
+    buf, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+        sh = dq.build()
+        sh.kernel.sink = MultiSink(Exploding(), rec2)
+        sh.onecmd(f"qrun {BELL}")
+    check(len(rec2.records) > 0,
+          "MultiSink still delivers to healthy sinks when one raises")
+
+
 def block_router_scoring():
     '''Router weights change routing, and explain() matches select()'''
     # Every other routing block runs at the default 0.5/0.5, where the
@@ -1788,6 +1888,7 @@ BLOCKS = [
     ("plugin_config_keys",       block_plugin_config_keys),
     ("plugin_normalise_group",   block_plugin_normalise_group),
     ("component_labels",         block_component_labels),
+    ("event_log",                block_event_log),
     ("router_scoring",           block_router_scoring),
     ("device_identity",          block_device_identity),
     ("same_kind_isolation",      block_same_kind_device_isolation),
