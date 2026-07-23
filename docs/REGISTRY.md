@@ -333,6 +333,73 @@ classification and router-level candidate filtering.
 **New router** — subclass `BaseRouter`, implement
 `select(qcb, candidates) → DeviceContext`. Candidates arrive already
 filtered by the job's device constraints and per-device feasibility; the
+## The event log
+
+The kernel emits structured records; **sinks** decide what to do with
+them (`kernel/events.py`). The default is `PrintSink`, which renders the
+console output DevQ has always produced — so an interactive session is
+unchanged by the existence of events, and a new event kind is invisible
+on the console until someone deliberately renders it.
+
+```python
+from kernel.events import PrintSink, RecordSink, MultiSink
+
+records = RecordSink()
+shell.kernel.sink = MultiSink(PrintSink(), records)   # print AND capture
+```
+
+A sink is anything with `emit(record)`. Sink calls are wrapped at two
+levels — in `Kernel._emit` and in `MultiSink` — because observability
+must never kill a job: a raising sink is reported once on stderr and
+then ignored.
+
+### Records
+
+Six kinds: `submit`, `route`, `reject`, `dispatch`, `resolve`,
+`cycle_end`. Every record carries `event`, `cycle` and `seq`, stamped
+centrally in `_emit` so no call site can forget them or disagree about
+the current cycle.
+
+`route` records **all candidate scores**, not just the winner's, via the
+router's `explain()`. The winner alone cannot answer how close the
+decision was, so a weight sweep would need re-running; with scores, it
+is answerable from one recorded run.
+
+`cycle_end` is emitted even when a cycle did nothing, so a consumer can
+distinguish an idle cycle from a cycle missing from the log.
+
+### Two clocks
+
+| Field | Deterministic? | Answers |
+|---|---|---|
+| `seq`, `*_seq` | yes | *what* happened, and in what order |
+| `*_at` | no | *how long* it took |
+
+`seq` is a monotonic event counter. Identical seeded runs make identical
+decisions in identical order, so `seq`-keyed comparison is stable.
+`*_at` is wall clock on the QCB (`submitted_at`, `dispatched_at`,
+`resolved_at`), with `queue_latency`, `execution_time` and
+`turnaround_time` derived from it.
+
+**DevQ guarantees decision determinism, not completion-order
+determinism.** Same seed gives the same routing, allocation and counts.
+It does *not* give the same completion order: that belongs to the
+executor, and on real hardware to the provider's queue, where jobs
+submitted earlier routinely finish later. A log that hid this would be
+misrepresenting what ran. Compare runs on `seq` with `*_at` excluded.
+
+Two consequences for metrics. Cycle position is not a valid denominator
+— a cycle is an artifact of polling frequency, not a physical quantity —
+so throughput and utilisation come from timestamps and job counts.
+And every derived timing returns `None` on a job that never dispatched,
+so a metrics pass must skip rather than average in a fake zero.
+
+Under simulation these measure Aer on the host CPU, not quantum runtime.
+They are valid for comparing policies under identical conditions, and
+must not be reported as device timings.
+
+---
+
 ### Reporting scores: `explain()`
 
 `select()` returns a winner; the margin behind it is discarded. Phase

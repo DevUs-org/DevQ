@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 40 sanity blocks in `run_tests.py`, covering
+Specification for the 41 sanity blocks in `run_tests.py`, covering
 Phases 0–5.1 plus the component registry.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 40 blocks, one line each
+python run_tests.py              # all 41 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -804,6 +804,39 @@ and `qconfig` silently degraded to class names on `main`. The block is
 cheap and would have caught it immediately.
 
 ---
+
+### `event_log`
+
+Covers the kernel's structured event stream and QCB timing.
+
+The central assertion is that attaching a sink leaves console output
+byte-identical — if that drifts, every other block's expected output
+becomes a function of whether logging is on. Also asserts all six event
+kinds appear, that `seq` is a dense monotonic range (a gap means an emit
+site bypassed `_emit`), that `cycle` never decreases, that every
+dispatch pairs with exactly one resolve *by job_id*, and that route
+records carry one score per candidate.
+
+Sink failure is isolated at two levels: a raising sink must not kill the
+job, and `MultiSink` must keep delivering to healthy members when one
+raises. Both are asserted.
+
+Timing assertions cover both clocks. `*_seq` is deterministic and
+ordered; `*_at` is wall clock and only ordered. Turnaround must equal
+queue latency plus execution time rather than being measured
+independently. Unfinished jobs must report `None` from **all three**
+derived properties — each needs its own guard, and without one the
+property raises `TypeError` on a job that never dispatched, which would
+crash a metrics pass on the first rejection.
+
+NOT asserted: that two identical seeded runs produce identical logs.
+They do not, and should not. Completion order belongs to the executor —
+and on real hardware to the provider's queue — so which cycle a job
+resolves in varies between runs. DevQ guarantees *decision* determinism
+(same seed, same routing, allocation and counts), not completion-order
+determinism. A determinism comparison therefore sorts on `seq` and
+excludes wall-clock fields.
+
 
 ### `router_scoring`
 

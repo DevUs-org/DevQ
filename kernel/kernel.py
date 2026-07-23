@@ -100,6 +100,7 @@ class Kernel:
                    exec_on         = exec_on,
                    no_exec_on      = no_exec_on)
         qcb.submitted_seq = self._seq - 1
+        qcb.submitted_at  = time.time()
         return qcb
 
     # ── Events ────────────────────────────────────────────────────────────────
@@ -272,6 +273,7 @@ class Kernel:
                    v2p_map      = qcb.v2p_map,
                    shots        = ctx.shots)
         qcb.dispatched_seq = self._seq - 1
+        qcb.dispatched_at  = time.time()
         qcb.future = ctx.device.execute(qcb.circuit, qcb.v2p_map,
                                         shots=ctx.shots)
         qcb.state  = JobStates.RUNNING
@@ -299,6 +301,7 @@ class Kernel:
                 qcb.state = (JobStates.FINISHED if result.success
                              else JobStates.FAILED)
                 qcb.resolved_seq = self._seq
+                qcb.resolved_at  = time.time()
                 self._emit("resolve",
                            job_id  = qcb.job_id,
                            device  = ctx.index,
@@ -340,6 +343,7 @@ class Kernel:
                                f"— provider or executor may be wedged")
                 )
                 qcb.resolved_seq = self._seq
+                qcb.resolved_at  = time.time()
                 self._emit("resolve",
                            job_id  = qcb.job_id,
                            device  = qcb.device_index,

@@ -1469,6 +1469,8 @@ def block_event_log():
             sh.onecmd(f"qsubmit {BELL} {GHZ}")
             sh.onecmd("qrunpack")
             sh.onecmd(f"qrun {BELL}")
+            # rejected job: exercises the None-timestamp path
+            sh.onecmd(f"qrun {BELL} --max-qubit-error=0.0000001")
         return buf.getvalue(), sh
 
     # THE CENTRAL GUARANTEE: attaching a sink must not change what the
@@ -1516,6 +1518,50 @@ def block_event_log():
     check(all(r.get("scores") and len(r["scores"]) == len(r["candidates"])
               for r in routes),
           "route records one score per candidate")
+
+    # QCB TIMESTAMPS. Two clocks with different jobs: *_seq is
+    # deterministic and answers "what happened", *_at is wall clock and
+    # answers "how long". 5.3's metrics come from the latter, so a
+    # missing or zeroed stamp would silently produce zero latencies.
+    jobs = {j.job_id: j for j in shell.kernel.process_table.list_jobs()}
+    done = [j for j in jobs.values() if j.state.value == "FINISHED"]
+    check(len(done) >= 2, f"workload produced finished jobs, got {len(done)}")
+
+    for j in done:
+        check(None not in (j.submitted_seq, j.dispatched_seq, j.resolved_seq),
+              f"job {j.job_id} carries all three seq stamps")
+        check(None not in (j.submitted_at, j.dispatched_at, j.resolved_at),
+              f"job {j.job_id} carries all three wall-clock stamps")
+        check(j.submitted_seq < j.dispatched_seq < j.resolved_seq,
+              f"job {j.job_id} seq stamps are strictly ordered")
+        check(j.submitted_at <= j.dispatched_at <= j.resolved_at,
+              f"job {j.job_id} wall-clock stamps are ordered")
+        check(j.queue_latency is not None and j.queue_latency >= 0,
+              f"job {j.job_id} has a non-negative queue latency")
+        check(j.execution_time is not None and j.execution_time > 0,
+              f"job {j.job_id} spent measurable time executing")
+        # turnaround must be the sum of its parts, not an independent
+        # measurement that could drift from them.
+        check(abs(j.turnaround_time
+                  - (j.queue_latency + j.execution_time)) < 1e-6,
+              f"job {j.job_id} turnaround equals queue + execution")
+
+    # An unfinished job reports None rather than 0 — a metrics pass must
+    # be able to skip it, not average a fake zero into the results.
+    unfinished = [j for j in jobs.values() if j.state.value != "FINISHED"]
+    check(unfinished, "workload includes an unfinished job to exercise")
+    for j in unfinished:
+        # ALL THREE properties, not just turnaround: without its own
+        # None guard each one raises TypeError on a job that never
+        # dispatched, so a metrics pass iterating every job would crash
+        # on the first rejection.
+        for prop in ("queue_latency", "execution_time", "turnaround_time"):
+            try:
+                value = getattr(j, prop)
+            except Exception as exc:
+                value = f"raised {type(exc).__name__}"
+            check(value is None,
+                  f"unfinished job {j.job_id}: {prop} is None, got {value}")
 
     # A sink that raises is observability failing, not execution
     # failing: the job must still run.
