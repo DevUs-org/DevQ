@@ -333,6 +333,43 @@ classification and router-level candidate filtering.
 **New router** — subclass `BaseRouter`, implement
 `select(qcb, candidates) → DeviceContext`. Candidates arrive already
 filtered by the job's device constraints and per-device feasibility; the
+### Reporting scores: `explain()`
+
+`select()` returns a winner; the margin behind it is discarded. Phase
+5.5 sweeps the cost weights and asks how routing responds, and decisions
+alone cannot answer that — every point where routing did not flip looks
+identical to one where it nearly did. `explain(qcb, candidates)` is the
+optional reporting hook the event log calls:
+
+```python
+def explain(self, qcb, candidates):
+    scored = self._score_all(qcb, candidates, with_terms=True)
+    return [{"device": ctx.index, "score": s, "terms": t}
+            for s, _, ctx, t in scored]
+```
+
+It returns `None` by default, so a router with nothing to report — a
+round-robin policy has no scores — needs no implementation, and
+inventing numbers would be worse than reporting none.
+
+Two requirements. **Share one scoring path with `select()`.** Two
+parallel implementations drift, and a log that reports scores which did
+not cause the decision is worse than no log. **Record raw terms, not
+just totals.** `NoiseRouter` min-max normalises across the candidate
+set, so a score is meaningful only relative to its peers in that one
+decision; the raw pressure and cost are what allow a different weighting
+to be re-derived from a recorded run instead of by re-executing.
+
+Recomputation is cheap — roughly 0.05 ms per candidate, one allocator
+dry-run — so `explain()` recomputes rather than caching. Caching would
+buy nothing measurable and add a staleness failure mode where a
+rejection logs the previous job's scores.
+
+`explain()` must not mutate state: it runs only when logging is enabled,
+so anything it changed would make logged runs diverge from unlogged ones.
+
+---
+
 base class handles rejection-reason aggregation. Keep `select()`
 deterministic (break ties by lower device index). `RoundRobinRouter` is the
 minimal reference; `NoiseRouter` shows how to reuse the per-device allocator

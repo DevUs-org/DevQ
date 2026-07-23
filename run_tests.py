@@ -1450,6 +1450,148 @@ def block_plugin_normalise_group():
         os.rmdir(tmpdir)
 
 
+def block_router_scoring():
+    '''Router weights change routing, and explain() matches select()'''
+    # Every other routing block runs at the default 0.5/0.5, where the
+    # two router weights are interchangeable — swapping them in the
+    # scoring path passed all 39 preceding blocks. Asymmetric weights are
+    # the only configuration that can witness the difference, and Phase
+    # 5.5's weight sweep is meaningless if they are not actually applied.
+    import io, contextlib
+    from devq import DevQ
+    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from kernel.router.noise_router import NoiseRouter
+    from circuits.qasm_loader import load_qasm
+    from kernel.process.qcb import QCB
+
+    try:
+        p = IBMSimulatedProvider(seed=SEED)
+        devices = [(p.get_device(backend_name="FakeNairobiV2"), "nairobi"),
+                   (p.get_device(backend_name="FakeLagosV2"),   "lagos"),
+                   (p.get_device(backend_name="FakeJakartaV2"), "jakarta")]
+    except Exception:
+        check(True, "qiskit not installed - router scoring block skipped")
+        return
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        shell = DevQ().add_devices(devices).build()
+    contexts = shell.kernel.contexts
+
+    circuit = load_qasm(GHZ)
+    qcb = QCB(job_id=1, circuit=circuit)
+
+    def scores_at(wq, wn):
+        r = NoiseRouter(router_queue_weight=wq, router_noise_weight=wn)
+        return r.explain(qcb, contexts), r.select(qcb, contexts)
+
+    # PINNED SCORES. Asserting explain() against select() proves nothing:
+    # both read one shared scoring path, so a mutation to that path moves
+    # them together and the comparison still holds. These values were
+    # computed independently and are the ground truth the scoring must
+    # reproduce — swapping the two weights or dropping the tie-break
+    # changes them, which is the point.
+    EXPECTED = {
+        (0.5, 0.5): (2, [(0, 0.017753), (1, 0.5),      (2, 0.0)]),
+        (0.9, 0.1): (2, [(0, 0.003551), (1, 0.1),      (2, 0.0)]),
+        (0.1, 0.9): (2, [(0, 0.031955), (1, 0.9),      (2, 0.0)]),
+        (1.0, 0.0): (0, [(0, 0.0),      (1, 0.0),      (2, 0.0)]),
+        (0.0, 1.0): (2, [(0, 0.035506), (1, 1.0),      (2, 0.0)]),
+    }
+    for (wq, wn), (want_dev, want_scores) in EXPECTED.items():
+        detail, chosen = scores_at(wq, wn)
+        got = [(d["device"], round(d["score"], 6)) for d in detail]
+        check(got == want_scores,
+              f"w=({wq},{wn}) scores {want_scores}, got {got}")
+        check(chosen.index == want_dev,
+              f"w=({wq},{wn}) routes to d{want_dev}, got d{chosen.index}")
+        best = min(detail, key=lambda x: (x["score"], x["device"]))["device"]
+        check(best == chosen.index,
+              f"explain() and select() agree at w=({wq},{wn})")
+
+    # w=(1.0,0.0) is the tie-break witness: queue pressure is uniformly 0
+    # across idle devices, so every score is 0 and only the lower-index
+    # rule can decide. Without it, routing there is arbitrary.
+    _, chosen = scores_at(1.0, 0.0)
+    check(chosen.index == 0,
+          "all-equal scores break to the lowest index, got d%d" % chosen.index)
+
+    # PINNED RAW TERMS. Presence alone is not enough — a term that is
+    # recorded but wrong is worse than one that is missing, because 5.5
+    # re-derives routing from these numbers.
+    detail, _ = scores_at(0.5, 0.5)
+    want_costs = [(0, 0.023739), (1, 0.064295), (2, 0.022246)]
+    got_costs = [(d["device"], round(d["terms"]["best_case_cost"], 6))
+                 for d in detail]
+    check(got_costs == want_costs,
+          f"explain() records true raw costs {want_costs}, got {got_costs}")
+    for key in ("queue_pressure", "best_case_cost",
+                "queue_pressure_norm", "best_case_cost_norm"):
+        check(key in detail[0]["terms"], f"explain() records the term '{key}'")
+
+    # Re-deriving from logged terms must match what the router really
+    # does at those weights — the property that makes a weight sweep
+    # answerable from one recorded run.
+    for wq, wn in ((0.9, 0.1), (0.1, 0.9), (0.0, 1.0)):
+        _, chosen = scores_at(wq, wn)
+        rederived = min(
+            ((wq * d["terms"]["queue_pressure_norm"]
+              + wn * d["terms"]["best_case_cost_norm"], d["device"])
+             for d in detail))[1]
+        check(rederived == chosen.index,
+              f"logged terms re-derive the w=({wq},{wn}) decision")
+
+    # LOADED FIXTURE. Everything above runs on idle devices, where queue
+    # pressure is uniformly 0 and normalises to 0 — so the w_queue term
+    # vanishes regardless of its value, and swapping the two weights is
+    # undetectable. Only asymmetric load can witness that the queue
+    # weight is applied at all. d2 is the cheapest device but the most
+    # loaded, so weighting decides whether noise or load wins.
+    contexts[0].running_jobs = 1
+    contexts[2].running_jobs = 5
+    try:
+        LOADED = {
+            (0.5, 0.5): (0, [(0, 0.117753), (1, 0.5), (2, 0.5)]),
+            (0.9, 0.1): (1, [(0, 0.183551), (1, 0.1), (2, 0.9)]),
+            (0.1, 0.9): (0, [(0, 0.051955), (1, 0.9), (2, 0.1)]),
+        }
+        for (wq, wn), (want_dev, want_scores) in LOADED.items():
+            detail, chosen = scores_at(wq, wn)
+            got = [(d["device"], round(d["score"], 6)) for d in detail]
+            check(got == want_scores,
+                  f"loaded w=({wq},{wn}) scores {want_scores}, got {got}")
+            check(chosen.index == want_dev,
+                  f"loaded w=({wq},{wn}) routes to d{want_dev}, got d{chosen.index}")
+
+        # Queue pressure must reach the log as the true depth, not a
+        # placeholder — 5.5 reads these numbers back.
+        detail, _ = scores_at(0.5, 0.5)
+        want_press = [(0, 1), (1, 0), (2, 5)]
+        got_press = [(d["device"], d["terms"]["queue_pressure"]) for d in detail]
+        check(got_press == want_press,
+              f"explain() records true queue pressure {want_press}, got {got_press}")
+
+        # Shifting weight from noise to queue must move the job off the
+        # loaded-but-cheap device — the weights are not decorative.
+        _, noise_heavy = scores_at(0.1, 0.9)
+        _, queue_heavy = scores_at(0.9, 0.1)
+        check(noise_heavy.index != queue_heavy.index,
+              "queue-weighted and noise-weighted routing diverge under load")
+    finally:
+        contexts[0].running_jobs = 0
+        contexts[2].running_jobs = 0
+
+    # Determinism across repeated identical routing.
+    r = NoiseRouter(router_queue_weight=0.5, router_noise_weight=0.5)
+    picks = {r.select(qcb, contexts).index for _ in range(5)}
+    check(len(picks) == 1, "repeated routing of identical input is deterministic")
+
+    # A non-scoring router reports nothing rather than inventing scores.
+    from kernel.router.round_robin_router import RoundRobinRouter
+    check(RoundRobinRouter().explain(qcb, contexts) is None,
+          "a router without scores returns None from explain()")
+
+
 def block_device_identity():
     '''index/name/kind are three distinct fields, stamped once at attach'''
     # M3 REGRESSION GUARD. Dropping the alias in DevQ.build()'s
@@ -1646,6 +1788,7 @@ BLOCKS = [
     ("plugin_config_keys",       block_plugin_config_keys),
     ("plugin_normalise_group",   block_plugin_normalise_group),
     ("component_labels",         block_component_labels),
+    ("router_scoring",           block_router_scoring),
     ("device_identity",          block_device_identity),
     ("same_kind_isolation",      block_same_kind_device_isolation),
 ]

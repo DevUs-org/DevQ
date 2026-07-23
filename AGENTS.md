@@ -45,7 +45,7 @@ lets them run as plugins in one system on identical workloads.
 | `config/` | `ConfigLoader` — the four-level configuration cascade |
 | `shell/` | QShell and the JobSpec parser |
 | `circuits/` | Circuit representation, QASM loading, execution futures |
-| `run_tests.py` | The whole test suite — 39 blocks, no pytest |
+| `run_tests.py` | The whole test suite — 40 blocks, no pytest |
 | `docs/` | All reference documentation |
 
 Documentation, all under `docs/`:

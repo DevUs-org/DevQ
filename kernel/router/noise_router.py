@@ -44,20 +44,75 @@ class NoiseRouter(BaseRouter):
     LABEL = "Noise Aware Router"
 
     def select(self, qcb, candidates):
+        scored = self._score_all(qcb, candidates)
+
+        # min() on (score, index, ctx): lowest score wins, ties break by
+        # lower device index — deterministic.
+        #
+        # NOTE: currently UNFALSIFIABLE. _candidates() yields contexts in
+        # index order and min() is stable, so removing the index term
+        # changes no observable behaviour; mutation testing confirms it.
+        # Kept because it makes the intent explicit and holds if a future
+        # candidate pipeline ever reorders. Do not write a test for it —
+        # such a test could not fail.
+        return min(scored, key=lambda t: (t[0], t[1]))[2]
+
+    def explain(self, qcb, candidates):
+        '''
+        Report what select() scored, with the raw terms behind each score.
+
+        Shares _score_all() with select() rather than recomputing
+        independently, so the reported best candidate is the selected one
+        by construction. Recomputation costs about 0.05 ms per candidate
+        (one allocator dry-run), which is negligible beside execution —
+        caching would only add a staleness failure mode.
+        '''
+        scored = self._score_all(qcb, candidates, with_terms=True)
+        return [
+            {"device": ctx.index, "score": score, "terms": terms}
+            for score, _idx, ctx, terms in scored
+        ]
+
+    def _score_all(self, qcb, candidates, with_terms=False):
+        '''
+        Score every candidate. THE one scoring path — select() and
+        explain() both come through here so they cannot drift.
+
+        Returns (score, index, ctx) tuples, or (score, index, ctx, terms)
+        when with_terms is set.
+
+        Scores are min-max normalised ACROSS THE CANDIDATE SET, so a
+        score is only meaningful relative to the others in the same
+        routing decision. That is why terms record the raw pressure and
+        cost alongside their normalised forms: raw values are comparable
+        across decisions and re-derivable under other weights, normalised
+        ones are not.
+        '''
         pressures = [self._queue_pressure(ctx) for ctx in candidates]
         costs     = [self._best_case_cost(ctx, qcb) for ctx in candidates]
 
         p_norm = _min_max(pressures)
         c_norm = _min_max(costs)
 
-        scored = [
-            (self.router_queue_weight * p + self.router_noise_weight * c, ctx.index, ctx)
-            for p, c, ctx in zip(p_norm, c_norm, candidates)
-        ]
-
-        # min() on (score, index, ctx): lowest score wins,
-        # ties break by lower device index — deterministic.
-        return min(scored, key=lambda t: (t[0], t[1]))[2]
+        scored = []
+        for p_raw, c_raw, p, c, ctx in zip(pressures, costs, p_norm, c_norm,
+                                           candidates):
+            score = (self.router_queue_weight * p
+                     + self.router_noise_weight * c)
+            if with_terms:
+                scored.append((score, ctx.index, ctx, {
+                    "queue_pressure"     : p_raw,
+                    "best_case_cost"     : c_raw,
+                    "queue_pressure_norm": p,
+                    "best_case_cost_norm": c,
+                    "router_queue_weight": self.router_queue_weight,
+                    "router_noise_weight": self.router_noise_weight,
+                    "qubit_error_weight" : self.qubit_error_weight,
+                    "edge_error_weight"  : self.edge_error_weight,
+                }))
+            else:
+                scored.append((score, ctx.index, ctx))
+        return scored
 
     # ── Scoring terms ─────────────────────────────────────────────────────────
 

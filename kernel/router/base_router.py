@@ -61,6 +61,48 @@ class BaseRouter(ABC):
 
         return self.select(qcb, candidates), None
 
+    def explain(self, qcb, candidates):
+        '''
+        Per-candidate scoring detail for the decision select() would make
+        on this same candidate list. Used only by the event log; routing
+        never depends on it.
+
+        Returns None (the default) for routers that do not score — a
+        round-robin policy has no scores to report, and inventing them
+        would be worse than reporting none.
+
+        Scoring routers return one dict per candidate:
+
+            [{"device": 1,                    # device index
+              "score": 0.42,                  # final comparable score
+              "terms": {...}}, ...]           # router-specific components
+
+        `terms` carries the RAW inputs to the score, not just the total.
+        The total alone is not enough to re-derive routing under
+        different cost weights, which is the whole point of logging
+        scores: a weight sweep should be answerable from one recorded
+        run rather than by re-executing every job.
+
+        Contract:
+          - MUST NOT mutate router or context state. It runs only when
+            logging is enabled, so any state it changed would make
+            logged runs diverge from unlogged ones.
+          - MUST be consistent with select(): the candidate this reports
+            as best must be the one select() returns for the same input.
+            Deriving both from one shared scoring helper is the reliable
+            way to guarantee that; two parallel implementations drift.
+          - Receives the SAME filtered candidate list select() gets, so
+            devices excluded by exec_on/feasibility never appear.
+
+        Args:
+            qcb:        the job being routed
+            candidates: non-empty list of feasible DeviceContexts
+
+        Returns:
+            list[dict] or None
+        '''
+        return None
+
     @abstractmethod
     def select(self, qcb, candidates):
         '''

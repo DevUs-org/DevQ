@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 39 sanity blocks in `run_tests.py`, covering
+Specification for the 40 sanity blocks in `run_tests.py`, covering
 Phases 0–5.1 plus the component registry.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 39 blocks, one line each
+python run_tests.py              # all 40 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -804,6 +804,28 @@ and `qconfig` silently degraded to class names on `main`. The block is
 cheap and would have caught it immediately.
 
 ---
+
+### `router_scoring`
+
+Pins `NoiseRouter`'s scores and routing decisions at five weightings
+against independently computed values, then repeats three of them with
+asymmetric queue load. Also asserts that `explain()` records true raw
+terms, that those terms re-derive the decision at other weights, and
+that a non-scoring router returns `None`.
+
+Two lessons are built into it. First, asserting `explain()` against
+`select()` proves nothing — both read one shared scoring path, so a
+mutation moves them together and the comparison still holds; the scores
+are therefore pinned to externally computed values. Second, every other
+routing block runs on idle devices, where queue pressure is uniformly 0
+and normalises away, making the two router weights interchangeable: a
+swap survived 39 blocks. The loaded fixture (d2 cheapest but most
+loaded) is the only configuration that witnesses it.
+
+Deliberately untested: the `(score, index)` tie-break in `select()`.
+Candidates arrive in index order and `min()` is stable, so removing the
+index term changes nothing observable — a test for it could not fail.
+
 
 ### `device_identity`
 
