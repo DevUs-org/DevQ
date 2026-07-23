@@ -805,6 +805,30 @@ cheap and would have caught it immediately.
 
 ---
 
+### `device_identity`
+
+Asserts the three identity fields against the **device object**, not
+rendered output: `index` and `name` are `None` before attach, indices
+follow add order, aliases arrive lowercased, an unnamed device keeps
+`None`, `kind` is shared across same-kind devices, and a second
+`attach()` raises.
+
+Exists because a mutation that dropped the alias in `DevQ.build()` passed
+all 37 preceding blocks — `DeviceContext` carried the alias for every
+consumer, so nothing read it off the device. The event log reads
+device-side identity, so the gap was latent rather than harmless.
+
+### `same_kind_isolation`
+
+Builds the four-same-kind-device session and asserts on resolved provider
+state: four sessions keyed `0..3`, four distinct noise models, one shared
+backend object, and a backend cache keyed by kind with caller casing
+preserved.
+
+Witness for the session-collision bug — `_sessions` was keyed by
+`backend_name`, so N same-kind devices collapsed onto one entry and the
+last built won. Skips cleanly when qiskit is absent.
+
 ## Driving a session by hand
 
 The automated blocks cover everything above; this is for interactive

@@ -384,7 +384,7 @@ class QShell(cmd.Cmd):
         for ctx in contexts:
             provider = type(ctx.device.provider).__name__
             alias    = f"{(ctx.name or '-'):<{width}}   " if show_names else ""
-            print(f"  d{ctx.index}   {alias}{ctx.device.name:<20} {provider:<24}"
+            print(f"  d{ctx.index}   {alias}{ctx.device.display_kind:<20} {provider:<24}"
                   f"{ctx.device.num_qubits:>3} qubits   "
                   f"queued: {ctx.queue_depth()}  running: {ctx.running_jobs}")
         print()
@@ -427,7 +427,7 @@ class QShell(cmd.Cmd):
         print(f"\nJob {job_id} mapping\n")
         if job.device_index is not None:
             ctx = self._contexts()[job.device_index]
-            print(f"device: {ctx.label} ({ctx.device.name})\n")
+            print(f"device: {ctx.label} ({ctx.device.display_kind})\n")
         else:
             print("device: - (not routed)\n")
 
@@ -446,7 +446,7 @@ class QShell(cmd.Cmd):
             print()
             for ctx in contexts:
                 free_set = ctx.memory_manager.pool.free_qubits
-                print(f"  {ctx.label} ({ctx.device.name}):")
+                print(f"  {ctx.label} ({ctx.device.display_kind}):")
                 for qubit in range(ctx.device.num_qubits):
                     status = "[]" if qubit in free_set else "[X]"
                     print(f"    {qubit} {status}")
@@ -473,7 +473,7 @@ class QShell(cmd.Cmd):
 
             print()
             for ctx in contexts:
-                print(f"  {ctx.label} ({ctx.device.name}) topology:")
+                print(f"  {ctx.label} ({ctx.device.display_kind}) topology:")
                 topology = ctx.device.coupling_map
                 total    = ctx.device.num_qubits
 
@@ -503,7 +503,7 @@ class QShell(cmd.Cmd):
                 return
 
             for ctx in contexts:
-                print(f"\n  {ctx.label} ({ctx.device.name}):")
+                print(f"\n  {ctx.label} ({ctx.device.display_kind}):")
 
                 if flag in ('q', 'b'):
                     print("\n  Qubit Error Map:\n")
@@ -552,7 +552,7 @@ class QShell(cmd.Cmd):
                 provider = type(ctx.device.provider).__name__
                 print(f"  {ctx.label}:")
                 print(f"    provider   =  {provider}")
-                print(f"    device     =  {ctx.device.name}  "
+                print(f"    device     =  {ctx.device.display_kind}  "
                       f"({ctx.device.num_qubits} qubits)")
 
                 rows = [

@@ -376,6 +376,13 @@ class DevQ:
 
         contexts = []
         for index, (device, device_config_path, name) in enumerate(self._devices):
+            # Stamp session identity BEFORE anything else touches the
+            # device: providers key their per-device state on index, and
+            # on_attach() is where they create it. Nothing downstream may
+            # assume a device knows its index until this has run.
+            device.attach(index, name)
+            device.provider.on_attach(device)
+
             config, provenance = self._config.load_device(
                 device.provider,
                 index,

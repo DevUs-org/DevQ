@@ -375,7 +375,7 @@ def block_devices_and_config():
     out = run(sh, ["qdevices", "qconfig", "qerrors q d2", "qerrors e d2",
                    "qtopology d1 1"])
 
-    expect(out, "random_backend", "fakenairobiv2", "fakelagosv2")
+    expect(out, "random_backend", "FakeNairobiV2", "FakeLagosV2")
     # alias column present because two devices are named
     expect(out, "nairobi", "lagos")
     # provenance
@@ -570,7 +570,7 @@ def block_single_device_ibm():
                    f"qrun {BELL}", "qmap 1", "qps", "qmem"])
 
     # the only device is d0 — nothing should refer to d1
-    expect(out, "fakenairobiv2")
+    expect(out, "FakeNairobiV2")
     expect_absent(out, "d1", "d2")
     # noise_graph still picks Nairobi's best pair
     check(mapping_of(out, 1) == "{0: 1, 1: 2}",
@@ -1450,6 +1450,79 @@ def block_plugin_normalise_group():
         os.rmdir(tmpdir)
 
 
+def block_device_identity():
+    '''index/name/kind are three distinct fields, stamped once at attach'''
+    # M3 REGRESSION GUARD. Dropping the alias in DevQ.build()'s
+    # device.attach(index, name) call passed all 37 blocks before this
+    # block existed: DeviceContext carried the alias for every consumer,
+    # so nothing ever read it off the device. The event log (5.2) reads
+    # device-side identity, so a silent None here would reach every
+    # record. Assert against the DEVICE, not the rendered output.
+    import io, contextlib
+    from devq import DevQ
+    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+
+    p = DevQSimulatedProvider(seed=SEED)
+    devs = [p.get_device("random", 5) for _ in range(3)]
+
+    # Unattached devices know nothing about a session.
+    check(devs[0].index is None, "device has no index before attach")
+    check(devs[0].name is None, "device has no name before attach")
+    check(devs[0].ref == "(unattached)", "unattached device ref is explicit")
+
+    dq = DevQ().add_devices([(devs[0], "Alpha"), devs[1], (devs[2], "Gamma")])
+    with contextlib.redirect_stdout(io.StringIO()):
+        dq.build()
+
+    check([d.index for d in devs] == [0, 1, 2], "indices assigned in add order")
+    check(devs[0].name == "alpha", "alias reaches the device, lowercased")
+    check(devs[1].name is None, "unnamed device keeps a None alias")
+    check(devs[2].name == "gamma", "third alias reaches the device")
+    check(all(d.kind == "random_backend" for d in devs),
+          "kind is hardware identity, shared across same-kind devices")
+
+    # Session identity is assigned once; re-attaching is a bug, not a
+    # silent overwrite.
+    try:
+        devs[0].attach(9)
+        check(False, "double attach raises")
+    except RuntimeError:
+        check(True, "double attach raises")
+
+
+def block_same_kind_device_isolation():
+    '''Four devices of one kind get four independent provider sessions'''
+    # The Phase 5.1 contract said per-device state must not be shared;
+    # the code keyed _sessions by backend_name, i.e. by KIND, so N
+    # same-kind devices collapsed onto one session and the last one
+    # built won. Invisible until two devices share a kind AND differ in
+    # config. Assert on resolved provider state, not printed output.
+    import io, contextlib
+    from devq import DevQ
+    try:
+        from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+        from qiskit_aer.noise import NoiseModel  # noqa: F401
+    except ImportError:
+        check(True, "qiskit not installed - isolation block skipped")
+        return
+
+    prov = IBMSimulatedProvider(seed=SEED)
+    devs = [prov.get_device(backend_name="FakeNairobiV2") for _ in range(4)]
+    dq = DevQ().add_devices([(devs[0], "CustomName"), (devs[1], "CustomName2"),
+                             devs[2], (devs[3], "CustomName3")])
+    with contextlib.redirect_stdout(io.StringIO()):
+        dq.build()
+
+    check(sorted(prov._sessions) == [0, 1, 2, 3],
+          "sessions are keyed by index, one per device")
+    noise = [id(prov._sessions[i]["noise_model"]) for i in range(4)]
+    check(len(set(noise)) == 4, "each device gets its own noise model")
+    backends = [id(prov._sessions[i]["backend"]) for i in range(4)]
+    check(len(set(backends)) == 1, "immutable backend is shared, not reloaded")
+    check(list(prov._backends) == ["FakeNairobiV2"],
+          "backend cache is keyed by kind, caller casing preserved")
+
+
 def block_component_labels():
     '''qconfig shows declared human labels, not class names'''
     # Nothing else asserts on label text, so a component losing its
@@ -1573,6 +1646,8 @@ BLOCKS = [
     ("plugin_config_keys",       block_plugin_config_keys),
     ("plugin_normalise_group",   block_plugin_normalise_group),
     ("component_labels",         block_component_labels),
+    ("device_identity",          block_device_identity),
+    ("same_kind_isolation",      block_same_kind_device_isolation),
 ]
 
 

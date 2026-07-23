@@ -34,9 +34,13 @@ class BaseProvider(ABC):
     def get_device(self, *args, **kwargs):
         '''
         Construct and return a fully formed QuantumDevice for this provider.
-        The returned device must have self set as device.provider.
-        A single provider instance may serve multiple devices; any
-        per-device state must be keyed by device name.
+        The returned device must have self set as device.provider, and
+        must report its hardware identity as `kind`.
+
+        A single provider instance may serve multiple devices, and
+        several of those may be the SAME KIND. Per-device state must
+        therefore be keyed by device.index, not by kind — and must be
+        created in on_attach(), since no index exists yet here.
         '''
         pass
 
@@ -75,6 +79,30 @@ class BaseProvider(ABC):
                 f"dict, got {type(spec).__name__}."
             )
         return self.get_device(**spec)
+
+    def on_attach(self, device):
+        '''
+        Called by the kernel once, when a device built by this provider
+        is attached to a session and has just received its index.
+
+        This is the correct place to create per-device state. It cannot
+        be done in get_device(): devices are constructed before the
+        kernel exists, so at that point the device has no index, and
+        keying state by kind silently collapses several same-kind
+        devices onto one shared slot.
+
+        Providers keying state here must key on device.index — it is
+        always present and unique, whereas kind is shared and name is
+        optional.
+
+        Default is a no-op, so providers with no per-device state (and
+        every provider written before this hook existed) need not
+        implement it.
+
+        Args:
+            device: QuantumDevice — already stamped with index and name
+        '''
+        pass
 
     @abstractmethod
     def execute(self, circuit, v2p_map, shots, device):

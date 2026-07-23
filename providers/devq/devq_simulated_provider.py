@@ -58,7 +58,7 @@ class DevQSimulatedProvider(BaseProvider):
         backend = create_backend(kind, num_qubits, rng=self._rng)
 
         return QuantumDevice(
-            name           = backend["name"],
+            kind           = backend["name"],
             num_qubits     = backend["num_qubits"],
             coupling_map   = backend["coupling_map"],
             basis_gates    = backend["basis_gates"],

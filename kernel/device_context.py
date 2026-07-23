@@ -73,5 +73,5 @@ class DeviceContext:
         return len(self.scheduler.queue)
 
     def __repr__(self):
-        return (f"DeviceContext({self.label}, {self.device.name}, "
+        return (f"DeviceContext({self.label}, {self.device.display_kind}, "
                 f"{type(self.device.provider).__name__})")

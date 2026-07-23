@@ -59,9 +59,17 @@ class IBMSimulatedProvider(BaseProvider):
                    None (default) preserves unseeded behaviour.
         '''
         super().__init__(seed)
-        # Per-device execution state, keyed by device name — one
-        # provider instance may serve multiple devices (Bug A fix).
+        # Per-device execution state, keyed by DEVICE INDEX — one
+        # provider instance may serve multiple devices (Bug A fix), and
+        # several of them may be the SAME KIND. Keying by kind collapses
+        # them onto one shared session; keying by index cannot.
+        # Populated in on_attach(), which is the first moment an index
+        # exists — get_device() runs before the kernel assigns one.
         self._sessions = {}
+        # Loaded Qiskit backends, keyed by kind. Backends are immutable
+        # and expensive to load, so same-kind devices share one; the
+        # mutable per-device state lives in _sessions, not here.
+        self._backends = {}
         self._submission_count = 0
 
     def get_device(self, backend_name="FakeSherbrooke") -> QuantumDevice:
@@ -88,15 +96,10 @@ class IBMSimulatedProvider(BaseProvider):
                 "Install with: pip install qiskit-ibm-runtime qiskit-aer"
             )
 
-        backend = self._load_backend(backend_name)
-
-        # Per-device session for execute() — noise model built once
-        # here, keyed by device name so multiple devices served by this
-        # instance never share noise state.
-        self._sessions[backend_name.lower()] = {
-            "backend"    : backend,
-            "noise_model": NoiseModel.from_backend(backend),
-        }
+        backend = self._backends.get(backend_name)
+        if backend is None:
+            backend = self._load_backend(backend_name)
+            self._backends[backend_name] = backend
 
         num_qubits   = backend.num_qubits
         coupling_map = self._extract_coupling_map(backend)
@@ -105,7 +108,7 @@ class IBMSimulatedProvider(BaseProvider):
         edge_error_map = self._extract_edge_errors(backend, coupling_map)
 
         return QuantumDevice(
-            name           = backend_name.lower(),
+            kind           = backend_name,
             num_qubits     = num_qubits,
             coupling_map   = coupling_map,
             basis_gates    = basis_gates,
@@ -113,6 +116,27 @@ class IBMSimulatedProvider(BaseProvider):
             edge_error_map = edge_error_map,
             provider       = self
         )
+
+    def on_attach(self, device):
+        '''
+        Build this device's execution session, keyed by its freshly
+        assigned index. The Qiskit backend is shared with any same-kind
+        device; the noise model is built per device so two devices of
+        the same kind never share noise state.
+        '''
+        try:
+            from qiskit_aer.noise import NoiseModel
+        except ImportError:
+            return
+
+        backend = self._backends.get(device.kind)
+        if backend is None:
+            return
+
+        self._sessions[device.index] = {
+            "backend"    : backend,
+            "noise_model": NoiseModel.from_backend(backend),
+        }
 
     def execute(self, circuit, v2p_map, shots, device):
         '''
@@ -146,15 +170,17 @@ class IBMSimulatedProvider(BaseProvider):
 
         from circuits.execution_result import ExecutionResult, submit_async
 
-        session = self._sessions.get(device.name)
+        session = self._sessions.get(device.index)
         if session is None:
             return submit_async(lambda: ExecutionResult(
                 counts  = {},
                 success = False,
                 error   = (
-                    f"No session for device '{device.name}' on this "
-                    f"provider instance. Devices must be created via "
-                    f"get_device() on the same provider that executes them."
+                    f"No session for device {device.ref} "
+                    f"(kind={device.display_kind}) on this provider "
+                    f"instance. Devices must be created via get_device() "
+                    f"on the same provider that executes them, and "
+                    f"attached to a kernel before execution."
                 )
             ))
         noise_model = session["noise_model"]

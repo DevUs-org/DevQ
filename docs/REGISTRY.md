@@ -342,6 +342,65 @@ machinery for scoring.
 
 ---
 
+## Device identity: index, name, kind
+
+Three fields, three concepts. Conflating them is the source of a bug
+class DevQ has hit twice, so they are kept strictly separate:
+
+| Field   | Assigned by | Unique?           | Means                          |
+|---------|-------------|-------------------|--------------------------------|
+| `index` | kernel      | always            | *which* device — `d0`, `d1`    |
+| `name`  | user        | yes, when present | what the user *calls* it       |
+| `kind`  | provider    | **no**            | *what hardware* it is          |
+
+```python
+DevQ().add_devices([
+    (IBMSimulatedProvider().get_device(backend_name="FakeNairobiV2"), "CustomName"),
+    (IBMSimulatedProvider().get_device(backend_name="FakeNairobiV2"), "CustomName2"),
+    IBMSimulatedProvider().get_device(backend_name="FakeNairobiV2"),
+])
+```
+
+resolves to:
+
+```
+d0   customname    FakeNairobiV2
+d1   customname2   FakeNairobiV2
+d2   -             FakeNairobiV2
+```
+
+`kind` is **not** an identifier — all three devices above share one. Names
+are lowercased, must be unique, and may not look like `dN` or shadow a
+shell keyword. An unnamed device is addressed by index alone and renders
+as `-`. A device that cannot report its hardware until a connection
+resolves passes `kind=None` and calls `set_kind()` later; it renders as
+`-` until then. **Never put a credential in `kind`** — it is displayed by
+`qdevices` and written to every event-log record.
+
+### Per-device state must be keyed by index
+
+`get_device()` runs *before* the kernel exists, so a device has no index
+at construction time. Providers holding per-device state therefore
+implement `on_attach(device)`, which the kernel calls once, immediately
+after stamping identity:
+
+```python
+def on_attach(self, device):
+    self._sessions[device.index] = {...}   # index: unique
+```
+
+Keying on `kind` instead silently collapses every same-kind device onto
+one shared slot, and the last device built wins. This is invisible until
+two devices share a kind *and* differ in config — see the
+`same_kind_isolation` block. Immutable, expensive resources (a loaded
+backend) may still be cached by kind and shared; only mutable per-device
+state needs the index.
+
+`on_attach` defaults to a no-op, so providers with no per-device state
+need not implement it.
+
+---
+
 ## Providers and declarative devices
 
 Registering a provider makes it addressable **by name**, which is what

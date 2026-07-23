@@ -348,3 +348,6 @@ Blocks record *what they proved*, not merely that they passed. Use
 | Noise numbers differ from documented reference values | `qiskit-ibm-runtime` version differs from the pinned one |
 | Backend not found | Missing the `V2` suffix on an IBM fake backend name |
 | Results differ between identical runs | Provider constructed without a seed |
+| Two same-kind devices behave as one | Provider keyed per-device state by `kind` (shared) instead of `device.index` (unique) — see `on_attach` in docs/REGISTRY.md |
+| `device.index` is `None` | Device not attached yet; `get_device()` runs before the kernel assigns identity |
+| Device shows `-` where hardware should be | `kind` unresolved — provider has not called `set_kind()` |
