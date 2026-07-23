@@ -46,6 +46,7 @@ lets them run as plugins in one system on identical workloads.
 | `shell/` | QShell and the JobSpec parser |
 | `circuits/` | Circuit representation, QASM loading, execution futures |
 | `run_tests.py` | The whole test suite — 42 blocks, no pytest |
+| `verify_local.py` | Run on YOUR machine: interactive shell, readline backend, real concurrency, pinned values |
 | `docs/` | All reference documentation |
 
 Documentation, all under `docs/`:
@@ -57,6 +58,7 @@ Documentation, all under `docs/`:
 | `REGISTRY.md` | Writing a plugin — contracts, `KeySpec`, validation |
 | `COST_MODEL.md` | The maths behind routing and allocation scores |
 | `TEST_BLOCKS.md` | What each test block proves and why |
+| `MUTATION_TESTING.md` | Whether the tests would notice a regression — mutants run, killed, and the gaps they exposed |
 | `ROADMAP.md` | What each phase delivered; where the project is going |
 
 ---
@@ -299,8 +301,22 @@ function that drives a real shell session and raises on failure.
 
 Detail on every block: [`docs/TEST_BLOCKS.md`](docs/TEST_BLOCKS.md).
 
+`run_tests.py` runs headless and always uses `build(interactive=False)`,
+so it never exercises the interactive shell or readline. Run
+`python verify_local.py` on the target machine for that, plus real
+concurrency and the pinned calibration values — three past bugs were
+invisible in a 1-CPU sandbox and only appeared under macOS/libedit.
+
+Before trusting a green suite, see
+[`docs/MUTATION_TESTING.md`](docs/MUTATION_TESTING.md): three mutants
+survived a fully green run, and each exposed a test that was asserting
+nothing.
+
 Rules for adding a block — all four are load-bearing:
 
+- **Mutation-test any new block.** Break the code deliberately and
+  confirm the suite goes red; a green test that cannot fail is worse
+  than no test. Record the result in `docs/MUTATION_TESTING.md`.
 - **Keep `docs/TEST_BLOCKS.md` 1:1 with the block list.** One documented
   section per block, matching names exactly. Verify programmatically; the
   invariant has caught drift before.

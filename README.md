@@ -192,6 +192,7 @@ together they are the authoritative description of DevQ.
 | [`docs/REGISTRY.md`](docs/REGISTRY.md) | Plugin author reference — registering your own scheduler, allocator, router or provider, and declaring its configuration |
 | [`docs/COST_MODEL.md`](docs/COST_MODEL.md) | Formal statement of the block cost `S` and the router's device score, with notation and worked values |
 | [`docs/TEST_BLOCKS.md`](docs/TEST_BLOCKS.md) | Sanity test plan — what each block checks and why; run it with `python run_tests.py` |
+| [`docs/MUTATION_TESTING.md`](docs/MUTATION_TESTING.md) | Whether those tests would catch a regression — mutants run, results, and the gaps they found |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | What each development phase delivered, and what the remaining phases are for |
 | [`AGENTS.md`](AGENTS.md) | Orientation for AI coding assistants — task-oriented routing into the documents above |
 
