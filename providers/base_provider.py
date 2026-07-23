@@ -29,6 +29,9 @@ class BaseProvider(ABC):
                    non-deterministic behaviour.
         '''
         self.seed = seed
+        # Incremented by get_device()/get_device_from_spec() in
+        # concrete providers so set_seed() can refuse to run late.
+        self._devices_created = 0
 
     @abstractmethod
     def get_device(self, *args, **kwargs):
@@ -79,6 +82,40 @@ class BaseProvider(ABC):
                 f"dict, got {type(spec).__name__}."
             )
         return self.get_device(**spec)
+
+    def set_seed(self, seed):
+        '''
+        Set the base seed BEFORE any device has been created.
+
+        Called by the workload-spec parser when a provider was
+        registered as an unseeded INSTANCE and the spec supplies a seed.
+        It is never called on a provider that already carries a seed —
+        that case is a conflict the instance wins — so there is no
+        seed-derived state to unwind here.
+
+        ⚠ OVERRIDE THIS if your provider derives state from the seed AT
+        CONSTRUCTION. The default sets self.seed, which is enough for a
+        provider that reads self.seed when it executes, and NOT enough
+        for one that builds a random.Random in __init__ — that generator
+        would keep its original state and the spec's seed would be
+        silently ignored. The parser detects a provider that ignores the
+        call and warns, but it cannot fix it.
+
+        Args:
+            seed: int — the base seed to adopt
+
+        Raises:
+            RuntimeError: if devices have already been created, since
+                          the contract above no longer holds.
+        '''
+        if getattr(self, "_devices_created", 0):
+            raise RuntimeError(
+                f"{type(self).__name__}.set_seed() called after "
+                f"{self._devices_created} device(s) were already created. "
+                f"Seeding must precede device construction — the devices "
+                f"already built carry error maps derived from the old seed."
+            )
+        self.seed = seed
 
     def on_attach(self, device):
         '''

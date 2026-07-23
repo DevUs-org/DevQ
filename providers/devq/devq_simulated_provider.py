@@ -41,6 +41,20 @@ class DevQSimulatedProvider(BaseProvider):
         import random
         self._rng = random.Random(seed) if seed is not None else None
 
+    def set_seed(self, seed):
+        '''
+        Adopt a new base seed and REBUILD the generator.
+
+        The base implementation only sets self.seed, which would not be
+        enough here: _rng is constructed in __init__, so a provider made
+        unseeded holds _rng = None and would keep generating unseeded
+        devices while reporting the spec's seed. Rebuilding is what makes
+        the reported seed true.
+        '''
+        super().set_seed(seed)
+        import random
+        self._rng = random.Random(seed) if seed is not None else None
+
     def get_device(self, kind="fully_connected", num_qubits=5) -> QuantumDevice:
         '''
         Build a simulated QuantumDevice using DevQ's backend topologies.
@@ -55,6 +69,7 @@ class DevQSimulatedProvider(BaseProvider):
         Returns:
             QuantumDevice with all parameters populated and self as provider
         '''
+        self._devices_created += 1
         backend = create_backend(kind, num_qubits, rng=self._rng)
 
         return QuantumDevice(

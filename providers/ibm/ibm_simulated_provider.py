@@ -107,6 +107,7 @@ class IBMSimulatedProvider(BaseProvider):
         error_map    = self._extract_qubit_errors(backend, num_qubits)
         edge_error_map = self._extract_edge_errors(backend, coupling_map)
 
+        self._devices_created += 1
         return QuantumDevice(
             kind           = backend_name,
             num_qubits     = num_qubits,

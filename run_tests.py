@@ -1450,6 +1450,165 @@ def block_plugin_normalise_group():
         os.rmdir(tmpdir)
 
 
+def block_workload_spec():
+    '''Workload specs validate strictly and resolve seeds predictably'''
+    import io, contextlib, json, os, tempfile
+    from devq import DevQ
+    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from benchmark.spec import (validate_spec, load_spec, build_session,
+                                submit_jobs, drain, SpecError)
+
+    GOOD = {
+        "name": "block", "seed": SEED,
+        "devices": [{"id": "alpha", "provider": "devq",
+                     "backend": {"kind": "fully_connected", "num_qubits": 7}}],
+        "jobs": [{"circuit": BELL}],
+    }
+
+    def rejects(label, mutate):
+        spec = json.loads(json.dumps(GOOD))
+        mutate(spec)
+        try:
+            validate_spec(spec)
+            check(False, f"spec rejects {label}")
+        except SpecError:
+            check(True, f"spec rejects {label}")
+
+    # STRICTNESS IS THE POINT, and the reason is the absence of a
+    # fallback rather than a difference in severity: every config key
+    # has a documented default, and a spec key has none. There is no
+    # sensible default for which circuit to run or where to run it, so
+    # refusing is the only alternative to guessing.
+    rejects("an unknown top-level key",  lambda s: s.update(sed=1))
+    rejects("an unknown device key",     lambda s: s["devices"][0].update(kind="x"))
+    rejects("an unknown job key",        lambda s: s["jobs"][0].update(shots=100))
+    rejects("a non-integer seed",        lambda s: s.update(seed="42"))
+    rejects("a duplicate device id",     lambda s: s["devices"].append(dict(s["devices"][0])))
+    rejects("an empty device list",      lambda s: s.update(devices=[]))
+    rejects("an empty job list",         lambda s: s.update(jobs=[]))
+    rejects("repeat=0",                  lambda s: s["jobs"][0].update(repeat=0))
+    rejects("exec_on with no_exec_on",   lambda s: s["jobs"][0].update(
+                                             exec_on=["alpha"], no_exec_on=["alpha"]))
+    rejects("exec_on naming an undefined device",
+                                         lambda s: s["jobs"][0].update(exec_on=["nope"]))
+    rejects("an unsupported arrival pattern",
+                                         lambda s: s.update(arrival={"pattern": "poisson"}))
+    rejects("a missing required key",    lambda s: s.pop("name"))
+    rejects("a non-numeric threshold",   lambda s: s["jobs"][0].update(
+                                             max_qubit_error="0.03"))
+
+    # Absent-with-a-default is NOT an exception to the rule above:
+    # repeat and arrival.pattern have documented defaults, so omitting
+    # them is silent. It is keys carrying no actionable meaning that
+    # are refused.
+    minimal = json.loads(json.dumps(GOOD))
+    minimal.pop("seed")
+    validated = validate_spec(minimal)
+    check(validated["arrival"]["pattern"] == "batch",
+          "an omitted arrival pattern defaults to batch, silently")
+    check(validated["jobs"][0].get("repeat", 1) == 1,
+          "an omitted repeat defaults to 1, silently")
+
+    # A spec naming an unregistered provider must fail loudly rather
+    # than importing anything — a data file that can trigger imports is
+    # a data file that can run code.
+    spec = json.loads(json.dumps(GOOD))
+    spec["devices"][0]["provider"] = "not_registered"
+    try:
+        build_session(validate_spec(spec), DevQ())
+        check(False, "unregistered provider is rejected")
+    except SpecError as exc:
+        check("not registered" in str(exc),
+              "unregistered provider is rejected, naming what is available")
+
+    # SEED RESOLUTION — the four cases that differ.
+    def resolved(register, spec_seed):
+        spec = json.loads(json.dumps(GOOD))
+        if spec_seed is None:
+            spec.pop("seed")
+        else:
+            spec["seed"] = spec_seed
+        spec["devices"][0]["provider"] = "p"
+        dq = DevQ()
+        dq.register_provider("p", register)
+        with contextlib.redirect_stdout(io.StringIO()):
+            _, meta = build_session(validate_spec(spec), dq)
+        return meta["devices"][0], meta["warnings"]
+
+    d, w = resolved(DevQSimulatedProvider, 7)
+    check(d["seed_effective"] == 7 and not w,
+          "a registered CLASS takes the spec's seed with no conflict")
+
+    d, w = resolved(DevQSimulatedProvider(), 7)
+    check(d["seed_effective"] == 7 and not w,
+          "an UNSEEDED instance accepts the spec's seed")
+
+    d, w = resolved(DevQSimulatedProvider(seed=99), 7)
+    check(d["seed_effective"] == 99 and w,
+          f"a SEEDED instance overrides the spec and warns, got {d['seed_effective']}")
+
+    d, w = resolved(DevQSimulatedProvider(seed=99), None)
+    check(d["seed_effective"] == 99 and not w,
+          "a seeded instance with no spec seed is not a conflict")
+
+    # set_seed must reproduce a freshly constructed provider, not merely
+    # set an attribute — devq builds its RNG in __init__, so a provider
+    # that only stored the value would keep generating unseeded devices
+    # while reporting the spec's seed.
+    late = DevQSimulatedProvider()
+    late.set_seed(SEED)
+    fresh = DevQSimulatedProvider(seed=SEED)
+    check(sorted(late.get_device("random", 5).error_map.items())
+          == sorted(fresh.get_device("random", 5).error_map.items()),
+          "set_seed reproduces a freshly seeded provider exactly")
+
+    # ... and must refuse once devices exist, since their error maps
+    # already derive from the old seed.
+    used = DevQSimulatedProvider(seed=SEED)
+    used.get_device("random", 5)
+    try:
+        used.set_seed(1234)
+        check(False, "set_seed refuses after devices are built")
+    except RuntimeError:
+        check(True, "set_seed refuses after devices are built")
+
+    # END TO END: repeat:N must create N DISTINCT jobs, not one job run
+    # N times — they queue, route and schedule independently.
+    spec = json.loads(json.dumps(GOOD))
+    spec["devices"].append({"id": "bravo", "provider": "devq",
+                            "backend": {"kind": "linear", "num_qubits": 7}})
+    spec["jobs"] = [{"circuit": BELL, "repeat": 3},
+                    {"circuit": GHZ, "repeat": 2, "no_exec_on": ["alpha"]}]
+    dq = DevQ()
+    with contextlib.redirect_stdout(io.StringIO()):
+        shell, meta = build_session(validate_spec(spec), dq)
+        jobs = submit_jobs(shell, spec)
+        cycles = drain(shell)
+
+    check(len(jobs) == 5, f"repeat expands to 5 distinct jobs, got {len(jobs)}")
+    check(len({j.job_id for j in jobs}) == 5, "every expanded job has its own id")
+    check(all(j.state.value == "FINISHED" for j in jobs),
+          f"all jobs finished, got {sorted({j.state.value for j in jobs})}")
+
+    # no_exec_on must survive the id→index translation.
+    alpha = next(d["index"] for d in meta["devices"] if d["id"] == "alpha")
+    ghz_jobs = jobs[3:]
+    check(all(j.device_index != alpha for j in ghz_jobs),
+          "no_exec_on kept the GHZ jobs off alpha")
+
+    # DRAIN MUST NOT BUSY-WAIT. An early version stepped whenever a
+    # future was in flight and produced 37,923 empty cycles for this
+    # five-job workload, burying twenty real events. Cycles must stay
+    # proportionate to the work.
+    check(cycles < 200, f"drain does not spin — {cycles} cycles for 5 jobs")
+
+    # Device identity from the spec: the spec's id IS the device name.
+    check([d["id"] for d in meta["devices"]] == ["alpha", "bravo"],
+          "spec ids become device names in order")
+    check([d["index"] for d in meta["devices"]] == [0, 1],
+          "devices are indexed in spec order")
+
+
 def block_event_log():
     '''Kernel events record the full job lifecycle without changing output'''
     import io, contextlib
@@ -1934,6 +2093,7 @@ BLOCKS = [
     ("plugin_config_keys",       block_plugin_config_keys),
     ("plugin_normalise_group",   block_plugin_normalise_group),
     ("component_labels",         block_component_labels),
+    ("workload_spec",            block_workload_spec),
     ("event_log",                block_event_log),
     ("router_scoring",           block_router_scoring),
     ("device_identity",          block_device_identity),

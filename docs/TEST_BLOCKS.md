@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 41 sanity blocks in `run_tests.py`, covering
+Specification for the 42 sanity blocks in `run_tests.py`, covering
 Phases 0–5.1 plus the component registry.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 41 blocks, one line each
+python run_tests.py              # all 42 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -804,6 +804,46 @@ and `qconfig` silently degraded to class names on `main`. The block is
 cheap and would have caught it immediately.
 
 ---
+
+### `workload_spec`
+
+Covers `benchmark/spec.py`: validation, seed resolution, and an
+end-to-end run from a spec.
+
+Thirteen malformed specs must each raise `SpecError`. Spec parsing is
+strict where config parsing is lenient, and the reason is the absence
+of a fallback rather than a difference in severity: every config key has
+a documented default, and a spec key has none. There is no sensible
+default for which circuit to run or which device to run it on, so
+refusing is the only alternative to guessing.
+
+Absent-with-a-default is not an exception — `repeat` and
+`arrival.pattern` have defaults, and omitting them is asserted to be
+silent. It is keys carrying no actionable meaning that are refused.
+
+Seed resolution has four distinct cases, all asserted: a registered
+CLASS is constructed with the spec's seed (no conflict possible); an
+UNSEEDED instance accepts the spec's seed via `set_seed`; a SEEDED
+instance overrides the spec and warns; a seeded instance with no spec
+seed is not a conflict. Code wins over the spec because a collaborator
+pinning a seed in their own code, against a shared spec they do not
+own, is expressing intent.
+
+`set_seed` must reproduce a *freshly constructed* provider, not merely
+set an attribute — devq builds its RNG in `__init__`, so a provider that
+only stored the value would keep generating unseeded devices while
+reporting the spec's seed. It must also refuse once devices exist, since
+their error maps already derive from the old seed.
+
+The end-to-end case asserts `repeat: N` expands to N distinct job ids,
+`no_exec_on` survives the id→index translation, and spec ids become
+device names in spec order.
+
+One assertion is a regression guard rather than a specification: `drain`
+must complete a five-job workload in under 200 cycles. An early version
+stepped the kernel whenever a future was in flight, producing 37,923
+empty cycles and 37,923 `cycle_end` records for twenty real events.
+
 
 ### `event_log`
 
