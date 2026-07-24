@@ -1,4 +1,6 @@
 '''
+Tags: Main
+
 DevQ local verification — run this on YOUR machine, not the sandbox.
 
 Three past bugs were invisible in a 1-CPU Linux sandbox with GNU

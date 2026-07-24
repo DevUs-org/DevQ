@@ -45,7 +45,8 @@ lets them run as plugins in one system on identical workloads.
 | `config/` | `ConfigLoader` — the four-level configuration cascade |
 | `shell/` | QShell and the JobSpec parser |
 | `circuits/` | Circuit representation, QASM loading, execution futures |
-| `run_tests.py` | The whole test suite — 42 blocks, no pytest |
+| `run_tests.py` | The whole test suite — 44 blocks, no pytest |
+| `benchmark/runner.py` | Run a workload spec, or the whole component matrix, into a run directory |
 | `verify_local.py` | Run on YOUR machine: interactive shell, readline backend, real concurrency, pinned values |
 | `docs/` | All reference documentation |
 
@@ -367,6 +368,7 @@ Blocks record *what they proved*, not merely that they passed. Use
 | Event logs differ between identical seeded runs | Expected — completion order belongs to the executor. DevQ guarantees decision determinism, not completion-order determinism. Compare on `seq`, exclude `*_at` |
 | Spec's seed appears to be ignored | A provider *instance* was registered with its own seed — instances win over specs, and the run warns. Register the class instead |
 | Log flooded with `cycle_end` records | The drain loop is stepping while futures are merely in flight. Step only when a cycle can make progress |
+| A resumed matrix re-runs everything | The manifest records outcomes; resume matches on session id. A crashed or absent session is always re-run whole — mid-session resume is not offered, since seeding is sequential |
 | A metrics pass crashes on a rejected job | Reading `queue_latency`/`execution_time`/`turnaround_time` without checking for `None` — unfinished jobs have no timestamps |
 | Two same-kind devices behave as one | Provider keyed per-device state by `kind` (shared) instead of `device.index` (unique) — see `on_attach` in docs/REGISTRY.md |
 | `device.index` is `None` | Device not attached yet; `get_device()` runs before the kernel assigns identity |

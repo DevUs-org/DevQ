@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 42 sanity blocks in `run_tests.py`, covering
+Specification for the 44 sanity blocks in `run_tests.py`, covering
 Phases 0–5.1 plus the component registry.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 42 blocks, one line each
+python run_tests.py              # all 44 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -804,6 +804,54 @@ and `qconfig` silently degraded to class names on `main`. The block is
 cheap and would have caught it immediately.
 
 ---
+
+### `repo_hygiene`
+
+Checks invariants the README states and nothing else enforces: every
+`.py` file carries a `Tags:` header, `TEST_BLOCKS.md` is 1:1 with the
+block list, and the block count stated in prose matches reality.
+
+These break silently. A new file without a tag costs nothing at runtime
+and misleads every reader afterwards; a stale count in this document
+does the same. `verify_local.py` shipped untagged for exactly that
+reason, and a count drifted twice across earlier sessions. None of it is
+catchable by a test that only exercises behaviour, so it is asserted
+directly.
+
+
+### `benchmark_runner`
+
+Covers `benchmark/runner.py`: run directories, the manifest, atomic
+writes, crash isolation and resume.
+
+A run always produces a directory with one JSONL log per session plus a
+manifest — a single-spec run has the same shape as an 18-session
+matrix, so a reader never branches on which it is looking at. The log
+opens with a `header` carrying the spec verbatim and the device table
+(written once, not repeated per record) and closes with a `summary`
+carrying one row per job ordered by job id. The log body itself stays
+chronological; the per-job table is a derived view.
+
+Three outcomes are distinguished, and the first two must not be
+confused: `completed`, `completed_with_failures` (jobs were rejected or
+failed — a *result*, and exactly what a threshold sweep is meant to
+produce), and `crashed` (the session died). Phase 5.3 reads this
+distinction.
+
+Crash isolation is asserted by forcing one matrix session to raise: the
+other seventeen must still complete. Atomic writes are asserted by
+checking no `.partial` file is orphaned and that a crashed session's log
+is kept under a name no reader will trust.
+
+Resume is asserted to skip completed sessions and re-run the crashed one
+whole. It is deliberately session-level only: seeding is sequential —
+IBM derives each run's seed as `seed + k` from a submission counter — so
+a session restarted mid-way would reproduce different noise than an
+uninterrupted one, and the two halves would not be comparable. Sessions
+are identified by what varied rather than by position, so inserting a
+component into the matrix cannot silently re-map existing results onto
+different configs.
+
 
 ### `workload_spec`
 

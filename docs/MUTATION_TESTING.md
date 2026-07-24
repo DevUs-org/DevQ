@@ -43,7 +43,7 @@ cannot.
 
 ## Results
 
-**37 distinct mutants, 36 killed, 1 equivalent** (excluded by
+**46 distinct mutants, 45 killed, 1 equivalent** (excluded by
 convention — see below). Grouped by subsystem. Several were re-run
 against `main` after each push to confirm the pushed state matches what
 was verified locally; those re-runs are not counted again here.
@@ -113,6 +113,28 @@ behind by the refactor.
 | S5 | late-`set_seed` guard removed | killed (1) |
 | S6 | `exec_on` device ids unchecked | killed (1) |
 | S7 | `drain` busy-waits | killed (1) |
+
+### Benchmark runner — `benchmark/runner.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| R1 | atomic rename removed (partial file left as final) | killed (1) |
+| R2 | `--resume` never skips a completed session | killed (1) |
+| R3 | failures recorded as `completed` | killed (1) |
+| R4 | a crashed session aborts the whole matrix | killed (1) |
+| R5 | session ids collide instead of naming the config | killed (1) |
+| R6 | `header` record never emitted | killed (1) |
+
+### Repo hygiene — `run_tests.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| H1 | `Tags:` header removed from a source file | killed (1) |
+| H2 | block count in `TEST_BLOCKS.md` left stale | killed (1) |
+| H3 | a documented block renamed out of sync with the code | killed (1) |
+
+These guard invariants that break silently rather than loudly — nothing
+at runtime depends on them, so only a direct assertion catches a drift.
 
 ---
 

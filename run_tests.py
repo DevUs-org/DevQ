@@ -1450,6 +1450,178 @@ def block_plugin_normalise_group():
         os.rmdir(tmpdir)
 
 
+def block_repo_hygiene():
+    '''Every source file carries a tag, and the docs agree with the code'''
+    # These are invariants the README asserts and no other block checks.
+    # They break silently: a new file without a tag, or a doc claiming a
+    # block count that drifted, costs nothing at runtime and misleads
+    # every reader afterwards. verify_local.py went untagged for exactly
+    # this reason.
+    import os, re
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    untagged = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in {".git", "__pycache__", "results"}]
+        for filename in filenames:
+            if not filename.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, filename)
+            with open(path) as handle:
+                if not re.search(r"^Tags:", handle.read(), re.M):
+                    untagged.append(os.path.relpath(path, root))
+
+    check(not untagged,
+          f"every .py file carries a Tags: header, missing in {untagged}")
+
+    # TEST_BLOCKS.md must stay 1:1 with the block list — a documented
+    # block that no longer exists, or an undocumented one, means the
+    # spec and the suite disagree about what is being tested.
+    with open(os.path.join(root, "run_tests.py")) as handle:
+        registered = set(re.findall(r'\("(\w+)",\s*block_', handle.read()))
+    doc_path = os.path.join(root, "docs", "TEST_BLOCKS.md")
+    with open(doc_path) as handle:
+        doc_text = handle.read()
+    documented = set(re.findall(r"^### `(\w+)`", doc_text, re.M))
+
+    check(registered == documented,
+          f"TEST_BLOCKS.md is 1:1 with the block list; "
+          f"undocumented={sorted(registered - documented)}, "
+          f"stale={sorted(documented - registered)}")
+
+    # ...and the count stated in prose must match reality.
+    stated = re.search(r"(\d+) sanity blocks", doc_text)
+    check(stated and int(stated.group(1)) == len(registered),
+          f"TEST_BLOCKS.md states {stated.group(1) if stated else '?'} blocks, "
+          f"there are {len(registered)}")
+
+
+def block_benchmark_runner():
+    '''Runs write one log per session, with a manifest and resume'''
+    import json, os, shutil, tempfile
+    from benchmark import runner as R
+
+    tmp = tempfile.mkdtemp()
+    spec_path = os.path.join(tmp, "wl.json")
+    with open(spec_path, "w") as handle:
+        json.dump({
+            "name": "block", "seed": SEED,
+            "devices": [{"id": "alpha", "provider": "devq",
+                         "backend": {"kind": "fully_connected", "num_qubits": 7}},
+                        {"id": "bravo", "provider": "devq",
+                         "backend": {"kind": "linear", "num_qubits": 7}}],
+            "jobs": [{"circuit": BELL, "repeat": 2}, {"circuit": GHZ}],
+        }, handle)
+
+    try:
+        # ── single session ────────────────────────────────────────────
+        out = os.path.join(tmp, "single")
+        manifest = R.run(spec_path, out_dir=out, quiet=True)
+
+        check(len(manifest["sessions"]) == 1, "a plain run produces one session")
+        entry = manifest["sessions"][0]
+        check(entry["outcome"] == R.COMPLETED,
+              f"session completed, got {entry['outcome']}")
+        check(entry["jobs"] == 3, f"repeat expanded to 3 jobs, got {entry['jobs']}")
+        check(os.path.exists(os.path.join(out, "manifest.json")),
+              "a manifest is written")
+
+        # A single run uses the SAME directory structure as a matrix, so
+        # a reader never branches on which it is looking at.
+        log = os.path.join(out, entry["log"])
+        check(os.path.exists(log), "the session log exists at the manifest's path")
+
+        with open(log) as handle:
+            records = [json.loads(line) for line in handle if line.strip()]
+
+        # The header carries everything needed to interpret the stream,
+        # written once rather than repeated per record.
+        check(records[0]["event"] == "header", "the log opens with a header")
+        check(records[0]["spec"]["name"] == "block",
+              "the header records the spec verbatim — the log is self-describing")
+        check([d["id"] for d in records[0]["devices"]] == ["alpha", "bravo"],
+              "the header carries the device table so records can use a bare index")
+        check(records[-1]["event"] == "summary", "the log closes with a summary")
+        check(len(records[-1]["per_job"]) == 3,
+              "the summary carries a per-job row")
+        check([r["job_id"] for r in records[-1]["per_job"]] == [1, 2, 3],
+              "per-job rows are ordered by job id — the log itself stays chronological")
+
+        kinds = {r["event"] for r in records}
+        check({"submit", "route", "dispatch", "resolve"} <= kinds,
+              f"lifecycle events reached the log, got {sorted(kinds)}")
+
+        # ── failures are a RESULT, not a crash ────────────────────────
+        # Phase 5.3 must be able to tell "this config rejected its jobs"
+        # from "this session died", so they are distinct outcomes.
+        reject_path = os.path.join(tmp, "reject.json")
+        with open(reject_path, "w") as handle:
+            json.dump({
+                "name": "rejects", "seed": SEED,
+                "devices": [{"id": "solo", "provider": "devq",
+                             "backend": {"kind": "linear", "num_qubits": 7}}],
+                "jobs": [{"circuit": BELL, "max_qubit_error": 0.0000001}],
+            }, handle)
+        rejected = R.run(reject_path, out_dir=os.path.join(tmp, "rej"), quiet=True)
+        check(rejected["sessions"][0]["outcome"] == R.WITH_FAILURES,
+              f"a rejecting run is {R.WITH_FAILURES}, not crashed — "
+              f"got {rejected['sessions'][0]['outcome']}")
+
+        # ── a crashing session must not take the run down ─────────────
+        crash_dir = os.path.join(tmp, "crash")
+        original = R.submit_jobs
+        calls = {"n": 0}
+
+        def exploding(shell, spec, source):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("simulated explosion")
+            return original(shell, spec, source)
+
+        R.submit_jobs = exploding
+        try:
+            crashed = R.run(spec_path, out_dir=crash_dir, matrix=True, quiet=True)
+        finally:
+            R.submit_jobs = original
+
+        outcomes = [e["outcome"] for e in crashed["sessions"]]
+        check(outcomes.count(R.CRASHED) == 1,
+              f"exactly one session crashed, got {outcomes.count(R.CRASHED)}")
+        check(outcomes.count(R.COMPLETED) == len(outcomes) - 1,
+              "one crash does not take the rest of the matrix down")
+
+        # ATOMIC WRITES: a log is either absent or whole. A half-written
+        # file must never be mistaken for a finished session.
+        files = os.listdir(crash_dir)
+        check(not [f for f in files if f.endswith(".partial")],
+              f"no .partial files orphaned, found {[f for f in files if f.endswith('.partial')]}")
+        check([f for f in files if f.endswith(".crashed")],
+              "a crashed session's log is kept under a name readers will not trust")
+
+        # ── resume ────────────────────────────────────────────────────
+        # Session-level only: seeding is sequential, so a partially run
+        # session is re-run whole rather than continued.
+        resumed = R.run(spec_path, out_dir=crash_dir, matrix=True,
+                        resume=True, quiet=True)
+        skipped = [e for e in resumed["sessions"] if e.get("skipped")]
+        check(len(skipped) == len(outcomes) - 1,
+              f"resume skipped the {len(outcomes) - 1} completed sessions, "
+              f"got {len(skipped)}")
+        check(all(e["outcome"] != R.CRASHED for e in resumed["sessions"]),
+              "resume re-ran the crashed session to completion")
+
+        # Sessions are identified by WHAT VARIED, not by position, so
+        # adding a component cannot silently re-map existing results.
+        ids = [e["session_id"] for e in resumed["sessions"]]
+        check(len(set(ids)) == len(ids), "session ids are unique")
+        check(all("__" in i for i in ids),
+              "matrix session ids name their scheduler/allocator/router")
+
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def block_workload_spec():
     '''Workload specs validate strictly and resolve seeds predictably'''
     import io, contextlib, json, os, tempfile
@@ -2093,6 +2265,8 @@ BLOCKS = [
     ("plugin_config_keys",       block_plugin_config_keys),
     ("plugin_normalise_group",   block_plugin_normalise_group),
     ("component_labels",         block_component_labels),
+    ("repo_hygiene",             block_repo_hygiene),
+    ("benchmark_runner",         block_benchmark_runner),
     ("workload_spec",            block_workload_spec),
     ("event_log",                block_event_log),
     ("router_scoring",           block_router_scoring),

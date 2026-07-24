@@ -368,6 +368,34 @@ is answerable from one recorded run.
 `cycle_end` is emitted even when a cycle did nothing, so a consumer can
 distinguish an idle cycle from a cycle missing from the log.
 
+### Running a workload
+
+`benchmark/runner.py` turns a spec into a run directory:
+
+```bash
+python benchmark/runner.py workloads/compare.json --matrix
+python benchmark/runner.py workloads/compare.json --matrix --resume
+```
+
+One JSONL log per session plus a `manifest.json`. The log opens with a
+`header` — the spec verbatim and the device table, written once — and
+closes with a `summary` carrying a per-job row. The body between them is
+chronological, because it records what happened; the per-job table is a
+derived view for reading by job.
+
+The manifest distinguishes `completed`, `completed_with_failures` and
+`crashed`. The middle one is a result rather than an error: a threshold
+sweep is *meant* to reject jobs, and a metrics pass must not treat that
+as a broken run.
+
+`--resume` skips sessions the manifest records as completed. It is
+session-level only: seeding is sequential, so a session restarted
+mid-way would reproduce different noise than an uninterrupted one and
+the halves would not be comparable. A partially run session is
+re-run whole.
+
+---
+
 ### Two clocks
 
 | Field | Deterministic? | Answers |
