@@ -818,6 +818,14 @@ reason, and a count drifted twice across earlier sessions. None of it is
 catchable by a test that only exercises behaviour, so it is asserted
 directly.
 
+The tag scan walks DevQ's own packages by name, plus the top-level
+scripts. It must NOT walk the repository root with a blocklist: the
+first version did, and on a machine with a `venv/` in the working tree
+it audited numpy, scipy, matplotlib and qiskit, reporting several
+thousand missing headers. Blocklisting `venv` would not fix it either —
+the next one is `.venv` or `env`. Naming what belongs to DevQ cannot
+fail that way.
+
 
 ### `benchmark_runner`
 

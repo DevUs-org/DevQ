@@ -368,6 +368,7 @@ Blocks record *what they proved*, not merely that they passed. Use
 | Event logs differ between identical seeded runs | Expected — completion order belongs to the executor. DevQ guarantees decision determinism, not completion-order determinism. Compare on `seq`, exclude `*_at` |
 | Spec's seed appears to be ignored | A provider *instance* was registered with its own seed — instances win over specs, and the run warns. Register the class instead |
 | Log flooded with `cycle_end` records | The drain loop is stepping while futures are merely in flight. Step only when a cycle can make progress |
+| `repo_hygiene` reports thousands of untagged files | It is scanning a virtualenv. The scan must walk DevQ's own packages by name, never the repo root with a blocklist |
 | A resumed matrix re-runs everything | The manifest records outcomes; resume matches on session id. A crashed or absent session is always re-run whole — mid-session resume is not offered, since seeding is sequential |
 | A metrics pass crashes on a rejected job | Reading `queue_latency`/`execution_time`/`turnaround_time` without checking for `None` — unfinished jobs have no timestamps |
 | Two same-kind devices behave as one | Provider keyed per-device state by `kind` (shared) instead of `device.index` (unique) — see `on_attach` in docs/REGISTRY.md |

@@ -1460,17 +1460,36 @@ def block_repo_hygiene():
     import os, re
 
     root = os.path.dirname(os.path.abspath(__file__))
+
+    # WALK ONLY DEVQ'S OWN PACKAGES, never the whole tree. An earlier
+    # version walked everything except a blocklist and cheerfully
+    # audited the user's venv/ — reporting several thousand missing
+    # headers across numpy, scipy and qiskit. Blocklisting virtualenv
+    # directory names is the wrong fix: the next one is called .venv or
+    # env. Naming what IS ours cannot go wrong that way.
+    OURS = ("benchmark", "circuits", "config", "hardware", "kernel",
+            "providers", "registry", "shell")
+    roots = [os.path.join(root, d) for d in OURS]
     untagged = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames
-                       if d not in {".git", "__pycache__", "results"}]
-        for filename in filenames:
-            if not filename.endswith(".py"):
-                continue
-            path = os.path.join(dirpath, filename)
-            with open(path) as handle:
+
+    # Top-level scripts, which live beside the packages rather than in
+    # one, so a directory walk would not reach them.
+    for filename in sorted(os.listdir(root)):
+        if filename.endswith(".py"):
+            with open(os.path.join(root, filename)) as handle:
                 if not re.search(r"^Tags:", handle.read(), re.M):
-                    untagged.append(os.path.relpath(path, root))
+                    untagged.append(filename)
+
+    for package in roots:
+        for dirpath, dirnames, filenames in os.walk(package):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+            for filename in filenames:
+                if not filename.endswith(".py"):
+                    continue
+                path = os.path.join(dirpath, filename)
+                with open(path) as handle:
+                    if not re.search(r"^Tags:", handle.read(), re.M):
+                        untagged.append(os.path.relpath(path, root))
 
     check(not untagged,
           f"every .py file carries a Tags: header, missing in {untagged}")
