@@ -54,6 +54,7 @@ from providers.devq.devq_simulated_provider import DevQSimulatedProvider
 from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
 CONFIG = "./config/config_examples/"
+WORKLOADS = "./benchmark/workloads/"
 BELL   = "test_circuits/bell.qasm"
 GHZ    = "test_circuits/ghz.qasm"
 
@@ -1450,6 +1451,117 @@ def block_plugin_normalise_group():
         os.rmdir(tmpdir)
 
 
+def block_shipped_workloads():
+    '''Every shipped workload spec actually runs to completion'''
+    # benchmark/workloads/ mirrors config/config_examples/: the files are
+    # runnable examples AND test fixtures. Validating them is not enough
+    # — a spec can parse and still fail at execution, and these are the
+    # only things a user can run to see the benchmark runner work.
+    # block_benchmark_runner builds its own spec because it asserts exact
+    # job counts; this one runs what actually ships.
+    import io, contextlib, json, os, shutil, tempfile
+    from benchmark import runner as R
+    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+
+    # Job counts pinned per spec. See the note at the assertion below:
+    # computing these from the spec under test proves nothing.
+    EXPECTED_JOBS = {
+        "smoke.json"          : 5,
+        "ibm_federation.json" : 8,
+    }
+
+    specs = sorted(f for f in os.listdir(WORKLOADS) if f.endswith(".json"))
+    check(specs, f"workload specs ship with the repo, found {specs}")
+    check(set(specs) == set(EXPECTED_JOBS),
+          f"every shipped spec has a pinned job count; "
+          f"unpinned={sorted(set(specs) - set(EXPECTED_JOBS))}, "
+          f"stale={sorted(set(EXPECTED_JOBS) - set(specs))}")
+
+    tmp = tempfile.mkdtemp()
+    try:
+        for filename in specs:
+            path = os.path.join(WORKLOADS, filename)
+            with open(path) as handle:
+                spec = json.load(handle)
+
+            # A spec naming a provider the caller must register is not a
+            # broken spec — it is the documented extension model. Supply
+            # the ones DevQ ships so every shipped spec is runnable here.
+            providers = {}
+            for device in spec["devices"]:
+                if device["provider"] == "ibm":
+                    providers["ibm"] = IBMSimulatedProvider
+
+            out = os.path.join(tmp, filename.replace(".json", ""))
+            with contextlib.redirect_stdout(io.StringIO()):
+                manifest = R.run(path, out_dir=out,
+                                 register_providers=providers, quiet=True)
+
+            entry = manifest["sessions"][0]
+            check(entry["outcome"] in (R.COMPLETED, R.WITH_FAILURES),
+                  f"{filename} runs to completion, got {entry['outcome']}"
+                  + (f" — {entry.get('error', '')[:60]}"
+                     if entry["outcome"] == R.CRASHED else ""))
+
+            # The log must be readable and self-describing, since that is
+            # the whole point of shipping these as examples.
+            log = os.path.join(out, entry["log"])
+            with open(log) as handle:
+                records = [json.loads(line) for line in handle if line.strip()]
+            check(records[0]["event"] == "header",
+                  f"{filename} log opens with a header")
+            check(records[0]["spec"]["name"] == spec["name"],
+                  f"{filename} header records its own spec verbatim")
+            check(records[-1]["event"] == "summary",
+                  f"{filename} log closes with a summary")
+
+            # Expanded job count, PINNED per spec rather than computed
+            # from the spec being checked. Deriving `expected` from the
+            # same file is self-satisfying: changing a repeat moves both
+            # sides together and the assertion cannot fail. Pinning also
+            # makes an accidental edit to a shipped example visible.
+            check(entry["jobs"] == EXPECTED_JOBS[filename],
+                  f"{filename} ran {EXPECTED_JOBS[filename]} jobs, "
+                  f"got {entry['jobs']}")
+
+            # ...and the spec must still SAY what these numbers assume,
+            # so the pin and the file cannot drift apart silently.
+            declared = sum(job.get("repeat", 1) for job in spec["jobs"])
+            check(declared == EXPECTED_JOBS[filename],
+                  f"{filename} declares {EXPECTED_JOBS[filename]} jobs, "
+                  f"spec now says {declared} — update EXPECTED_JOBS "
+                  f"deliberately if the example changed")
+
+            # Seeded specs must reproduce their ROUTING decisions.
+            #
+            # submit and route only. NOT dispatch: allocation depends on
+            # which qubits are free at dispatch time, and that depends on
+            # whether an earlier job has resolved and released its block.
+            # An earlier version of this check included the v2p_map and
+            # failed intermittently — job 4 landed on {0:1,1:2} in one run
+            # and {0:4,1:5} in another, both correct. That is completion
+            # order leaking into allocation, which DevQ explicitly does
+            # NOT guarantee (see docs/REGISTRY.md, "Two clocks"). Wall
+            # clock is excluded for the same reason.
+            if spec.get("seed") is not None:
+                out2 = os.path.join(tmp, filename.replace(".json", "_again"))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    R.run(path, out_dir=out2, register_providers=providers,
+                          quiet=True)
+                with open(os.path.join(out2, entry["log"])) as handle:
+                    again = [json.loads(l) for l in handle if l.strip()]
+
+                def decisions(recs):
+                    return [(r["event"], r.get("job_id"), r.get("device"))
+                            for r in recs
+                            if r["event"] in ("submit", "route")]
+
+                check(decisions(records) == decisions(again),
+                      f"{filename} reproduces its routing under the same seed")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def block_repo_hygiene():
     '''Every source file carries a tag, and the docs agree with the code'''
     # These are invariants the README asserts and no other block checks.
@@ -1493,6 +1605,35 @@ def block_repo_hygiene():
 
     check(not untagged,
           f"every .py file carries a Tags: header, missing in {untagged}")
+
+    # Every shipped workload spec must still validate. These are the
+    # only runnable examples of the benchmark runner — run_tests.py
+    # builds its own specs in a temp directory and deletes them, so
+    # without these there is nothing a user can actually execute, and
+    # nothing would notice if the schema drifted away from them.
+    from benchmark.spec import validate_spec, SpecError
+    import json as _json
+
+    workloads = os.path.join(root, "benchmark", "workloads")
+    shipped = sorted(f for f in os.listdir(workloads) if f.endswith(".json"))
+    check(shipped, f"workload specs are shipped, found {shipped}")
+
+    for filename in shipped:
+        path = os.path.join(workloads, filename)
+        try:
+            spec = validate_spec(_json.load(open(path)), filename)
+            ok, detail = True, ""
+        except (SpecError, ValueError) as exc:
+            ok, detail = False, str(exc)[:80]
+        check(ok, f"shipped spec {filename} validates{': ' + detail if detail else ''}")
+
+        # A spec naming a circuit that does not exist would fail only
+        # when someone tried to run it.
+        if ok:
+            missing = [j["circuit"] for j in spec["jobs"]
+                       if not os.path.exists(os.path.join(root, j["circuit"]))]
+            check(not missing,
+                  f"{filename} references existing circuits, missing {missing}")
 
     # TEST_BLOCKS.md must stay 1:1 with the block list — a documented
     # block that no longer exists, or an undocumented one, means the
@@ -2284,6 +2425,7 @@ BLOCKS = [
     ("plugin_config_keys",       block_plugin_config_keys),
     ("plugin_normalise_group",   block_plugin_normalise_group),
     ("component_labels",         block_component_labels),
+    ("shipped_workloads",        block_shipped_workloads),
     ("repo_hygiene",             block_repo_hygiene),
     ("benchmark_runner",         block_benchmark_runner),
     ("workload_spec",            block_workload_spec),

@@ -1,0 +1,50 @@
+{
+    "name": "ibm_federation",
+    "seed": 42,
+    "devices": [
+        {
+            "id": "nairobi",
+            "provider": "ibm",
+            "backend": {
+                "backend_name": "FakeNairobiV2"
+            }
+        },
+        {
+            "id": "lagos",
+            "provider": "ibm",
+            "backend": {
+                "backend_name": "FakeLagosV2"
+            }
+        },
+        {
+            "id": "sim",
+            "provider": "devq",
+            "backend": {
+                "kind": "random",
+                "num_qubits": 7
+            }
+        }
+    ],
+    "arrival": {
+        "pattern": "batch"
+    },
+    "jobs": [
+        {
+            "circuit": "test_circuits/bell.qasm",
+            "repeat": 4
+        },
+        {
+            "circuit": "test_circuits/ghz.qasm",
+            "repeat": 2,
+            "exec_on": [
+                "nairobi",
+                "lagos"
+            ]
+        },
+        {
+            "circuit": "test_circuits/bell.qasm",
+            "repeat": 2,
+            "max_qubit_error": 0.03
+        }
+    ]
+}

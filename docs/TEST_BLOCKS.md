@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 44 sanity blocks in `run_tests.py`, covering
+Specification for the 45 sanity blocks in `run_tests.py`, covering
 Phases 0–5.1 plus the component registry.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 44 blocks, one line each
+python run_tests.py              # all 45 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -805,6 +805,33 @@ cheap and would have caught it immediately.
 
 ---
 
+### `shipped_workloads`
+
+Runs every spec in `benchmark/workloads/` end to end, mirroring the way
+`config/config_examples/` are consumed by the config blocks: those files
+are runnable examples *and* test fixtures, so a schema change that
+breaks one fails the suite rather than surfacing when a user tries it.
+
+Validation alone is not enough — a spec can parse and still fail at
+execution. Each must complete, produce a log opening with a `header`
+that records its own spec verbatim and closing with a `summary`, and
+expand to exactly the job count its `repeat` fields imply.
+
+Seeded specs are run twice and their **decisions** compared: the
+`submit`/`route`/`dispatch` sequence with job ids, devices and
+allocations. Completion order and wall clock are deliberately excluded —
+those belong to the executor, and on real hardware to the provider's
+queue. This is the reproducibility DevQ actually guarantees.
+
+A spec naming a provider the caller must register (`ibm_federation.json`
+does) is not broken — that is the documented extension model — so the
+block supplies the providers DevQ ships.
+
+`block_benchmark_runner` builds its own spec in a temp directory because
+it asserts exact job counts and needs a crash injected; this block runs
+what actually ships.
+
+
 ### `repo_hygiene`
 
 Checks invariants the README states and nothing else enforces: every
@@ -817,6 +844,14 @@ does the same. `verify_local.py` shipped untagged for exactly that
 reason, and a count drifted twice across earlier sessions. None of it is
 catchable by a test that only exercises behaviour, so it is asserted
 directly.
+
+It also validates every shipped workload spec in
+`benchmark/workloads/` and checks the circuits they name exist. Those
+are the only runnable examples of the benchmark runner —
+`block_benchmark_runner` builds its specs in a temp directory and
+deletes them — so without this nothing would notice if the schema
+drifted away from them, and the failure would surface only when someone
+tried to run one.
 
 The tag scan walks DevQ's own packages by name, plus the top-level
 scripts. It must NOT walk the repository root with a blocklist: the

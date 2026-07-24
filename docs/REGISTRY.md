@@ -373,9 +373,13 @@ distinguish an idle cycle from a cycle missing from the log.
 `benchmark/runner.py` turns a spec into a run directory:
 
 ```bash
-python benchmark/runner.py workloads/compare.json --matrix
-python benchmark/runner.py workloads/compare.json --matrix --resume
+python benchmark/runner.py benchmark/workloads/smoke.json
+python benchmark/runner.py benchmark/workloads/smoke.json --matrix
+python benchmark/runner.py benchmark/workloads/smoke.json --matrix --resume
 ```
+
+Example specs live in `benchmark/workloads/`; output goes to
+`results/<name>_<timestamp>/` unless `--out` says otherwise.
 
 One JSONL log per session plus a `manifest.json`. The log opens with a
 `header` — the spec verbatim and the device table, written once — and

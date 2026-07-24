@@ -45,8 +45,9 @@ lets them run as plugins in one system on identical workloads.
 | `config/` | `ConfigLoader` — the four-level configuration cascade |
 | `shell/` | QShell and the JobSpec parser |
 | `circuits/` | Circuit representation, QASM loading, execution futures |
-| `run_tests.py` | The whole test suite — 44 blocks, no pytest |
+| `run_tests.py` | The whole test suite — 45 blocks, no pytest |
 | `benchmark/runner.py` | Run a workload spec, or the whole component matrix, into a run directory |
+| `benchmark/workloads/` | Runnable example specs, also used as test fixtures — see `docs/WORKLOADS.md` |
 | `verify_local.py` | Run on YOUR machine: interactive shell, readline backend, real concurrency, pinned values |
 | `docs/` | All reference documentation |
 
@@ -59,6 +60,7 @@ Documentation, all under `docs/`:
 | `REGISTRY.md` | Writing a plugin — contracts, `KeySpec`, validation |
 | `COST_MODEL.md` | The maths behind routing and allocation scores |
 | `TEST_BLOCKS.md` | What each test block proves and why |
+| `WORKLOADS.md` | The shipped workload specs, what each exercises, and how to run them |
 | `MUTATION_TESTING.md` | Whether the tests would notice a regression — mutants run, killed, and the gaps they exposed |
 | `ROADMAP.md` | What each phase delivered; where the project is going |
 
@@ -368,6 +370,7 @@ Blocks record *what they proved*, not merely that they passed. Use
 | Event logs differ between identical seeded runs | Expected — completion order belongs to the executor. DevQ guarantees decision determinism, not completion-order determinism. Compare on `seq`, exclude `*_at` |
 | Spec's seed appears to be ignored | A provider *instance* was registered with its own seed — instances win over specs, and the run warns. Register the class instead |
 | Log flooded with `cycle_end` records | The drain loop is stepping while futures are merely in flight. Step only when a cycle can make progress |
+| `run_tests.py` leaves no JSONL behind | By design — its runner block builds a spec in a temp directory and deletes it. Run `benchmark/workloads/smoke.json` to see real output |
 | `repo_hygiene` reports thousands of untagged files | It is scanning a virtualenv. The scan must walk DevQ's own packages by name, never the repo root with a blocklist |
 | A resumed matrix re-runs everything | The manifest records outcomes; resume matches on session id. A crashed or absent session is always re-run whole — mid-session resume is not offered, since seeding is sequential |
 | A metrics pass crashes on a rejected job | Reading `queue_latency`/`execution_time`/`turnaround_time` without checking for `None` — unfinished jobs have no timestamps |

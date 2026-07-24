@@ -43,7 +43,7 @@ cannot.
 
 ## Results
 
-**46 distinct mutants, 45 killed, 1 equivalent** (excluded by
+**49 distinct mutants, 48 killed, 1 equivalent** (excluded by
 convention — see below). Grouped by subsystem. Several were re-run
 against `main` after each push to confirm the pushed state matches what
 was verified locally; those re-runs are not counted again here.
@@ -136,6 +136,20 @@ behind by the refactor.
 These guard invariants that break silently rather than loudly — nothing
 at runtime depends on them, so only a direct assertion catches a drift.
 
+### Shipped workloads — `benchmark/workloads/`
+
+| # | Mutation | Result |
+|---|---|---|
+| W1 | a shipped spec's `repeat` changed | killed (1) |
+| W2 | a shipped spec made unrunnable | killed (1) |
+| W4 | a shipped spec deleted | killed (1) |
+
+W1 initially survived: the assertion computed the expected job count
+*from the spec it was checking*, so editing `repeat` moved both sides
+together. Counts are now pinned in `run_tests.py`, with a second check
+that the spec still declares the same number — so a deliberate change to
+an example forces a deliberate change to the pin.
+
 ---
 
 ## The three that survived first time
@@ -165,10 +179,14 @@ derived properties now asserted.
 
 ## Two test blocks were self-satisfying when first written
 
-`router_scoring` originally asserted `explain()` against `select()`.
+This happened three times. `router_scoring` originally asserted
+`explain()` against `select()`.
 Both read one shared scoring path, so a mutation moves them *together*
 and the comparison still holds — 3 of 7 mutants survived. Fixed by
 pinning scores to independently computed values.
+
+`shipped_workloads` later did the same thing in a third costume,
+deriving a spec's expected job count from that spec.
 
 The rule this produced: **when a test compares two things that share an
 implementation, it is not a test.** It is the same failure as the older

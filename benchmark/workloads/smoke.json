@@ -1,0 +1,38 @@
+{
+    "name": "smoke",
+    "seed": 42,
+    "devices": [
+        {
+            "id": "sim",
+            "provider": "devq",
+            "backend": {
+                "kind": "random",
+                "num_qubits": 7
+            }
+        },
+        {
+            "id": "linear",
+            "provider": "devq",
+            "backend": {
+                "kind": "linear",
+                "num_qubits": 7
+            }
+        }
+    ],
+    "arrival": {
+        "pattern": "batch"
+    },
+    "jobs": [
+        {
+            "circuit": "test_circuits/bell.qasm",
+            "repeat": 3
+        },
+        {
+            "circuit": "test_circuits/ghz.qasm",
+            "repeat": 2,
+            "no_exec_on": [
+                "sim"
+            ]
+        }
+    ]
+}
