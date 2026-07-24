@@ -226,15 +226,17 @@ something, the design has been misunderstood — re-read
 Rules the registry enforces at registration time, before anything is
 constructed:
 
-- **Schedulers, allocators and providers must be registered as CLASSES**,
-  never instances. For schedulers and allocators this is a correctness
-  constraint: DevQ constructs one per device, bound to that device's own
-  memory manager and queue, and a shared instance would merge state
-  across devices. For providers it is because registering and
-  constructing are separate acts — a registration names a type, and you
-  construct the provider yourself with any seed or credentials it needs,
-  then attach the device it built. Only ROUTERS may be an instance, since
-  there is exactly one per system.
+- **Every component is registered as a CLASS**, never an instance —
+  schedulers, allocators, routers and providers alike. One rule, no
+  exceptions: register the type, construct what you attach. The reasons
+  differ by kind and all reduce to *an instance escapes the resolution
+  machinery and wins silently*: schedulers and allocators are built one
+  per device and a shared object would merge per-device state; a router
+  is built from the config cascade and an instance would keep its own
+  weights while `qconfig` reported the cascade's; a provider is
+  constructed by you, with any seed or credentials it needs, and the
+  device it builds is what you attach. Extra knobs go in namespaced
+  config keys, which cascade and show up in `qconfig`.
 - **A provider must be registered before a device it built is attached.**
   `add_device()` refuses a device whose provider class is unregistered.
   `DevQSimulatedProvider` is a built-in; everything else, including
@@ -374,7 +376,7 @@ Blocks record *what they proved*, not merely that they passed. Use
 |---|---|
 | Config value ignored, warning about an unknown key | Plugin key not namespaced, or its component not registered yet |
 | `register_*` raises | Called after `build()` / `start()`; the registry is frozen |
-| Scheduler, allocator or provider rejected at registration | Passed an instance; only routers may be one |
+| Component rejected at registration | Passed an instance; every kind is class-only. A router instance also silently bypasses the config cascade, which is why the exemption was removed |
 | `add_device` raises about an unregistered provider | Its provider class was never registered. Register the CLASS first, then attach the device you built — a subclass needs its own registration |
 | Plugin appears registered but never runs | Config file does not name it, or names a different key |
 | Job stuck in `WAITING` | Resources unavailable now — distinct from `REJECTED`, which is terminal |

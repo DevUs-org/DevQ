@@ -1303,11 +1303,36 @@ def block_registry_validation():
         check("must be registered as a CLASS" in str(e),
               "scheduler instance: rejected, must be a class")
 
-    # A router is a system-wide singleton, so an instance is safe — and
-    # is how a user supplies construction arguments DevQ knows nothing
-    # about.
-    DevQ().register_router("ok", MockRouter(0.5, 0.5, 0.1, 0.9))
-    check(True, "router instance: accepted, one router per system")
+    # Every kind is class-only. A router used to be exempt, on the
+    # grounds that one-per-system made sharing safe — but DevQ builds
+    # the router FROM THE CASCADE, and an instance was returned as-is,
+    # so its weights silently won while qconfig reported the config's.
+    router_refused = None
+    try:
+        DevQ().register_router("bad_instance", MockRouter(0.5, 0.5, 0.1, 0.9))
+    except DevQError as e:
+        router_refused = str(e)
+
+    check(router_refused is not None
+          and "must be registered as a CLASS" in router_refused,
+          "router instance: rejected, every kind is class-only")
+    check(router_refused is not None and "cascade" in router_refused,
+          "router instance: the error explains the cascade is what it bypasses")
+
+    # ... and the positive half: a class-registered router is CONSTRUCTED
+    # from the resolved cascade. Asserted against the running router
+    # object, not qconfig output — the bug this replaces was precisely
+    # that the two could disagree. weights_1_9 sets alpha/beta to 1/9,
+    # which normalise to 0.1/0.9.
+    import io, contextlib
+    with contextlib.redirect_stdout(io.StringIO()):
+        sh = session(config="weights_1_9.config.json",
+                     devices=[("devq.simulated", "random", 5, None, None)])
+    live = sh.kernel.router
+    check(abs(live.qubit_error_weight - 0.1) < 1e-9
+          and abs(live.edge_error_weight - 0.9) < 1e-9,
+          "a class-registered router is built from the resolved cascade, "
+          "so qconfig and the running router cannot disagree")
 
     # Re-registering a name would silently change what existing config
     # files mean.

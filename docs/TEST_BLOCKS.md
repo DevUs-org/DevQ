@@ -686,7 +686,7 @@ instead. Both assertions fail if the registry lookup is bypassed.
 
 *Malformed components are rejected at registration, not at run time.*
 
-Fourteen cases, each a component violating the contract in exactly one
+Fifteen cases, each a component violating the contract in exactly one
 way, paired with a phrase its rejection must contain. Defined inline
 rather than at module scope so that a violation and its expected message
 read together.
@@ -705,8 +705,21 @@ read together.
 | `SingleMemberGroup` | groups | one member normalises to 1.0 regardless of config |
 | `GroupNeverDeclared` | groups | key names a group nothing declares |
 | scheduler instance | instance | per-device components must be classes |
-| router instance | *accepted* | one router per system, so sharing is safe |
+| router instance | instance | every kind is class-only; an instance bypasses the cascade |
 | duplicate name | naming | would change what existing config files mean |
+
+**The router-instance case reversed.** It previously asserted that a
+router instance was *accepted*, on the grounds that one-per-system made
+sharing safe. That was wrong: `_build_router` returned a registered
+instance as-is, so it kept whatever weights it was constructed with and
+never saw the config cascade — `qconfig` would report one set of weights
+while another set was routing, and Phase 5.5's weight sweep would have
+produced identical results at every weight while appearing to vary. The
+block now asserts the rejection, that the error names the cascade as
+what an instance bypasses, and — the positive half — that a
+class-registered router really is constructed from resolved config,
+asserted against the **live router object** rather than `qconfig`
+output, since the bug was precisely that the two could disagree.
 
 **Two of these are past bugs.** `NoInitArgs` is Phase 4's
 `RoundRobinRouter`, whose `__init__` took no arguments while

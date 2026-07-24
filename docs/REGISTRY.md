@@ -82,25 +82,40 @@ so for providers the ordering is fixed. Schedulers, allocators and
 routers are unconstrained relative to `add_device()` — they are named in
 config and resolved at build time, never carried in by a device.
 
-### Classes vs instances
+### Everything is a class
 
-| Kind | Accepts | Why |
-|---|---|---|
-| scheduler | class only | one is constructed **per device**, bound to that device's memory manager and queue |
-| allocator | class only | same |
-| provider | class only | registration names a type; constructing it is the caller's business |
-| router | class or instance | exactly one router per system, so sharing is safe |
+| Kind | Why class-only |
+|---|---|
+| scheduler | one is constructed **per device**, bound to that device's memory manager and queue |
+| allocator | same |
+| router | constructed from the **config cascade**, so an instance would silently ignore it |
+| provider | registration names a type; constructing it is the caller's business |
 
-Registering a scheduler *instance* is refused, and this is a correctness
-constraint rather than a style rule. A shared scheduler object would
-merge the per-device queues that the multi-device federation exists to
-keep separate — a system that appears to work and is quietly wrong.
+One rule, no exceptions: **register the class, construct what you
+attach.** Routers and providers once accepted a ready-made instance;
+both turned out to be mistakes, and the reasons generalise.
 
-**Providers are class-only for a different reason: registering and
-constructing are separate acts.** A registration establishes only that a
-name is legal and what type it denotes. Building the provider — with an
-API key, an endpoint, a seed, anything DevQ knows nothing about — is
-yours, and the object you build is passed to `add_device()` directly:
+**Schedulers and allocators** are class-only as a correctness
+constraint, not a style rule. A shared scheduler object would merge the
+per-device queues that the multi-device federation exists to keep
+separate — a system that appears to work and is quietly wrong.
+
+**A router instance silently defeated the config cascade.** DevQ builds
+the router from the resolved global config, but a registered instance
+was returned as-is, keeping whatever weights it was constructed with.
+`qconfig` reports the cascade's values — so it would show one set of
+weights while a different set was actually routing. That is exactly the
+discrepancy `qconfig` exists to rule out, and it would have made Phase
+5.5's weight sweep produce identical results at every weight while
+appearing to vary. A router with knobs of its own declares **namespaced
+config keys** (`mine.window`), which cascade, validate and appear in
+`qconfig` — strictly better than constructor arguments.
+
+**Providers are class-only because registering and constructing are
+separate acts.** A registration establishes only that a name is legal
+and what type it denotes. Building the provider — with an API key, an
+endpoint, a seed, anything DevQ knows nothing about — is yours, and the
+object you build is passed to `add_device()` directly:
 
 ```python
 devq.register_provider("ionq", IonQProvider)
@@ -112,16 +127,16 @@ registry.** What it buys is that a registered name denotes exactly one
 thing. While providers could be registered as instances, an instance
 carried its own seed, and a workload spec asking for a different one had
 to be reconciled against it — a conflict with no correct answer, only a
-documented winner. With classes only, the seed is whatever the caller
-passed or whatever the spec asked for, decided once, with nothing to
-override it.
+documented winner.
+
+The common thread is worth stating on its own: **a registered instance
+is state that escaped the system's own resolution machinery.** Whatever
+that machinery is for — per-device isolation, the config cascade, spec
+seeding — an instance sits outside it and wins silently.
 
 Matching is on the **exact type**. Registering a base class does not
 bless its subclasses: a subclass is a different component with different
 behaviour, so it registers under its own name.
-
-A router registered as an instance keeps the weights you gave it; DevQ
-does not overwrite them from config.
 
 ---
 
@@ -134,7 +149,7 @@ surfaced far from their cause.
 
 | Level | Check |
 |---|---|
-| 1. Type | subclass (or instance) of the ABC for its kind |
+| 1. Type | a CLASS, and a subclass of the ABC for its kind |
 | 2. Bind | `__init__` accepts exactly what DevQ will pass |
 | 3. Methods | the methods DevQ calls exist and accept what DevQ passes |
 | 4. Schema | declared keys are namespaced, legally scoped, and their defaults pass their own validators |
@@ -160,8 +175,9 @@ whose `select()` has the wrong signature, because it inherits a valid
 | provider | `seed=` |
 
 Inheriting the base `__init__` satisfies all of these. If you define
-your own, accept the same parameters — or register an instance, for the
-kinds that allow it.
+your own, accept the same parameters — DevQ constructs every component
+itself, so there is no instance escape hatch. Extra knobs of your own go
+in namespaced config keys, which cascade and appear in `qconfig`.
 
 ---
 
@@ -618,10 +634,12 @@ scheduler 'qos' (QOSScheduler): config key 'window' must be namespaced
 as '<prefix>.<key>' (for example 'qos.window'). Un-namespaced keys are
 reserved for DevQ core.
 
-scheduler 'qos' was registered as an instance, but schedulers must be
-registered as a CLASS. DevQ constructs one scheduler per attached
-device, each bound to that device's own memory manager and queue; a
-shared instance would merge state across devices.
+scheduler 'qos' was registered as an instance, but every DevQ component
+must be registered as a CLASS. Pass QOSScheduler itself, not
+QOSScheduler(...).
+DevQ constructs one scheduler per attached device, each bound to that
+device's own memory manager and queue; a shared instance would merge
+state across devices.
 ```
 
 ---

@@ -240,11 +240,15 @@ class DevQ:
 
     def register_router(self, name, router):
         '''
-        Register a router under a name usable as the value of the
+        Register a router class under a name usable as the value of the
         "router" config key. Returns self for chaining.
 
-        A class or a ready-made instance: there is exactly one router
-        for the whole system, so a shared instance is safe.
+        Must be a CLASS, not an instance: DevQ constructs the router
+        with the weights resolved from the config cascade, and an
+        instance would keep whatever it was built with while qconfig
+        reported the cascade's values. Declare namespaced config keys
+        ("mine.window") for knobs of your own — they cascade and appear
+        in qconfig.
         '''
         return self._register("router", name, router)
 
@@ -494,17 +498,16 @@ class DevQ:
 
     def _build_router(self, global_config):
         '''
-        Construct the configured router, or return a registered instance.
+        Construct the configured router from the resolved global config.
 
-        A router registered as a ready-made instance was built by the
-        user with arguments DevQ knows nothing about, so its weights are
-        left exactly as the user set them rather than being overwritten
-        from config.
+        Unconditional, because routers are registered as classes. While
+        an instance could be registered it was returned as-is, keeping
+        the weights it was built with and never seeing the cascade — so
+        qconfig reported one set of weights while a different set was
+        actually routing. A router with knobs of its own declares
+        namespaced config keys instead; those cascade and are visible.
         '''
         router = self._registry.get("router", global_config["router"])
-
-        if not isinstance(router, type):
-            return router
 
         return router(
             router_queue_weight = global_config["router_queue_weight"],

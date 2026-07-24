@@ -59,36 +59,57 @@ been caught here. Registration performs:
                   exist, have at least two members, and agree with the
                   normalise_group recorded on each member KeySpec.
 
-INSTANCES vs CLASSES. Only ROUTERS may be registered as a ready-made
-instance; schedulers, allocators and providers are CLASS-ONLY. There is
-one router per system, so a pre-built router cannot be shared where it
-should not be.
+CLASSES ONLY. Every component — scheduler, allocator, router, provider —
+is registered as a CLASS. There is one rule and no exceptions to
+remember: register the type, construct what you attach.
 
-Schedulers and allocators are class-only as a correctness constraint
-rather than a stylistic one: DevQ constructs one scheduler and one
-allocator PER DEVICE, each bound to that device's own MemoryManager and
-its own queue. A shared instance would silently merge the per-device
-queues that the multi-device federation exists to keep separate — a
-system that appears to work and is quietly wrong.
+The uniformity is recent. Routers and providers once accepted a
+ready-made instance, on the reasoning that a user might need to pass
+constructor arguments DevQ knows nothing about. Both turned out to be
+mistakes, for different reasons, and the reasons are worth keeping
+because they generalise.
 
-Providers are class-only for a different reason: REGISTRATION AND
-CONSTRUCTION ARE SEPARATE ACTS. A registration establishes only that a
-name is legal and what type it denotes. Constructing the provider —
-with a seed, an API key, an endpoint, whatever it needs — is the
-caller's business, and the object they build is passed to add_device()
-directly:
+  scheduler, allocator   DevQ constructs ONE PER DEVICE, each bound to
+                         that device's own MemoryManager and queue. A
+                         shared instance would silently merge the
+                         per-device queues the federation exists to keep
+                         separate — a system that appears to work and is
+                         quietly wrong.
 
-    devq.register_provider("ionq", IonQProvider)
-    devq.add_device(IonQProvider(api_key=KEY).get_device(qpu="aria-1"))
+  router                 DevQ constructs it with the weights resolved
+                         from the config cascade. A pre-built instance
+                         was returned AS-IS, keeping whatever weights it
+                         was given and silently ignoring the cascade —
+                         so qconfig reported one set of weights while
+                         another set was running. A router with knobs of
+                         its own declares namespaced config keys, which
+                         cascade and appear in qconfig; that is strictly
+                         better than constructor arguments.
 
-So class-only costs nothing: no credential ever has to reach the
-registry. What it BUYS is that a registered name denotes exactly one
-thing. When a provider could be registered as an instance, that
-instance carried its own seed, and a workload spec requesting a
-different one had to be reconciled against it — a conflict with no
-correct answer, only a documented winner. With classes only, the seed
-is whatever the caller passed or whatever the spec asked for, decided
-once, with nothing to override it.
+  provider               REGISTRATION AND CONSTRUCTION ARE SEPARATE
+                         ACTS. A registration says only that a name is
+                         legal and what type it denotes; building the
+                         provider — with a seed, an API key, an endpoint
+                         — is the caller's, and the object they build
+                         goes to add_device() directly:
+
+                             devq.register_provider("ionq", IonQProvider)
+                             devq.add_device(
+                                 IonQProvider(api_key=KEY).get_device(...))
+
+                         So class-only costs nothing: no credential ever
+                         has to reach the registry. What it buys is that
+                         a registered name denotes exactly one thing.
+                         While instances were allowed, one carried its
+                         own seed, and a workload spec asking for a
+                         different one had to be reconciled against it —
+                         a conflict with no correct answer, only a
+                         documented winner.
+
+The common thread: a registered instance is state that escaped the
+system's own resolution machinery. Whatever that machinery is for — the
+config cascade, per-device isolation, spec seeding — an instance sits
+outside it and wins silently.
 
 FREEZING. Once DevQ.build() has consumed the registry, it is frozen and
 further registration raises. Registering after the maps have been read
@@ -129,10 +150,6 @@ class ComponentKind:
                           declare keys in. A router knob is meaningless
                           per-device; a scheduler knob is meaningless
                           system-wide.
-        accepts_instance: whether a ready-made instance may be
-                          registered, or only a class. See the module
-                          docstring — this is a correctness constraint
-                          for per-device components.
         methods:          methods DevQ calls on the component, mapped to
                           the parameter names DevQ passes. Checked for
                           existence and signature compatibility. This
@@ -149,9 +166,32 @@ class ComponentKind:
     base:             type
     init_params:      Sequence[str]
     scopes:           frozenset
-    accepts_instance: bool
     methods:          dict
     label:            str
+
+
+# Why each kind is class-only. Kept as messages rather than one generic
+# line because the reasons genuinely differ, and a plugin author reading
+# the error deserves the one that applies to them.
+_INSTANCE_REASONS = {
+    "scheduler": ("DevQ constructs one scheduler per attached device, each "
+                  "bound to that device's own memory manager and queue; a "
+                  "shared instance would merge state across devices."),
+    "allocator": ("DevQ constructs one allocator per attached device, bound "
+                  "to that device's own qubit pool; a shared instance would "
+                  "merge state across devices."),
+    "router":    ("DevQ constructs the router with the weights resolved from "
+                  "the config cascade. A pre-built instance would keep "
+                  "whatever weights it was given and silently ignore the "
+                  "cascade, so qconfig would report values the running "
+                  "router does not use. Declare namespaced config keys "
+                  "(\"mine.window\") for any knob of your own — they cascade "
+                  "and appear in qconfig."),
+    "provider":  ("Registering names a type; constructing it is yours. Build "
+                  "the provider with whatever seed or credentials it needs "
+                  "and attach the device it makes: "
+                  "devq.add_device(MyProvider(key=...).get_device(...))."),
+}
 
 
 def _build_kinds():
@@ -174,7 +214,6 @@ def _build_kinds():
             base             = BaseScheduler,
             init_params      = ("memory_manager", "process_table"),
             scopes           = frozenset({"device", "common"}),
-            accepts_instance = False,
             methods          = {"schedule": (),
                                 "enqueue":  ("qcb",)},
             label            = "scheduler",
@@ -183,7 +222,6 @@ def _build_kinds():
             base             = BaseAllocator,
             init_params      = ("qubit_error_weight", "edge_error_weight"),
             scopes           = frozenset({"device", "common"}),
-            accepts_instance = False,
             methods          = {"allocate": ("circuit", "device", "pool",
                                              "max_qubit_error", "max_edge_error"),
                                 "feasible": ("circuit", "device",
@@ -195,7 +233,6 @@ def _build_kinds():
             init_params      = ("router_queue_weight", "router_noise_weight",
                                 "qubit_error_weight", "edge_error_weight"),
             scopes           = frozenset({"global", "common"}),
-            accepts_instance = True,
             methods          = {"route":  ("qcb", "contexts"),
                                 "select": ("qcb", "candidates")},
             label            = "router",
@@ -204,7 +241,6 @@ def _build_kinds():
             base             = BaseProvider,
             init_params      = ("seed",),
             scopes           = frozenset({"global", "common"}),
-            accepts_instance = False,
             methods          = {
                 "get_device_from_spec": ("spec",),
                 "execute":              ("circuit", "v2p_map", "shots", "device"),
@@ -246,8 +282,7 @@ class Registry:
             kind:      one of the keys of _KINDS ("scheduler", ...)
             name:      the string used to refer to it in config files and
                        workload specs
-            component: a class, or (for kinds whose accepts_instance is
-                       True) a ready-made instance
+            component: the component CLASS — never an instance
 
         Raises:
             RegistryError: on any contract violation, or if the registry
@@ -292,38 +327,26 @@ class Registry:
         '''
         Levels 1-3: type, constructor bind, and method signatures.
 
-        Returns the CLASS to read declarations from — the component
-        itself when a class was registered, type(component) when an
-        instance was.
+        Returns the CLASS to read declarations from. Every kind is
+        class-only, so that is always the component itself.
         '''
-        is_instance = not inspect.isclass(component)
+        if not inspect.isclass(component):
+            raise RegistryError(
+                f"{spec.label} '{name}' was registered as an instance, but "
+                f"every DevQ component must be registered as a CLASS. Pass "
+                f"{type(component).__name__} itself, not "
+                f"{type(component).__name__}(...).\n"
+                f"{_INSTANCE_REASONS[kind]}"
+            )
 
-        if is_instance:
-            if not spec.accepts_instance:
-                raise RegistryError(
-                    f"{spec.label} '{name}' was registered as an instance, but "
-                    f"{spec.label}s must be registered as a CLASS. DevQ "
-                    f"constructs one {spec.label} per attached device, each "
-                    "bound to that device's own memory manager and queue; a "
-                    "shared instance would merge state across devices. Pass "
-                    f"{type(component).__name__} itself, not "
-                    f"{type(component).__name__}(...)."
-                )
-            if not isinstance(component, spec.base):
-                raise RegistryError(
-                    f"{spec.label} '{name}' must be an instance of "
-                    f"{spec.base.__name__}, got {type(component).__name__}."
-                )
-            cls = type(component)
-        else:
-            if not issubclass(component, spec.base):
-                raise RegistryError(
-                    f"{spec.label} '{name}' must subclass "
-                    f"{spec.base.__name__}, got {component.__name__}."
-                )
-            cls = component
-            self._check_bind(spec, name, cls)
+        if not issubclass(component, spec.base):
+            raise RegistryError(
+                f"{spec.label} '{name}' must subclass "
+                f"{spec.base.__name__}, got {component.__name__}."
+            )
 
+        cls = component
+        self._check_bind(spec, name, cls)
         self._check_methods(spec, name, cls)
         return cls
 
@@ -335,8 +358,6 @@ class Registry:
         object: binding runs no user code and has no side effects, and
         it reports the mismatch in terms of parameter names rather than
         as a TypeError raised deep inside build().
-
-        Skipped for a registered instance, which is already constructed.
         '''
         try:
             signature = inspect.signature(cls.__init__)
@@ -635,8 +656,7 @@ class Registry:
         '''
         if kind not in self._entries:
             raise RegistryError(f"unknown component kind '{kind}'.")
-        return any(entry is cls or type(entry) is cls
-                   for entry in self._entries[kind].values())
+        return cls in self._entries[kind].values()
 
     def kinds(self):
         '''All component kinds this registry knows about.'''

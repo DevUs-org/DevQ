@@ -43,7 +43,7 @@ cannot.
 
 ## Results
 
-**57 distinct mutants, 56 killed, 1 equivalent** (excluded by
+**60 distinct mutants, 58 killed, 2 equivalent** (excluded by
 convention — see below). Grouped by subsystem. Several were re-run
 against `main` after each push to confirm the pushed state matches what
 was verified locally; those re-runs are not counted again here.
@@ -136,8 +136,15 @@ behind by the refactor.
 | P2 | exact-type match relaxed to `issubclass` | killed (1) |
 | P3 | the `add_device()` enforcement call deleted | killed (1) |
 | P4 | providers accept instances again (`accepts_instance = True`) | killed (2) |
+| P5 | the instance check disabled entirely (all kinds) | killed (3) |
+| P6 | router built with a hardcoded weight instead of the cascade's | killed (1) |
+| P7 | the instance bypass restored in `_build_router` | **inert** |
 
-P1 and P4 both survived first time — see below.
+P1 and P4 both survived first time — see below. P7 is inert rather than
+a gap: with instances refused at registration, no instance can reach
+`_build_router`, so the branch is unreachable by construction. It was
+verified unreachable by inspecting the registry's entries rather than
+assumed.
 
 ### Repo hygiene — `run_tests.py`
 
@@ -228,7 +235,7 @@ external truth.
 
 ---
 
-## The equivalent mutant
+## The equivalent and inert mutants
 
 M10 removes the `(score, index)` tie-break from `NoiseRouter.select()`.
 It survives and always will: candidates arrive in index order and
@@ -243,6 +250,15 @@ candidate pipeline ever reordered.
 
 **Do not write a test for it.** Such a test could not fail, which is
 precisely the thing this exercise exists to prevent.
+
+P7 is a second one, of a slightly different kind. It restores the
+instance branch in `_build_router` — dead code, because the registry
+now refuses instances, so nothing can reach it. The distinction worth
+holding onto: M10 is *behaviourally* equivalent for every input, while
+P7 is unreachable given a gate upstream of it. Both are excluded, but
+P7 would stop being inert the moment that gate changed, so it is worth
+re-running rather than retiring. Unreachability was confirmed by
+inspecting the registry's entries, not assumed from the code.
 
 ---
 
