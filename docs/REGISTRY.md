@@ -64,7 +64,7 @@ Four methods on the `DevQ` object, all chainable:
 devq.register_scheduler("mine", MyScheduler)
 devq.register_allocator("mine", MyAllocator)
 devq.register_router("mine",    MyRouter)
-devq.register_provider("ionq",  IonQProvider(api_key=KEY))
+devq.register_provider("ionq",  IonQProvider)
 ```
 
 **Registration is instance-scoped.** Each `DevQ` object owns its own
@@ -75,8 +75,12 @@ time magic.
 **Register before `build()` or `start()`.** Configuration is read at
 build time; registering afterwards could not affect the system that was
 built, so it raises `DevQError` rather than being silently ignored.
-There is no constraint relative to `add_device()` — attach devices and
-register components in whichever order suits you.
+
+**Register a provider before attaching a device it built.**
+`add_device()` refuses a device whose provider class is not registered,
+so for providers the ordering is fixed. Schedulers, allocators and
+routers are unconstrained relative to `add_device()` — they are named in
+config and resolved at build time, never carried in by a device.
 
 ### Classes vs instances
 
@@ -84,20 +88,37 @@ register components in whichever order suits you.
 |---|---|---|
 | scheduler | class only | one is constructed **per device**, bound to that device's memory manager and queue |
 | allocator | class only | same |
+| provider | class only | registration names a type; constructing it is the caller's business |
 | router | class or instance | exactly one router per system, so sharing is safe |
-| provider | class or instance | a provider may need credentials or a seed DevQ knows nothing about |
 
 Registering a scheduler *instance* is refused, and this is a correctness
 constraint rather than a style rule. A shared scheduler object would
 merge the per-device queues that the multi-device federation exists to
 keep separate — a system that appears to work and is quietly wrong.
 
-Register a provider or router **instance** when it needs construction
-arguments DevQ cannot supply:
+**Providers are class-only for a different reason: registering and
+constructing are separate acts.** A registration establishes only that a
+name is legal and what type it denotes. Building the provider — with an
+API key, an endpoint, a seed, anything DevQ knows nothing about — is
+yours, and the object you build is passed to `add_device()` directly:
 
 ```python
-devq.register_provider("ionq", IonQProvider(api_key=KEY, region="us"))
+devq.register_provider("ionq", IonQProvider)
+devq.add_device(IonQProvider(api_key=KEY, region="us").get_device(qpu="aria-1"))
 ```
+
+So class-only costs nothing: **no credential ever has to reach the
+registry.** What it buys is that a registered name denotes exactly one
+thing. While providers could be registered as instances, an instance
+carried its own seed, and a workload spec asking for a different one had
+to be reconciled against it — a conflict with no correct answer, only a
+documented winner. With classes only, the seed is whatever the caller
+passed or whatever the spec asked for, decided once, with nothing to
+override it.
+
+Matching is on the **exact type**. Registering a base class does not
+bless its subclasses: a subclass is a different component with different
+behaviour, so it registers under its own name.
 
 A router registered as an instance keeps the weights you gave it; DevQ
 does not overwrite them from config.
@@ -543,8 +564,25 @@ Registering a provider makes it addressable **by name**, which is what
 lets devices be described in data rather than constructed in code:
 
 ```json
-{"provider": "ibm", "backend": {"backend_name": "FakeNairobiV2"}}
+{"provider": "ibm.simulated", "backend": {"backend_name": "FakeNairobiV2"}}
 ```
+
+**Provider names follow `vendor.variant` — a DevQ convention, not a
+rule.** Schedulers, allocators and routers are named for what they *do*
+(`packing`, `noise_graph`), so a bare name is already unambiguous. A
+provider is named for whose hardware it speaks to, and a bare vendor
+name quietly claims the whole vendor: once `ibm` means a simulator,
+there is no honest name left for real hardware, and a published workload
+spec reading `"provider": "ibm"` cannot tell a reader whether the
+numbers came off a machine or off Aer. DevQ therefore ships
+`devq.simulated` and documents `ibm.simulated` / `ibm.real`.
+
+The registry does not enforce this — any non-empty string is a legal
+name, and the dot carries no structural meaning (it is not parsed, split
+or namespaced; provider names never appear as config keys, where a dot
+*does* mean namespacing). A third party may name a provider whatever
+suits them. The convention is offered because the reproducibility
+problem it avoids is a real one, not because DevQ polices it.
 
 The `backend` object is handed to `get_device_from_spec(spec)`, whose
 default implementation splats it into `get_device(**spec)`. Override it
@@ -601,9 +639,12 @@ while the shipped system keeps working.
 
 The IBM provider is deliberately **not** seeded, since importing it
 pulls in `qiskit-ibm-runtime`, an optional dependency. Register it
-yourself if you need it addressable by name:
+yourself — this is required before attaching any device it builds, not
+merely to make it addressable by name in a spec:
 
 ```python
 from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
-devq.register_provider("ibm", IBMSimulatedProvider(seed=42))
+
+devq.register_provider("ibm.simulated", IBMSimulatedProvider)
+devq.add_device(IBMSimulatedProvider(seed=42).get_device("FakeNairobiV2"))
 ```

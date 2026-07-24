@@ -6,7 +6,7 @@ Registry — DevQ's name -> component resolution and extensibility surface.
 Every pluggable part of DevQ (scheduler, allocator, router, provider) is
 referred to elsewhere in the system by a short string: in config files
 ("scheduler": "packing"), in benchmark workload specs ("provider":
-"ibm"), and in qconfig output. The Registry is the single place that
+"ibm.simulated"), and in qconfig output. The Registry is the single place that
 maps those strings to classes, and the single gate every component —
 built-in or third-party — passes through.
 
@@ -59,15 +59,36 @@ been caught here. Registration performs:
                   exist, have at least two members, and agree with the
                   normalise_group recorded on each member KeySpec.
 
-INSTANCES vs CLASSES. Routers and providers may be registered as either
-a class (DevQ constructs it) or a ready-made instance (the user
-constructed it, perhaps with credentials or a seed DevQ knows nothing
-about). Schedulers and allocators are CLASS-ONLY, and this is a
-correctness constraint rather than a stylistic one: DevQ constructs one
-scheduler and one allocator PER DEVICE, each bound to that device's own
-MemoryManager and its own queue. A shared instance would silently merge
-the per-device queues that the multi-device federation exists to keep
-separate — a system that appears to work and is quietly wrong.
+INSTANCES vs CLASSES. Only ROUTERS may be registered as a ready-made
+instance; schedulers, allocators and providers are CLASS-ONLY. There is
+one router per system, so a pre-built router cannot be shared where it
+should not be.
+
+Schedulers and allocators are class-only as a correctness constraint
+rather than a stylistic one: DevQ constructs one scheduler and one
+allocator PER DEVICE, each bound to that device's own MemoryManager and
+its own queue. A shared instance would silently merge the per-device
+queues that the multi-device federation exists to keep separate — a
+system that appears to work and is quietly wrong.
+
+Providers are class-only for a different reason: REGISTRATION AND
+CONSTRUCTION ARE SEPARATE ACTS. A registration establishes only that a
+name is legal and what type it denotes. Constructing the provider —
+with a seed, an API key, an endpoint, whatever it needs — is the
+caller's business, and the object they build is passed to add_device()
+directly:
+
+    devq.register_provider("ionq", IonQProvider)
+    devq.add_device(IonQProvider(api_key=KEY).get_device(qpu="aria-1"))
+
+So class-only costs nothing: no credential ever has to reach the
+registry. What it BUYS is that a registered name denotes exactly one
+thing. When a provider could be registered as an instance, that
+instance carried its own seed, and a workload spec requesting a
+different one had to be reconciled against it — a conflict with no
+correct answer, only a documented winner. With classes only, the seed
+is whatever the caller passed or whatever the spec asked for, decided
+once, with nothing to override it.
 
 FREEZING. Once DevQ.build() has consumed the registry, it is frozen and
 further registration raises. Registering after the maps have been read
@@ -183,7 +204,7 @@ def _build_kinds():
             base             = BaseProvider,
             init_params      = ("seed",),
             scopes           = frozenset({"global", "common"}),
-            accepts_instance = True,
+            accepts_instance = False,
             methods          = {
                 "get_device_from_spec": ("spec",),
                 "execute":              ("circuit", "v2p_map", "shots", "device"),
@@ -593,6 +614,29 @@ class Registry:
         if kind not in self._entries:
             raise RegistryError(f"unknown component kind '{kind}'.")
         return list(self._entries[kind])
+
+    def is_registered(self, kind, cls):
+        '''
+        Whether `cls` is registered under this kind, by TYPE rather than
+        by name.
+
+        Used by add_device() to enforce that every attached device came
+        from a registered provider. The question there is "is this
+        component known to the system", not "what is it called": the
+        registered name is an ADDRESSING concern belonging to specs and
+        config files, and the kernel — which deals in objects from the
+        moment a device is attached — must not start resolving names.
+        So this deliberately returns a bool and not the name it matched.
+
+        Matching is on the exact type, not a subclass relationship. A
+        subclass is a different component with different behaviour, and
+        registering a base class must not silently bless every
+        derivative of it.
+        '''
+        if kind not in self._entries:
+            raise RegistryError(f"unknown component kind '{kind}'.")
+        return any(entry is cls or type(entry) is cls
+                   for entry in self._entries[kind].values())
 
     def kinds(self):
         '''All component kinds this registry knows about.'''

@@ -135,6 +135,7 @@ def check_determinism():
     def run_once():
         provider = IBMSimulatedProvider(seed=42)
         session = (DevQ()
+                   .register_provider("ibm.simulated", IBMSimulatedProvider)
                    .add_device(provider.get_device(backend_name="FakeNairobiV2"),
                                name="nairobi"))
         buf = io.StringIO()
@@ -223,9 +224,9 @@ def check_spec_runner():
         "name": "local_verify",
         "seed": 42,
         "devices": [
-            {"id": "sim", "provider": "devq",
+            {"id": "sim", "provider": "devq.simulated",
              "backend": {"kind": "random", "num_qubits": 7}},
-            {"id": "nairobi", "provider": "ibm",
+            {"id": "nairobi", "provider": "ibm.simulated",
              "backend": {"backend_name": "FakeNairobiV2"}},
         ],
         "jobs": [
@@ -244,7 +245,7 @@ def check_spec_runner():
         check(True, "spec file loads and validates")
 
         dq = DevQ()
-        dq.register_provider("ibm", IBMSimulatedProvider)
+        dq.register_provider("ibm.simulated", IBMSimulatedProvider)
         with contextlib.redirect_stdout(io.StringIO()):
             shell, meta = build_session(spec, dq, handle.name)
             jobs = submit_jobs(shell, spec, handle.name)

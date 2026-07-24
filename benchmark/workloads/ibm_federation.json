@@ -4,21 +4,21 @@
     "devices": [
         {
             "id": "nairobi",
-            "provider": "ibm",
+            "provider": "ibm.simulated",
             "backend": {
                 "backend_name": "FakeNairobiV2"
             }
         },
         {
             "id": "lagos",
-            "provider": "ibm",
+            "provider": "ibm.simulated",
             "backend": {
                 "backend_name": "FakeLagosV2"
             }
         },
         {
             "id": "sim",
-            "provider": "devq",
+            "provider": "devq.simulated",
             "backend": {
                 "kind": "random",
                 "num_qubits": 7

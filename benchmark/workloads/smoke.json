@@ -4,7 +4,7 @@
     "devices": [
         {
             "id": "sim",
-            "provider": "devq",
+            "provider": "devq.simulated",
             "backend": {
                 "kind": "random",
                 "num_qubits": 7
@@ -12,7 +12,7 @@
         },
         {
             "id": "linear",
-            "provider": "devq",
+            "provider": "devq.simulated",
             "backend": {
                 "kind": "linear",
                 "num_qubits": 7

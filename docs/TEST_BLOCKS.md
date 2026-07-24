@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 45 sanity blocks in `run_tests.py`, covering
+Specification for the 46 sanity blocks in `run_tests.py`, covering
 Phases 0–5.1 plus the component registry.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 45 blocks, one line each
+python run_tests.py              # all 46 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -1003,6 +1003,34 @@ Deliberately untested: the `(score, index)` tie-break in `select()`.
 Candidates arrive in index order and `min()` is stable, so removing the
 index term changes nothing observable — a test for it could not fail.
 
+
+### `provider_registration`
+
+Asserts that `add_device()` refuses a device whose provider class is not
+registered: a built-in attaches with no registration line, an
+unregistered `IBMSimulatedProvider` device is refused with the class
+named, registering the **class** admits a device built by an instance
+the caller constructed themselves, a **subclass** of a registered
+provider is still refused, and a provider **instance** cannot be
+registered at all.
+
+Exists because `is_registered()` returning `True` unconditionally
+survived all 45 preceding blocks. Every other block registers its
+providers correctly, so a gate that never rejects is indistinguishable
+from one that works — only an assertion on the REFUSAL pins it.
+
+The subclass case is asserted rather than assumed: matching is on exact
+type, so registering a base class must not bless its derivatives. The
+sibling block `provider_global_key` is the standing proof that a
+subclass can behave differently from its base.
+
+Two of this block's assertions were themselves self-satisfying when
+first written. `check(False, ...)` inside a `try` whose `except Exception`
+followed caught the `AssertionError` that `check()` raises and reported
+it as a pass, so re-allowing provider instances survived. The refusal is
+now captured into a variable outside the check. Every other `check(False)`
+in the suite catches a specific exception type and is not exposed to
+this.
 
 ### `device_identity`
 

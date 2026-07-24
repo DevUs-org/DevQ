@@ -45,7 +45,7 @@ lets them run as plugins in one system on identical workloads.
 | `config/` | `ConfigLoader` — the four-level configuration cascade |
 | `shell/` | QShell and the JobSpec parser |
 | `circuits/` | Circuit representation, QASM loading, execution futures |
-| `run_tests.py` | The whole test suite — 45 blocks, no pytest |
+| `run_tests.py` | The whole test suite — 46 blocks, no pytest |
 | `benchmark/runner.py` | Run a workload spec, or the whole component matrix, into a run directory |
 | `benchmark/workloads/` | Runnable example specs, also used as test fixtures — see `docs/WORKLOADS.md` |
 | `test_results/` | Output of those specs from the last test run, kept for inspection. Gitignored, overwritten, safe to delete |
@@ -226,11 +226,20 @@ something, the design has been misunderstood — re-read
 Rules the registry enforces at registration time, before anything is
 constructed:
 
-- **Schedulers and allocators must be registered as CLASSES**, never
-  instances. DevQ constructs one per device, bound to that device's own
-  memory manager and queue; a shared instance would merge state across
-  devices. Routers and providers may be either, since there is one router
-  per system and a provider may need credentials DevQ cannot supply.
+- **Schedulers, allocators and providers must be registered as CLASSES**,
+  never instances. For schedulers and allocators this is a correctness
+  constraint: DevQ constructs one per device, bound to that device's own
+  memory manager and queue, and a shared instance would merge state
+  across devices. For providers it is because registering and
+  constructing are separate acts — a registration names a type, and you
+  construct the provider yourself with any seed or credentials it needs,
+  then attach the device it built. Only ROUTERS may be an instance, since
+  there is exactly one per system.
+- **A provider must be registered before a device it built is attached.**
+  `add_device()` refuses a device whose provider class is unregistered.
+  `DevQSimulatedProvider` is a built-in; everything else, including
+  `IBMSimulatedProvider`, is one registration line. Matching is on the
+  exact type, so a subclass registers under its own name.
 - **Plugin config keys must be namespaced** — `mine.window`, not
   `window`. Un-namespaced keys are reserved for DevQ core.
 - **Scope is restricted by kind.** Schedulers and allocators may declare
@@ -284,9 +293,12 @@ mean and how scores are computed — is in
 any result.
 
 A headless benchmark runner with a declarative workload spec and a
-structured event log is the next phase of work and does not exist yet;
-check `docs/ROADMAP.md` for current status before assuming a `qbench`
-command is available.
+structured event log **exists** — `benchmark/runner.py`, see
+[`docs/WORKLOADS.md`](docs/WORKLOADS.md). It is the better tool for a
+matrix comparison than driving shells by hand. There is **no `qbench`
+shell command**; that is a later phase, so check
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for current status before assuming
+one is available.
 
 ---
 
@@ -362,14 +374,15 @@ Blocks record *what they proved*, not merely that they passed. Use
 |---|---|
 | Config value ignored, warning about an unknown key | Plugin key not namespaced, or its component not registered yet |
 | `register_*` raises | Called after `build()` / `start()`; the registry is frozen |
-| Scheduler or allocator rejected at registration | Passed an instance; these must be classes |
+| Scheduler, allocator or provider rejected at registration | Passed an instance; only routers may be one |
+| `add_device` raises about an unregistered provider | Its provider class was never registered. Register the CLASS first, then attach the device you built — a subclass needs its own registration |
 | Plugin appears registered but never runs | Config file does not name it, or names a different key |
 | Job stuck in `WAITING` | Resources unavailable now — distinct from `REJECTED`, which is terminal |
 | Noise numbers differ from documented reference values | `qiskit-ibm-runtime` version differs from the pinned one |
 | Backend not found | Missing the `V2` suffix on an IBM fake backend name |
 | Results differ between identical runs | Provider constructed without a seed |
 | Event logs differ between identical seeded runs | Expected — completion order belongs to the executor. DevQ guarantees decision determinism, not completion-order determinism. Compare on `seq`, exclude `*_at` |
-| Spec's seed appears to be ignored | A provider *instance* was registered with its own seed — instances win over specs, and the run warns. Register the class instead |
+| Spec's seed appears to be ignored | Not possible via registration — providers are classes, so the spec's seed is the only one. Check that the device was built by the spec rather than attached with `add_device()`, which uses whatever seed you constructed the provider with |
 | Log flooded with `cycle_end` records | The drain loop is stepping while futures are merely in flight. Step only when a cycle can make progress |
 | No `results/` after running the suite | Expected. Tests write to `test_results/` (shipped specs, overwritten each run) or a temp directory (everything else). `results/` is yours, from `benchmark/runner.py` |
 | `run_tests.py` leaves no JSONL behind | By design — its runner block builds a spec in a temp directory and deletes it. Run `benchmark/workloads/smoke.json` to see real output |

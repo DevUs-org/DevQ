@@ -68,6 +68,20 @@ def ibm_provider(seed=SEED):
     return IBMSimulatedProvider(seed=seed)
 
 
+def devq_with_ibm(**kwargs):
+    '''
+    A DevQ with the IBM provider registered, for blocks that build a
+    session directly instead of through session().
+
+    add_device() refuses a device whose provider class is not
+    registered, and IBM is not a built-in — so every entry point that
+    attaches an IBM device has to declare it. This exists so that fact
+    lives in one place rather than in a dozen blocks.
+    '''
+    return DevQ(**kwargs).register_provider("ibm.simulated",
+                                            IBMSimulatedProvider)
+
+
 def session(config=None, devices=None, seed=SEED):
     '''
     Build a shell for a fresh session.
@@ -75,8 +89,8 @@ def session(config=None, devices=None, seed=SEED):
     Args:
         config:  global config filename in config_examples/, or None
         devices: list of specs, each one of
-                     ("devq", kind, num_qubits, name, device_config)
-                     ("ibm",  backend_name,     name, device_config)
+                     ("devq.simulated", kind, num_qubits, name, device_config)
+                     ("ibm.simulated",  backend_name,   name, device_config)
                  name and device_config may be None.
         seed:    provider seed; None for unseeded
 
@@ -88,8 +102,16 @@ def session(config=None, devices=None, seed=SEED):
     dq      = DevQ(config_path=path)
     ibm     = ibm_provider(seed)
 
+    # add_device() refuses a device whose provider class is not
+    # registered. DevQSimulatedProvider is a built-in; IBM is not, so
+    # every session declares it. Registering unconditionally keeps this
+    # helper's behaviour independent of which devices a block happens to
+    # ask for — a block that adds an IBM device later must not start
+    # failing because the first device was a DevQ one.
+    dq.register_provider("ibm.simulated", IBMSimulatedProvider)
+
     for spec in devices:
-        if spec[0] == "devq":
+        if spec[0] == "devq.simulated":
             _, kind, nq, name, dcfg = spec
             dev = DevQSimulatedProvider(seed=seed).get_device(kind, nq)
         else:
@@ -103,9 +125,9 @@ def session(config=None, devices=None, seed=SEED):
 def three_device(config="router_only.config.json", seed=SEED, d1_config=None):
     '''The standard federation used by most blocks — mirrors example.py.'''
     return session(config, [
-        ("devq", "random", 7, None, None),
-        ("ibm", "FakeNairobiV2", "nairobi", d1_config),
-        ("ibm", "FakeLagosV2",   "lagos",   None),
+        ("devq.simulated", "random", 7, None, None),
+        ("ibm.simulated", "FakeNairobiV2", "nairobi", d1_config),
+        ("ibm.simulated", "FakeLagosV2",   "lagos",   None),
     ], seed)
 
 
@@ -566,7 +588,7 @@ def block_zero_weight_fallback():
 def block_single_device_ibm():
     '''A one-device session works with no routing decisions to make'''
     sh  = session("router_only.config.json",
-                  [("ibm", "FakeNairobiV2", None, None)])
+                  [("ibm.simulated", "FakeNairobiV2", None, None)])
     out = run(sh, ["qdevices", "qconfig", "qerrors q d0", "qtopology d0",
                    f"qrun {BELL}", "qmap 1", "qps", "qmem"])
 
@@ -583,14 +605,14 @@ def block_single_device_ibm():
 def block_single_device_named():
     '''Naming works with one device, and the index still resolves'''
     sh  = session("router_only.config.json",
-                  [("ibm", "FakeNairobiV2", "solo", None)])
+                  [("ibm.simulated", "FakeNairobiV2", "solo", None)])
     out = run(sh, ["qdevices", "qerrors q solo", f"qrun {BELL} --exec=solo"])
     expect(out, "solo (d0)")
     check("solo" in device_of(out, 1),
           f"job routed to the named sole device, got {device_of(out, 1)}")
 
     sh2  = session("router_only.config.json",
-                   [("ibm", "FakeNairobiV2", "solo", None)])
+                   [("ibm.simulated", "FakeNairobiV2", "solo", None)])
     out2 = run(sh2, [f"qrun {BELL} --exec=d0"])
     check(mapping_of(out2, 1) == mapping_of(out, 1),
           "--exec=solo and --exec=d0 produce the same mapping")
@@ -599,7 +621,7 @@ def block_single_device_named():
 def block_single_device_batch():
     '''Batch submission and packing on a single device'''
     sh  = session("router_only.config.json",
-                  [("ibm", "FakeNairobiV2", None, None)])
+                  [("ibm.simulated", "FakeNairobiV2", None, None)])
     out = run(sh, [f"qsubmit {BELL} {BELL}", "qrunpack", "qps"])
     # both bells packed onto one device in the same cycle, disjoint qubits
     m1, m2 = mapping_of(out, 1), mapping_of(out, 2)
@@ -611,14 +633,14 @@ def block_single_device_batch():
 def block_single_device_rejection():
     '''Rejection on a single device names that device in the reason'''
     sh  = session("router_only.config.json",
-                  [("ibm", "FakeLagosV2", "lagos", None)])
+                  [("ibm.simulated", "FakeLagosV2", "lagos", None)])
     out = run(sh, [f"qrun {BELL} --max-qubit-error=0.03", "qps"])
     expect(out, "REJECTED")
 
 
 def block_single_device_devq_provider():
     '''The mock provider alone — no Qiskit involved in execution'''
-    sh  = session(None, [("devq", "fully_connected", 5, "mock", None)])
+    sh  = session(None, [("devq.simulated", "fully_connected", 5, "mock", None)])
     out = run(sh, ["qdevices", "qtopology d0", f"qrun {BELL}", "qps"])
     expect(out, "mock (d0)", "DevQSimulatedProvider", "FINISHED")
 
@@ -651,7 +673,7 @@ def block_plugin_matrix():
             combo = f"{sch}/{alloc}/{rt}"
             try:
                 ibm = ibm_provider()
-                sh  = (DevQ(config_path=path)
+                sh  = (devq_with_ibm(config_path=path)
                        .add_device(ibm.get_device("FakeNairobiV2"), name="nairobi")
                        .add_device(ibm.get_device("FakeLagosV2"),   name="lagos")
                        .build())
@@ -852,7 +874,7 @@ def block_combined_thresholds():
 def block_lifecycle_waiting():
     '''WAITING is a distinct, reachable state for transient contention'''
     sh  = session("router_only.config.json",
-                  [("ibm", "FakeNairobiV2", "solo", None)])
+                  [("ibm.simulated", "FakeNairobiV2", "solo", None)])
 
     # Occupy the pool so allocation must fail. Routing still succeeds —
     # feasible() ignores pool state — so the job is contended, not
@@ -879,7 +901,7 @@ def block_lifecycle_waiting():
 def block_lifecycle_failed():
     '''A provider error yields FAILED and still returns the qubits'''
     sh  = session("router_only.config.json",
-                  [("ibm", "FakeNairobiV2", "solo", None)])
+                  [("ibm.simulated", "FakeNairobiV2", "solo", None)])
     ctx = sh.kernel.contexts[0]
 
     def failing_execute(circuit, v2p_map, shots, device):
@@ -914,7 +936,7 @@ def block_wedged_provider_timeout():
         def result(self): return None
 
     sh  = session("router_only.config.json",
-                  [("ibm", "FakeNairobiV2", "solo", None)])
+                  [("ibm.simulated", "FakeNairobiV2", "solo", None)])
     ctx = sh.kernel.contexts[0]
     ctx.device.execute = lambda circuit, v2p_map, shots: NeverResolves()
 
@@ -989,7 +1011,7 @@ def block_config_validation():
             # Construction emits the warning, so capture build() itself.
             buf = BoundedBuffer()
             with _capture(buf):
-                shell = (DevQ(config_path=path)
+                shell = (devq_with_ibm(config_path=path)
                          .add_device(ibm_provider().get_device("FakeNairobiV2"))
                          .build())
                 shell.onecmd("qconfig")
@@ -1019,7 +1041,12 @@ def block_provider_global_key_rejected():
     provider = OversteppingProvider(seed=SEED)
     buf = BoundedBuffer()
     with _capture(buf):
+        # Registered under its OWN name, not inherited from its base:
+        # registration matches the exact type, because a subclass is a
+        # different component with different behaviour — as this one
+        # demonstrates.
         shell = (DevQ(config_path=CONFIG + "router_only.config.json")
+                 .register_provider("ibm.overstepping", OversteppingProvider)
                  .add_device(provider.get_device("FakeNairobiV2"))
                  .build())
         shell.onecmd("qconfig")
@@ -1061,7 +1088,7 @@ def block_mock_topologies():
 
     # And each kind actually runs a job end to end.
     for kind, nq in (("linear", 5), ("grid", 4), ("fully_connected", 5)):
-        sh  = session(None, [("devq", kind, nq, None, None)])
+        sh  = session(None, [("devq.simulated", kind, nq, None, None)])
         out = run(sh, [f"qrun {BELL}", "qps"])
         check("FINISHED" in out, f"a job completed on a {kind} mock device")
 
@@ -1516,8 +1543,8 @@ def block_shipped_workloads():
             # the ones DevQ ships so every shipped spec is runnable here.
             providers = {}
             for device in spec["devices"]:
-                if device["provider"] == "ibm":
-                    providers["ibm"] = IBMSimulatedProvider
+                if device["provider"] == "ibm.simulated":
+                    providers["ibm.simulated"] = IBMSimulatedProvider
 
             out = os.path.join(keep, filename.replace(".json", ""))
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1708,9 +1735,9 @@ def block_benchmark_runner():
     with open(spec_path, "w") as handle:
         json.dump({
             "name": "block", "seed": SEED,
-            "devices": [{"id": "alpha", "provider": "devq",
+            "devices": [{"id": "alpha", "provider": "devq.simulated",
                          "backend": {"kind": "fully_connected", "num_qubits": 7}},
-                        {"id": "bravo", "provider": "devq",
+                        {"id": "bravo", "provider": "devq.simulated",
                          "backend": {"kind": "linear", "num_qubits": 7}}],
             "jobs": [{"circuit": BELL, "repeat": 2}, {"circuit": GHZ}],
         }, handle)
@@ -1784,7 +1811,7 @@ def block_benchmark_runner():
         with open(reject_path, "w") as handle:
             json.dump({
                 "name": "rejects", "seed": SEED,
-                "devices": [{"id": "solo", "provider": "devq",
+                "devices": [{"id": "solo", "provider": "devq.simulated",
                              "backend": {"kind": "linear", "num_qubits": 7}}],
                 "jobs": [{"circuit": BELL, "max_qubit_error": 0.0000001}],
             }, handle)
@@ -1857,7 +1884,7 @@ def block_workload_spec():
 
     GOOD = {
         "name": "block", "seed": SEED,
-        "devices": [{"id": "alpha", "provider": "devq",
+        "devices": [{"id": "alpha", "provider": "devq.simulated",
                      "backend": {"kind": "fully_connected", "num_qubits": 7}}],
         "jobs": [{"circuit": BELL}],
     }
@@ -1918,7 +1945,12 @@ def block_workload_spec():
         check("not registered" in str(exc),
               "unregistered provider is rejected, naming what is available")
 
-    # SEED RESOLUTION — the four cases that differ.
+    # SEED RESOLUTION — two cases, because providers are CLASS-ONLY.
+    # There used to be four: a registered instance could carry its own
+    # seed and the parser had to arbitrate against the spec's. Nothing
+    # can hold a competing seed now, so the conflict cases are not
+    # merely untested, they are unrepresentable — which the instance
+    # rejection below pins.
     def resolved(register, spec_seed):
         spec = json.loads(json.dumps(GOOD))
         if spec_seed is None:
@@ -1933,20 +1965,29 @@ def block_workload_spec():
         return meta["devices"][0], meta["warnings"]
 
     d, w = resolved(DevQSimulatedProvider, 7)
-    check(d["seed_effective"] == 7 and not w,
-          "a registered CLASS takes the spec's seed with no conflict")
+    check(d["seed_effective"] == 7 and d["seed_source"] == "spec" and not w,
+          "a registered class takes the spec's seed, with no warning")
 
-    d, w = resolved(DevQSimulatedProvider(), 7)
-    check(d["seed_effective"] == 7 and not w,
-          "an UNSEEDED instance accepts the spec's seed")
+    d, w = resolved(DevQSimulatedProvider, None)
+    check(d["seed_effective"] is None and d["seed_source"] == "unseeded"
+          and not w,
+          "no spec seed means the provider is constructed unseeded")
 
-    d, w = resolved(DevQSimulatedProvider(seed=99), 7)
-    check(d["seed_effective"] == 99 and w,
-          f"a SEEDED instance overrides the spec and warns, got {d['seed_effective']}")
+    # The reason the conflict cases are gone: an instance cannot be
+    # registered at all. A caller wanting their own seed constructs the
+    # provider and attaches its device with add_device() instead.
+    # Captured outside the check, so that check()'s own AssertionError
+    # cannot be swallowed by the except clause and read as a pass.
+    instance_refused = None
+    try:
+        DevQ().register_provider("p", DevQSimulatedProvider(seed=99))
+    except Exception as exc:
+        instance_refused = str(exc)
 
-    d, w = resolved(DevQSimulatedProvider(seed=99), None)
-    check(d["seed_effective"] == 99 and not w,
-          "a seeded instance with no spec seed is not a conflict")
+    check(instance_refused is not None
+          and "instance" in instance_refused.lower(),
+          "a provider INSTANCE is refused at registration, so no "
+          "registered provider can carry a seed of its own")
 
     # set_seed must reproduce a freshly constructed provider, not merely
     # set an attribute — devq builds its RNG in __init__, so a provider
@@ -1972,7 +2013,7 @@ def block_workload_spec():
     # END TO END: repeat:N must create N DISTINCT jobs, not one job run
     # N times — they queue, route and schedule independently.
     spec = json.loads(json.dumps(GOOD))
-    spec["devices"].append({"id": "bravo", "provider": "devq",
+    spec["devices"].append({"id": "bravo", "provider": "devq.simulated",
                             "backend": {"kind": "linear", "num_qubits": 7}})
     spec["jobs"] = [{"circuit": BELL, "repeat": 3},
                     {"circuit": GHZ, "repeat": 2, "no_exec_on": ["alpha"]}]
@@ -2177,7 +2218,7 @@ def block_router_scoring():
         return
 
     with contextlib.redirect_stdout(io.StringIO()):
-        shell = DevQ().add_devices(devices).build()
+        shell = devq_with_ibm().add_devices(devices).build()
     contexts = shell.kernel.contexts
 
     circuit = load_qasm(GHZ)
@@ -2294,6 +2335,82 @@ def block_router_scoring():
           "a router without scores returns None from explain()")
 
 
+def block_provider_registration_enforced():
+    '''No device enters DevQ from an unregistered provider'''
+    # MUTATION WITNESS. is_registered() returning True unconditionally
+    # survived all 45 blocks before this one existed: every other block
+    # registers its providers correctly, so a gate that never rejects is
+    # indistinguishable from one that works. Assert the REFUSAL, which
+    # is the only thing that pins the gate open.
+    import io, contextlib
+    from devq import DevQ, DevQError
+    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+
+    try:
+        from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    except ImportError:
+        check(True, "qiskit not installed - registration block skipped")
+        return
+
+    ibm_device = IBMSimulatedProvider(seed=SEED).get_device("FakeNairobiV2")
+
+    # The built-in attaches with no registration line at all.
+    with contextlib.redirect_stdout(io.StringIO()):
+        DevQ().add_device(DevQSimulatedProvider(seed=SEED)
+                          .get_device("random", 5)).build()
+    check(True, "a built-in provider's device attaches without registration")
+
+    # IBM is not a built-in, so its device is refused.
+    try:
+        DevQ().add_device(ibm_device)
+        check(False, "an unregistered provider's device is refused")
+    except DevQError as exc:
+        check("not registered" in str(exc)
+              and "IBMSimulatedProvider" in str(exc),
+              "an unregistered provider's device is refused, naming the class")
+
+    # Registering the CLASS admits a device built by an instance the
+    # caller constructed themselves — the credentialed-provider path.
+    dq = DevQ()
+    dq.register_provider("ibm.simulated", IBMSimulatedProvider)
+    with contextlib.redirect_stdout(io.StringIO()):
+        dq.add_device(IBMSimulatedProvider(seed=SEED)
+                      .get_device("FakeLagosV2")).build()
+    check(True, "registering the class admits a hand-constructed instance")
+
+    # Matching is on the EXACT type. A subclass is a different
+    # component — this block's own OversteppingProvider sibling proves
+    # a subclass can behave differently — so registering the base must
+    # not bless it.
+    class SubclassedProvider(IBMSimulatedProvider):
+        pass
+
+    dq = DevQ()
+    dq.register_provider("ibm.simulated", IBMSimulatedProvider)
+    try:
+        dq.add_device(SubclassedProvider(seed=SEED)
+                      .get_device("FakeNairobiV2"))
+        check(False, "a subclass of a registered provider is still refused")
+    except DevQError:
+        check(True, "a subclass of a registered provider is still refused")
+
+    # A provider INSTANCE cannot be registered at all, which is what
+    # removes the spec/instance seed conflict rather than resolving it.
+    # The refusal is captured OUTSIDE the check: a bare `except
+    # Exception` around a check() would catch the AssertionError that
+    # check() itself raises, turning a real failure into a pass.
+    instance_refused = None
+    try:
+        DevQ().register_provider("x", IBMSimulatedProvider(seed=SEED))
+    except Exception as exc:
+        instance_refused = str(exc)
+
+    check(instance_refused is not None
+          and "instance" in instance_refused.lower(),
+          "a provider instance is refused at registration, so no registered "
+          "provider can carry a seed of its own")
+
+
 def block_device_identity():
     '''index/name/kind are three distinct fields, stamped once at attach'''
     # M3 REGRESSION GUARD. Dropping the alias in DevQ.build()'s
@@ -2352,8 +2469,8 @@ def block_same_kind_device_isolation():
 
     prov = IBMSimulatedProvider(seed=SEED)
     devs = [prov.get_device(backend_name="FakeNairobiV2") for _ in range(4)]
-    dq = DevQ().add_devices([(devs[0], "CustomName"), (devs[1], "CustomName2"),
-                             devs[2], (devs[3], "CustomName3")])
+    dq = devq_with_ibm().add_devices([(devs[0], "CustomName"), (devs[1], "CustomName2"),
+                                      devs[2], (devs[3], "CustomName3")])
     with contextlib.redirect_stdout(io.StringIO()):
         dq.build()
 
@@ -2397,7 +2514,7 @@ def block_component_labels():
 def block_shell_input_handling():
     '''Malformed or empty commands are handled without crashing'''
     sh  = session("router_only.config.json",
-                  [("ibm", "FakeNairobiV2", None, None)])
+                  [("ibm.simulated", "FakeNairobiV2", None, None)])
 
     out = run(sh, [
         "qrunpack",              # nothing queued
@@ -2429,7 +2546,7 @@ def block_shell_input_handling():
 def block_many_device_federation():
     '''Routing and indexing hold beyond the usual three devices'''
     ibm = ibm_provider()
-    sh  = (DevQ(config_path=CONFIG + "router_only.config.json")
+    sh  = (devq_with_ibm(config_path=CONFIG + "router_only.config.json")
            .add_devices([
                (ibm.get_device("FakeNairobiV2"), "nairobi"),
                (ibm.get_device("FakeLagosV2"),   "lagos"),
@@ -2496,6 +2613,7 @@ BLOCKS = [
     ("workload_spec",            block_workload_spec),
     ("event_log",                block_event_log),
     ("router_scoring",           block_router_scoring),
+    ("provider_registration",    block_provider_registration_enforced),
     ("device_identity",          block_device_identity),
     ("same_kind_isolation",      block_same_kind_device_isolation),
 ]

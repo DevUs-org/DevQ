@@ -24,23 +24,27 @@ them is silent. It is UNKNOWN keys — ones carrying no meaning the
 parser can act on — that are refused. Every error names the offending
 key and lists what was expected.
 
-SEED RESOLUTION. A spec's `seed` is a DEFAULT, not a guarantee. When a
-provider is registered as a class, the parser constructs it with the
-spec's seed and there is nothing to conflict. When a ready-made
-INSTANCE is registered, the instance's own seed wins and the parser
-warns — a collaborator who takes someone else's spec and pins a
-different seed in their own code is expressing intent, and should not
-have to edit a shared file to do it. The log records seed_requested,
-seed_effective and seed_source, so an artifact never claims a seed that
-did not run.
+SEED RESOLUTION. A spec's `seed` is simply the seed. Providers are
+registered as CLASSES, so the parser constructs each one here and
+passes the spec's seed to it; if the spec gives none, the provider is
+constructed unseeded. Nothing pre-existing can hold a competing seed,
+so there is no conflict to arbitrate.
 
-  provider registered as   spec seed   effective        conflict?
-  ----------------------   ---------   --------------   ---------
-  class                    absent      unseeded         no
-  class                    42          42               no
-  instance, seed=None      42          42 (set_seed)    no
-  instance, seed=99        42          99  ← code wins  WARNED
-  instance, seed=99        absent      99               no
+  spec seed   effective   source
+  ---------   ---------   --------
+  absent      unseeded    unseeded
+  42          42          spec
+
+This used to be a five-row table with a documented winner, because a
+provider could be registered as a ready-made instance carrying its own
+seed. Class-only registration removed the ambiguity rather than
+resolving it — see docs/REGISTRY.md. A caller who wants a seed the spec
+does not name constructs the provider themselves and attaches its
+device with add_device(), which is the same path a credentialed
+provider takes.
+
+The log still records seed_requested, seed_effective and seed_source,
+so an artifact never claims a seed that did not run.
 '''
 
 import json
@@ -230,61 +234,27 @@ def validate_spec(spec, source="<spec>"):
 
 def resolve_seed(provider_entry, spec_seed, device_id):
     '''
-    Decide the effective seed for one device's provider.
+    Construct one device's provider with the spec's seed.
 
     Returns (provider_instance, seed_effective, seed_source, warning).
-    warning is None or a string the caller should surface and record.
+    The warning slot is kept — and always None — because callers record
+    it in the log header, and there is no longer anything that can
+    conflict.
 
-    See the table in this module's docstring. The short version: a
-    registered CLASS is constructed with the spec's seed; a registered
-    INSTANCE keeps its own seed if it has one, because a collaborator
-    pinning a seed in code is expressing intent about a spec they may
-    not own.
+    THIS USED TO BE A NEGOTIATION. Providers could be registered as
+    ready-made instances, so an instance might carry a seed of its own
+    while the spec asked for a different one, and the parser had to pick
+    a winner and warn about it. Providers are now CLASS-ONLY (see
+    docs/REGISTRY.md), so nothing exists to hold a competing seed at the
+    moment a spec is read: DevQ constructs the provider here, with this
+    seed, or unseeded if the spec gave none. A caller who wants a
+    different seed constructs the provider themselves and attaches the
+    device with add_device().
     '''
-    # Registered as a class — construct it. No conflict is possible
-    # because nothing existed to hold a competing seed.
-    if isinstance(provider_entry, type):
-        instance = (provider_entry(seed=spec_seed) if spec_seed is not None
-                    else provider_entry())
-        source = "spec" if spec_seed is not None else "unseeded"
-        return instance, spec_seed, source, None
-
-    instance = provider_entry
-    own_seed = getattr(instance, "seed", None)
-
-    # Instance carries a seed AND the spec asks for a different one:
-    # code wins, loudly.
-    if own_seed is not None and spec_seed is not None and own_seed != spec_seed:
-        warning = (
-            f"[Spec] Device '{device_id}': spec requests seed {spec_seed}, "
-            f"but the registered provider instance was constructed with "
-            f"seed={own_seed}, which takes precedence. Recording effective "
-            f"seed {own_seed}. Register the provider class instead of an "
-            f"instance if the spec's seed should apply."
-        )
-        return instance, own_seed, "provider instance (spec overridden)", warning
-
-    if own_seed is not None:
-        return instance, own_seed, "provider instance", None
-
-    # Instance was constructed unseeded and the spec supplies one. Safe
-    # to apply: set_seed's contract is that no device has been built
-    # yet, which holds because the parser builds them next.
-    if spec_seed is not None:
-        instance.set_seed(spec_seed)
-        applied = getattr(instance, "seed", None)
-        warning = None
-        if applied != spec_seed:
-            warning = (
-                f"[Spec] Device '{device_id}': provider "
-                f"{type(instance).__name__} did not apply the spec's seed "
-                f"({spec_seed}); its seed is {applied!r}. The provider "
-                f"probably does not implement set_seed(). Results will not "
-                f"be reproducible."
-            )
-        return instance, applied, "spec", warning
-
-    return instance, None, "unseeded", None
+    instance = (provider_entry(seed=spec_seed) if spec_seed is not None
+                else provider_entry())
+    source = "spec" if spec_seed is not None else "unseeded"
+    return instance, spec_seed, source, None
 
 
 def build_session(spec, registry_owner, source="<spec>"):

@@ -28,11 +28,17 @@ Attaching multiple backends is one chained call per device:
 
 ```python
 DevQ(config_path="~/devq.config.json") \
+    .register_provider("ibm.simulated", IBMSimulatedProvider) \
     .add_device(DevQSimulatedProvider().get_device("random", 7)) \
     .add_device(ibm.get_device("FakeNairobiV2")) \
     .add_device(ibm.get_device("FakeLagosV2"), "~/lagos.config.json") \
     .start()
 ```
+
+A provider must be registered before a device it built can be attached.
+`DevQSimulatedProvider` ships registered; everything else is one line.
+Register the **class** — constructing it, with a seed or credentials or
+anything else DevQ knows nothing about, stays yours.
 
 `example.py` is a runnable reference session; `run_tests.py` verifies the
 whole plugin matrix (`--list` to see the blocks, `-c` to see every
@@ -159,7 +165,7 @@ devq = DevQ(config_path="my.config.json")
 devq.register_scheduler("mine", MyScheduler)
 devq.register_allocator("mine", MyAllocator)
 devq.register_router("mine",    MyRouter)
-devq.register_provider("ionq",  IonQProvider(api_key=KEY))
+devq.register_provider("ionq",  IonQProvider)
 devq.start()
 ```
 

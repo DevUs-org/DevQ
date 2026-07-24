@@ -59,12 +59,15 @@ from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 from benchmark.runner import run
 
 run("benchmark/workloads/ibm_federation.json",
-    register_providers={"ibm": IBMSimulatedProvider})
+    register_providers={"ibm.simulated": IBMSimulatedProvider})
 ```
 
-Registering the CLASS rather than an instance lets the spec's seed
-apply. A pre-constructed instance carrying its own seed wins over the
-spec and the run warns — see the seed table in `docs/REGISTRY.md`.
+Providers are registered as **classes**, so the runner constructs each
+one with the spec's seed — or unseeded if the spec names none. Nothing
+pre-existing can hold a competing seed, so there is no conflict to
+arbitrate and no override warning. A caller who wants a seed the spec
+does not name constructs the provider themselves and attaches its device
+with `add_device()` instead.
 
 Full schema, seed resolution and the strictness rules:
 [`REGISTRY.md`](REGISTRY.md).

@@ -83,10 +83,22 @@ from providers.devq.devq_simulated_provider import DevQSimulatedProvider
 # breaks at once and loudly, rather than the plugin path quietly rotting
 # while the shipped system keeps working.
 #
+# PROVIDER NAMES ARE vendor.variant BY CONVENTION. Schedulers,
+# allocators and routers are named for what they DO ("packing",
+# "noise_graph"), so a bare name is already unambiguous. A provider is
+# named for whose hardware it speaks to, and a bare vendor name claims
+# the whole vendor: once "ibm" means a simulator there is no honest name
+# left for real hardware, and a published workload spec saying
+# "provider": "ibm" cannot tell a reader whether the results came off a
+# machine or off Aer. Hence "devq.simulated", "ibm.simulated",
+# "ibm.real". This is DevQ's convention for its own components and a
+# suggestion for others, not a rule the registry enforces — a third
+# party may name a provider whatever they like.
+#
 # The IBM provider is deliberately absent — importing it pulls in
 # qiskit-ibm-runtime, which is an optional dependency. Register it
 # yourself if you need it addressable by name:
-#     devq.register_provider("ibm", IBMSimulatedProvider())
+#     devq.register_provider("ibm.simulated", IBMSimulatedProvider())
 _BUILTINS = {
     "scheduler": {
         "fcfs":        FCFSScheduler,
@@ -103,7 +115,7 @@ _BUILTINS = {
         "round_robin": RoundRobinRouter,
     },
     "provider": {
-        "devq":        DevQSimulatedProvider,
+        "devq.simulated": DevQSimulatedProvider,
     },
 }
 
@@ -242,11 +254,19 @@ class DevQ:
         declaratively (e.g. in a benchmark workload spec) rather than
         constructed in code. Returns self for chaining.
 
-        A class or a ready-made instance. Register an instance when the
-        provider needs construction arguments DevQ knows nothing about,
-        such as credentials or a seed:
+        Register the CLASS, never an instance. Registration establishes
+        only that a name is legal and what type it denotes; CONSTRUCTING
+        the provider is the caller's business, so anything DevQ knows
+        nothing about — credentials, endpoints, a seed — is passed
+        by the caller to the object they build themselves:
 
-            devq.register_provider("ionq", IonQProvider(api_key=KEY))
+            devq.register_provider("ionq", IonQProvider)
+            devq.add_device(IonQProvider(api_key=KEY).get_device(...))
+
+        A spec naming this provider gets one constructed by DevQ with
+        the spec's seed. Registration is also what makes a device
+        attachable at all: add_device() refuses a device whose provider
+        class was never registered.
         '''
         return self._register("provider", name, provider)
 
@@ -290,6 +310,8 @@ class DevQ:
                          unique, and may not look like an index or
                          shadow a shell keyword.
         '''
+        self._require_registered_provider(device)
+
         resolved = None
         if name is not None:
             resolved = _validate_device_name(name, self._names)
@@ -297,6 +319,52 @@ class DevQ:
 
         self._devices.append((load_device(device), config_path, resolved))
         return self
+
+    def _require_registered_provider(self, device):
+        '''
+        Refuse a device whose provider was never registered.
+
+        Nothing enters DevQ from an unknown component. Registration is
+        the single gate every component passes through, and a device
+        attached in Python bypassed it entirely until this check
+        existed — so a session could run on a provider the system had
+        no record of, and only a spec-driven session was ever forced to
+        declare what it was using.
+
+        REGISTERING AND CONSTRUCTING ARE SEPARATE ACTS, so this costs a
+        line and never a credential. Register the CLASS, construct the
+        instance yourself with whatever it needs, attach the device it
+        builds:
+
+            devq.register_provider("ionq", IonQProvider)
+            devq.add_device(IonQProvider(api_key=KEY).get_device(...))
+
+        The check is by type and yields only pass/fail. It deliberately
+        does not recover the registered name: names address components
+        in specs and config files, and the kernel deals in objects from
+        attach time onward. Handing it a name here would be a layer
+        violation.
+        '''
+        provider = getattr(device, "provider", None)
+        if provider is None:
+            raise DevQError(
+                "device has no provider — add_device() expects a device "
+                "built by a provider's get_device()."
+            )
+
+        cls = type(provider)
+        if self._registry.is_registered("provider", cls):
+            return
+
+        known = ", ".join(sorted(self._registry.names("provider"))) or "none"
+        raise DevQError(
+            f"provider {cls.__name__} is not registered, so the device it "
+            f"built cannot be attached. Register the class first:\n"
+            f"    devq.register_provider(\"<name>\", {cls.__name__})\n"
+            f"Registered providers: {known}. Register the CLASS, then "
+            f"construct it yourself with any seed or credentials it "
+            f"needs — DevQ never constructs a provider you attach by hand."
+        )
 
     def add_devices(self, devices):
         '''

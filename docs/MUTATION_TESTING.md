@@ -43,7 +43,7 @@ cannot.
 
 ## Results
 
-**53 distinct mutants, 52 killed, 1 equivalent** (excluded by
+**57 distinct mutants, 56 killed, 1 equivalent** (excluded by
 convention — see below). Grouped by subsystem. Several were re-run
 against `main` after each push to confirm the pushed state matches what
 was verified locally; those re-runs are not counted again here.
@@ -128,6 +128,17 @@ behind by the refactor.
 | R8 | spec name dropped from the run directory | killed (1) |
 | R9 | manifest records the wrong `out_dir` | killed (1) |
 
+### Provider registration — `registry/registry.py`, `devq.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| P1 | `is_registered()` returns `True` unconditionally | killed (1) |
+| P2 | exact-type match relaxed to `issubclass` | killed (1) |
+| P3 | the `add_device()` enforcement call deleted | killed (1) |
+| P4 | providers accept instances again (`accepts_instance = True`) | killed (2) |
+
+P1 and P4 both survived first time — see below.
+
 ### Repo hygiene — `run_tests.py`
 
 | # | Mutation | Result |
@@ -156,7 +167,7 @@ an example forces a deliberate change to the pin.
 
 ---
 
-## The three that survived first time
+## The four that survived first time
 
 Each exposed a real gap and produced a new test block.
 
@@ -179,6 +190,13 @@ assertion checked `turnaround_time` on unfinished jobs but not
 iterating every job would crash on the first rejection. → all three
 derived properties now asserted.
 
+**P1 — the registration gate was pinned open and 45 blocks stayed
+green.** Making `is_registered()` return `True` unconditionally removed
+the enforcement entirely, and nothing noticed. Every block registers its
+providers correctly, so a gate that never rejects is indistinguishable
+from one that works: the *happy path* was covered 45 times over and the
+refusal not once. → `provider_registration`.
+
 ---
 
 ## Two test blocks were self-satisfying when first written
@@ -191,6 +209,16 @@ pinning scores to independently computed values.
 
 `shipped_workloads` later did the same thing in a third costume,
 deriving a spec's expected job count from that spec.
+
+A fourth costume appeared with `provider_registration`, and it is worth
+recording because the mechanism is different. The assertion was written
+as `check(False, ...)` inside a `try` whose `except Exception` followed —
+so when the mutant made registration *succeed*, `check(False)` raised its
+`AssertionError`, the bare `except` caught it, and the handler reported a
+pass. **The test swallowed its own failure.** P4 survived on that alone.
+The refusal is now captured into a variable outside the check. An audit
+found every other `check(False)` in the suite catches a specific
+exception type; only the two written that session were exposed.
 
 The rule this produced: **when a test compares two things that share an
 implementation, it is not a test.** It is the same failure as the older
