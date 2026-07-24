@@ -827,6 +827,12 @@ A spec naming a provider the caller must register (`ibm_federation.json`
 does) is not broken — that is the documented extension model — so the
 block supplies the providers DevQ ships.
 
+Output is written to `test_results/` and KEPT, unlike every other block,
+so a run can be opened and read after the suite finishes. It is
+overwritten each run rather than timestamped, so it cannot accumulate,
+and both its existence and its content are asserted — "the directory
+exists" and "the directory has usable logs" are different claims.
+
 `block_benchmark_runner` builds its own spec in a temp directory because
 it asserts exact job counts and needs a crash injected; this block runs
 what actually ships.
@@ -880,6 +886,13 @@ confused: `completed`, `completed_with_failures` (jobs were rejected or
 failed — a *result*, and exactly what a threshold sweep is meant to
 produce), and `crashed` (the session died). Phase 5.3 reads this
 distinction.
+
+One run is made with no `--out` at all, from a temp working directory,
+to assert the *default* path: `results/<spec name>_<timestamp>/`. Every
+other assertion passes `out_dir` explicitly, so the path a user actually
+gets was untested — and was in fact wrong, with the summary line
+reconstructing the directory from a bare log filename and printing a
+literal `results`.
 
 Crash isolation is asserted by forcing one matrix session to raise: the
 other seventeen must still complete. Atomic writes are asserted by

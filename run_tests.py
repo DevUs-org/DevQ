@@ -1470,6 +1470,33 @@ def block_shipped_workloads():
         "ibm_federation.json" : 8,
     }
 
+    # KEPT, not deleted. block_benchmark_runner runs 19 sessions into a
+    # temp directory and throws them away — right for a test that
+    # injects a crash and asserts exact counts. These two are different:
+    # they are the specs a user actually runs, so their output is worth
+    # being able to open and read after the suite finishes. Overwritten
+    # each run rather than timestamped, so it cannot accumulate.
+    root = os.path.dirname(os.path.abspath(__file__))
+    keep = os.path.join(root, "test_results")
+    shutil.rmtree(keep, ignore_errors=True)
+    os.makedirs(keep, exist_ok=True)
+    with open(os.path.join(keep, "README.txt"), "w") as handle:
+        handle.write(
+            "Output from the shipped workload specs, written by\n"
+            "run_tests.py's shipped_workloads block so a run can be\n"
+            "inspected after the suite finishes.\n"
+            "\n"
+            "Overwritten on every test run, and gitignored. Delete it\n"
+            "freely — nothing depends on it.\n"
+            "\n"
+            "This is NOT where the runner writes normally. A real run\n"
+            "goes to results/<spec name>_<timestamp>/:\n"
+            "\n"
+            "    python benchmark/runner.py benchmark/workloads/smoke.json\n"
+            "\n"
+            "See docs/WORKLOADS.md.\n"
+        )
+
     specs = sorted(f for f in os.listdir(WORKLOADS) if f.endswith(".json"))
     check(specs, f"workload specs ship with the repo, found {specs}")
     check(set(specs) == set(EXPECTED_JOBS),
@@ -1492,7 +1519,7 @@ def block_shipped_workloads():
                 if device["provider"] == "ibm":
                     providers["ibm"] = IBMSimulatedProvider
 
-            out = os.path.join(tmp, filename.replace(".json", ""))
+            out = os.path.join(keep, filename.replace(".json", ""))
             with contextlib.redirect_stdout(io.StringIO()):
                 manifest = R.run(path, out_dir=out,
                                  register_providers=providers, quiet=True)
@@ -1558,6 +1585,20 @@ def block_shipped_workloads():
 
                 check(decisions(records) == decisions(again),
                       f"{filename} reproduces its routing under the same seed")
+        # The kept output is the whole point of writing here rather than
+        # to a temp directory: it must survive the block, and be
+        # readable. Asserted because "the directory exists" and "the
+        # directory has usable logs in it" are different things.
+        for filename in specs:
+            kept = os.path.join(keep, filename.replace(".json", ""),
+                                "default.jsonl")
+            check(os.path.exists(kept),
+                  f"{filename}'s log is kept in test_results/ for inspection")
+            if os.path.exists(kept):
+                with open(kept) as handle:
+                    lines = [l for l in handle if l.strip()]
+                check(len(lines) > 2,
+                      f"{filename}'s kept log has content, got {len(lines)} records")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1711,6 +1752,30 @@ def block_benchmark_runner():
         kinds = {r["event"] for r in records}
         check({"submit", "route", "dispatch", "resolve"} <= kinds,
               f"lifecycle events reached the log, got {sorted(kinds)}")
+
+        # THE DEFAULT OUTPUT PATH. Every other assertion here passes
+        # out_dir explicitly, so the path a user actually gets was
+        # untested — the default could have become "result/" or the
+        # summary could name the wrong directory (it did: main()
+        # reconstructed it from a bare log filename and printed a
+        # literal "results"). Run once with no --out, from a temp cwd so
+        # the suite still leaves nothing behind.
+        cwd = os.getcwd()
+        os.chdir(tmp)
+        try:
+            defaulted = R.run(spec_path, quiet=True)
+        finally:
+            os.chdir(cwd)
+
+        out_dir = defaulted["out_dir"]
+        check(os.path.basename(os.path.dirname(out_dir)) == "results",
+              f"the default run directory lives under results/, got {out_dir}")
+        check(os.path.basename(out_dir).startswith("block_"),
+              f"the run directory is named for the spec, got "
+              f"{os.path.basename(out_dir)}")
+        check(os.path.isdir(out_dir) and
+              os.path.exists(os.path.join(out_dir, "manifest.json")),
+              "the default run directory really exists, with its manifest")
 
         # ── failures are a RESULT, not a crash ────────────────────────
         # Phase 5.3 must be able to tell "this config rejected its jobs"

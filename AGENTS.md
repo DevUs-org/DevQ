@@ -48,6 +48,7 @@ lets them run as plugins in one system on identical workloads.
 | `run_tests.py` | The whole test suite — 45 blocks, no pytest |
 | `benchmark/runner.py` | Run a workload spec, or the whole component matrix, into a run directory |
 | `benchmark/workloads/` | Runnable example specs, also used as test fixtures — see `docs/WORKLOADS.md` |
+| `test_results/` | Output of those specs from the last test run, kept for inspection. Gitignored, overwritten, safe to delete |
 | `verify_local.py` | Run on YOUR machine: interactive shell, readline backend, real concurrency, pinned values |
 | `docs/` | All reference documentation |
 
@@ -370,6 +371,7 @@ Blocks record *what they proved*, not merely that they passed. Use
 | Event logs differ between identical seeded runs | Expected — completion order belongs to the executor. DevQ guarantees decision determinism, not completion-order determinism. Compare on `seq`, exclude `*_at` |
 | Spec's seed appears to be ignored | A provider *instance* was registered with its own seed — instances win over specs, and the run warns. Register the class instead |
 | Log flooded with `cycle_end` records | The drain loop is stepping while futures are merely in flight. Step only when a cycle can make progress |
+| No `results/` after running the suite | Expected. Tests write to `test_results/` (shipped specs, overwritten each run) or a temp directory (everything else). `results/` is yours, from `benchmark/runner.py` |
 | `run_tests.py` leaves no JSONL behind | By design — its runner block builds a spec in a temp directory and deletes it. Run `benchmark/workloads/smoke.json` to see real output |
 | `repo_hygiene` reports thousands of untagged files | It is scanning a virtualenv. The scan must walk DevQ's own packages by name, never the repo root with a blocklist |
 | A resumed matrix re-runs everything | The manifest records outcomes; resume matches on session id. A crashed or absent session is always re-run whole — mid-session resume is not offered, since seeding is sequential |

@@ -43,7 +43,7 @@ cannot.
 
 ## Results
 
-**49 distinct mutants, 48 killed, 1 equivalent** (excluded by
+**53 distinct mutants, 52 killed, 1 equivalent** (excluded by
 convention — see below). Grouped by subsystem. Several were re-run
 against `main` after each push to confirm the pushed state matches what
 was verified locally; those re-runs are not counted again here.
@@ -124,6 +124,9 @@ behind by the refactor.
 | R4 | a crashed session aborts the whole matrix | killed (1) |
 | R5 | session ids collide instead of naming the config | killed (1) |
 | R6 | `header` record never emitted | killed (1) |
+| R7 | default output directory renamed `results/` → `result/` | killed (1) |
+| R8 | spec name dropped from the run directory | killed (1) |
+| R9 | manifest records the wrong `out_dir` | killed (1) |
 
 ### Repo hygiene — `run_tests.py`
 
@@ -143,6 +146,7 @@ at runtime depends on them, so only a direct assertion catches a drift.
 | W1 | a shipped spec's `repeat` changed | killed (1) |
 | W2 | a shipped spec made unrunnable | killed (1) |
 | W4 | a shipped spec deleted | killed (1) |
+| K1 | kept output silently redirected to a temp directory | killed (1) |
 
 W1 initially survived: the assertion computed the expected job count
 *from the spec it was checking*, so editing `repeat` moved both sides

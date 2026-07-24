@@ -247,6 +247,10 @@ def run(spec_path, out_dir=None, matrix=False, resume=False,
     manifest = {
         "spec"       : spec,
         "spec_path"  : os.path.abspath(spec_path),
+        # Recorded rather than reconstructed by the caller: session logs
+        # are stored as bare filenames, so deriving the directory from
+        # one gives "" and silently falls back to a literal "results".
+        "out_dir"    : os.path.abspath(out_dir),
         "started"    : datetime.datetime.now().isoformat(timespec="seconds"),
         "matrix"     : matrix,
         "sessions"   : [],
@@ -318,7 +322,10 @@ def main(argv=None):
     )
     parser.add_argument("spec", help="path to a workload spec (JSON)")
     parser.add_argument("--out", dest="out_dir", default=None,
-                        help="run directory (default: results/<name>_<timestamp>)")
+                        help="run directory. Default: "
+                             "results/<spec name>_<timestamp>/ in the current "
+                             "directory, which is gitignored — delete it when "
+                             "you are done with a run")
     parser.add_argument("--matrix", action="store_true",
                         help="run every scheduler x allocator x router combination")
     parser.add_argument("--resume", action="store_true",
@@ -335,10 +342,7 @@ def main(argv=None):
         print(f"[Spec error] {exc}", file=sys.stderr)
         return 2
 
-    out_dir = args.out_dir
-    if out_dir is None:
-        out_dir = os.path.dirname(manifest["sessions"][0]["log"]) or "results"
-    return _summarise(manifest, out_dir)
+    return _summarise(manifest, manifest["out_dir"])
 
 
 if __name__ == "__main__":

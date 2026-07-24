@@ -5,3 +5,4 @@ venv/
 *.zip
 .testout
 results/
+test_results/
