@@ -98,6 +98,47 @@ def _require(obj, key, where, types=None):
     return value
 
 
+def _coerce_int(value, key, where):
+    '''
+    Coerce a scalar to int, or raise SpecError naming the field.
+
+    Placeholder resolution yields strings, so a numeric spec field may
+    arrive as "42" rather than 42; this turns it into an int and refuses
+    only what genuinely is not one. A bool is rejected outright: in
+    Python bool is an int subclass, so True would coerce to 1 silently,
+    which is never what a seed or repeat count meant.
+    '''
+    if isinstance(value, bool):
+        raise SpecError(
+            f"{where}: '{key}' must be an integer, got a boolean ({value!r})."
+        )
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise SpecError(
+            f"{where}: '{key}' must be an integer, got "
+            f"{type(value).__name__} ({value!r}) which is not coercible. "
+            f"A ${{...}} placeholder resolves to a string, so a numeric "
+            f"field accepts a coercible string — but this value is not one."
+        ) from None
+
+
+def _coerce_float(value, key, where):
+    '''Coerce a scalar to float, or raise SpecError. See _coerce_int for
+    why booleans are refused rather than silently treated as 0.0/1.0.'''
+    if isinstance(value, bool):
+        raise SpecError(
+            f"{where}: '{key}' must be a number, got a boolean ({value!r})."
+        )
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise SpecError(
+            f"{where}: '{key}' must be a number, got "
+            f"{type(value).__name__} ({value!r}) which is not coercible."
+        ) from None
+
+
 def load_spec(path):
     '''
     Read and validate a workload spec file. Returns the parsed dict.
@@ -120,7 +161,17 @@ def load_spec(path):
             f"{path} must contain a JSON object, got {type(spec).__name__}."
         )
 
-    return validate_spec(spec, source=path)
+    # Resolve ${NAME} placeholders against the environment BEFORE
+    # validation, so validate_spec checks the values that will actually
+    # run rather than the placeholder text. The unresolved `spec` is not
+    # passed on — but the caller (the runner) records its own verbatim
+    # copy in the log header, so ${...} still appears literally on disk
+    # and a resolved secret never does. Function-level import avoids a
+    # cycle: placeholders imports SpecError from this module.
+    from benchmark.placeholders import resolve_placeholders
+    resolved = resolve_placeholders(spec, source=path)
+
+    return validate_spec(resolved, source=path)
 
 
 def validate_spec(spec, source="<spec>"):
@@ -131,11 +182,15 @@ def validate_spec(spec, source="<spec>"):
     _require(spec, "devices", source, list)
     _require(spec, "jobs", source, list)
 
-    if "seed" in spec and not isinstance(spec["seed"], int):
-        raise SpecError(
-            f"{source}: 'seed' must be an integer, got "
-            f"{type(spec['seed']).__name__} ({spec['seed']!r})."
-        )
+    # Scalars are COERCED, not type-gated. A ${SEED} placeholder resolves
+    # to a string (an environment holds only strings), so a strict
+    # isinstance check would reject every placeholder-sourced value. We
+    # instead attempt the coercion and raise only when it genuinely
+    # cannot be an int — "42" and 42 both become 42; "banana" is refused.
+    # This also accepts a literal "seed": "42", which the strict version
+    # rejected; that loosening is deliberate (see the placeholder design).
+    if "seed" in spec:
+        spec["seed"] = _coerce_int(spec["seed"], "seed", source)
 
     if "config" in spec and not isinstance(spec["config"], str):
         raise SpecError(f"{source}: 'config' must be a path string.")
@@ -195,19 +250,18 @@ def validate_spec(spec, source="<spec>"):
 
         _require(job, "circuit", where, str)
 
-        repeat = job.get("repeat", 1)
-        if not isinstance(repeat, int) or repeat < 1:
-            raise SpecError(
-                f"{where}: 'repeat' must be a positive integer, got {repeat!r}."
-            )
+        if "repeat" in job:
+            repeat = _coerce_int(job["repeat"], "repeat", where)
+            if repeat < 1:
+                raise SpecError(
+                    f"{where}: 'repeat' must be a positive integer, got "
+                    f"{repeat!r}."
+                )
+            job["repeat"] = repeat
 
         for key in ("max_qubit_error", "max_edge_error"):
             if key in job and job[key] is not None:
-                if not isinstance(job[key], (int, float)):
-                    raise SpecError(
-                        f"{where}: '{key}' must be a number, got "
-                        f"{type(job[key]).__name__}."
-                    )
+                job[key] = _coerce_float(job[key], key, where)
 
         if "exec_on" in job and "no_exec_on" in job:
             raise SpecError(

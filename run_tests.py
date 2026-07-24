@@ -1931,7 +1931,6 @@ def block_workload_spec():
     rejects("an unknown top-level key",  lambda s: s.update(sed=1))
     rejects("an unknown device key",     lambda s: s["devices"][0].update(kind="x"))
     rejects("an unknown job key",        lambda s: s["jobs"][0].update(shots=100))
-    rejects("a non-integer seed",        lambda s: s.update(seed="42"))
     rejects("a duplicate device id",     lambda s: s["devices"].append(dict(s["devices"][0])))
     rejects("an empty device list",      lambda s: s.update(devices=[]))
     rejects("an empty job list",         lambda s: s.update(jobs=[]))
@@ -1943,8 +1942,22 @@ def block_workload_spec():
     rejects("an unsupported arrival pattern",
                                          lambda s: s.update(arrival={"pattern": "poisson"}))
     rejects("a missing required key",    lambda s: s.pop("name"))
-    rejects("a non-numeric threshold",   lambda s: s["jobs"][0].update(
-                                             max_qubit_error="0.03"))
+
+    # SCALARS ARE COERCED, NOT TYPE-GATED. A ${SEED} placeholder resolves
+    # to a string, so a numeric field must accept a coercible string —
+    # "42" becomes 42. A literal coercible string is accepted too; that
+    # loosening is deliberate. What is still refused is a string that is
+    # not a number at all. The old suite asserted the strict version
+    # (seed="42" and threshold="0.03" rejected); those cases are now
+    # accepts, and the genuine failure — an uncoercible value — is what
+    # gets the rejects.
+    rejects("a non-coercible seed",      lambda s: s.update(seed="banana"))
+    rejects("a non-coercible repeat",    lambda s: s["jobs"][0].update(repeat="two"))
+    rejects("a non-coercible threshold", lambda s: s["jobs"][0].update(
+                                             max_qubit_error="high"))
+    # bool coerces to int/float silently in Python (True == 1); a spec
+    # never means that, so it is refused explicitly.
+    rejects("a boolean seed",            lambda s: s.update(seed=True))
 
     # Absent-with-a-default is NOT an exception to the rule above:
     # repeat and arrival.pattern have documented defaults, so omitting
@@ -1957,6 +1970,24 @@ def block_workload_spec():
           "an omitted arrival pattern defaults to batch, silently")
     check(validated["jobs"][0].get("repeat", 1) == 1,
           "an omitted repeat defaults to 1, silently")
+
+    # COERCION ACTUALLY RAN — assert the OUTPUT TYPE, not merely that
+    # validation did not raise. A coercion that silently returned the
+    # string unchanged would also "not throw"; only checking that the
+    # value came out an int/float proves the conversion happened. This
+    # is the value a resolved ${SEED} takes: a string on the way in.
+    coerced = json.loads(json.dumps(GOOD))
+    coerced["seed"] = "42"
+    coerced["jobs"][0]["repeat"] = "3"
+    coerced["jobs"][0]["max_qubit_error"] = "0.03"
+    v = validate_spec(coerced)
+    check(v["seed"] == 42 and isinstance(v["seed"], int),
+          "a coercible string seed is coerced to int")
+    check(v["jobs"][0]["repeat"] == 3 and isinstance(v["jobs"][0]["repeat"], int),
+          "a coercible string repeat is coerced to int")
+    check(isinstance(v["jobs"][0]["max_qubit_error"], float)
+          and abs(v["jobs"][0]["max_qubit_error"] - 0.03) < 1e-12,
+          "a coercible string threshold is coerced to float")
 
     # A spec naming an unregistered provider must fail loudly rather
     # than importing anything — a data file that can trigger imports is
@@ -2070,6 +2101,101 @@ def block_workload_spec():
           "spec ids become device names in order")
     check([d["index"] for d in meta["devices"]] == [0, 1],
           "devices are indexed in spec order")
+
+
+def block_placeholder_resolution():
+    '''${NAME} placeholders resolve from the environment before validation'''
+    import os
+    from benchmark.placeholders import resolve_placeholders
+    from benchmark.spec import SpecError, validate_spec
+
+    # Set env in a finally-guarded block so a failure cannot leak state
+    # into later blocks — the suite runs in one process, sequentially.
+    saved = {k: os.environ.get(k) for k in
+             ("DEVQ_T_SEED", "DEVQ_T_VENDOR", "DEVQ_T_TIER")}
+    try:
+        os.environ["DEVQ_T_SEED"]   = "42"
+        os.environ["DEVQ_T_VENDOR"] = "ibm"
+        os.environ["DEVQ_T_TIER"]   = "simulated"
+        for k in ("DEVQ_T_UNSET",):
+            os.environ.pop(k, None)
+
+        # ── whole-field substitution ──────────────────────────────────
+        out = resolve_placeholders({"seed": "${DEVQ_T_SEED}"})
+        check(out["seed"] == "42",
+              "a whole-field ${NAME} resolves to the env value")
+        # ...and yields a STRING, which spec.py then coerces. The resolver
+        # is type-blind because an environment holds only strings.
+        check(isinstance(out["seed"], str),
+              "resolution yields a string; coercion is spec.py's job")
+
+        # ── embedded and repeated ─────────────────────────────────────
+        out = resolve_placeholders(
+            {"devices": [{"provider": "${DEVQ_T_VENDOR}.${DEVQ_T_TIER}"}]})
+        check(out["devices"][0]["provider"] == "ibm.simulated",
+              "embedded ${NAME}s resolve in place, both occurrences")
+
+        # ── recursion into nested containers ──────────────────────────
+        out = resolve_placeholders(
+            {"jobs": [{"c": "${DEVQ_T_VENDOR}"}, {"c": "${DEVQ_T_TIER}"}]})
+        check([j["c"] for j in out["jobs"]] == ["ibm", "simulated"],
+              "resolution recurses through lists and nested dicts")
+
+        # ── non-grammar ${...} is a literal, NOT an error ─────────────
+        # ${}, ${1BAD}, ${with-dash} do not match the identifier grammar,
+        # so they are left untouched. A spec may legitimately contain a $
+        # or a brace; only the exact grammar triggers a lookup.
+        for literal in ("${}", "${1BAD}", "${with-dash}", "bare $TEXT", "$SEED"):
+            out = resolve_placeholders({"x": literal})
+            check(out["x"] == literal,
+                  f"non-grammar {literal!r} passes through as a literal")
+
+        # ── THE REFUSAL: a well-formed but unset var is a hard error ───
+        # This is the mutation-critical case. A resolver that never raises
+        # on a missing variable is indistinguishable from a working one
+        # across every happy-path spec — so assert the REJECTION, not just
+        # the passes. (P1 lesson from docs/MUTATION_TESTING.md.)
+        raised = None
+        try:
+            resolve_placeholders({"seed": "${DEVQ_T_UNSET}"})
+        except SpecError as exc:
+            raised = exc
+        check(raised is not None,
+              "an unset ${NAME} is refused, not silently left as ''")
+        check("DEVQ_T_UNSET" in str(raised),
+              "the refusal names the missing variable")
+
+        # ── lookup is case-sensitive: ${seed} != ${SEED} ──────────────
+        # DEVQ_T_SEED is set; devq_t_seed is not. No recasing fallback.
+        raised = None
+        try:
+            resolve_placeholders({"x": "${devq_t_seed}"})
+        except SpecError:
+            raised = True
+        check(raised is True,
+              "lookup is case-sensitive — ${devq_t_seed} does not find "
+              "DEVQ_T_SEED")
+
+        # ── end-to-end: load_spec resolves, then coerces ──────────────
+        # A resolved ${DEVQ_T_SEED} of "42" reaches seed validation as a
+        # string and is coerced to int 42, proving the two passes compose.
+        spec = validate_spec(resolve_placeholders({
+            "name": "ph", "seed": "${DEVQ_T_SEED}",
+            "devices": [{"id": "a", "provider": "${DEVQ_T_VENDOR}.${DEVQ_T_TIER}",
+                         "backend": {"kind": "fully_connected", "num_qubits": 5}}],
+            "jobs": [{"circuit": BELL}],
+        }))
+        check(spec["seed"] == 42 and isinstance(spec["seed"], int),
+              "resolve-then-validate composes: ${SEED} '42' becomes int 42")
+        check(spec["devices"][0]["provider"] == "ibm.simulated",
+              "resolve-then-validate composes: embedded provider resolves")
+
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def block_event_log():
@@ -2636,6 +2762,7 @@ BLOCKS = [
     ("repo_hygiene",             block_repo_hygiene),
     ("benchmark_runner",         block_benchmark_runner),
     ("workload_spec",            block_workload_spec),
+    ("placeholder_resolution",   block_placeholder_resolution),
     ("event_log",                block_event_log),
     ("router_scoring",           block_router_scoring),
     ("provider_registration",    block_provider_registration_enforced),

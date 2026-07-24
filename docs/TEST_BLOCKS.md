@@ -1,7 +1,7 @@
 # DevQ Sanity Test Plan
 
-Specification for the 46 sanity blocks in `run_tests.py`, covering
-Phases 0–5.1 plus the component registry.
+Specification for the 47 sanity blocks in `run_tests.py`, covering
+Phases 0–5.2 plus the component registry.
 
 `run_tests.py` asserts **what** each block expects. This document
 records **why** those values are correct — the S-cost arithmetic behind
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 46 blocks, one line each
+python run_tests.py              # all 47 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -927,7 +927,7 @@ different configs.
 Covers `benchmark/spec.py`: validation, seed resolution, and an
 end-to-end run from a spec.
 
-Thirteen malformed specs must each raise `SpecError`. Spec parsing is
+Sixteen malformed specs must each raise `SpecError`. Spec parsing is
 strict where config parsing is lenient, and the reason is the absence
 of a fallback rather than a difference in severity: every config key has
 a documented default, and a spec key has none. There is no sensible
@@ -938,13 +938,29 @@ Absent-with-a-default is not an exception — `repeat` and
 `arrival.pattern` have defaults, and omitting them is asserted to be
 silent. It is keys carrying no actionable meaning that are refused.
 
-Seed resolution has four distinct cases, all asserted: a registered
-CLASS is constructed with the spec's seed (no conflict possible); an
-UNSEEDED instance accepts the spec's seed via `set_seed`; a SEEDED
-instance overrides the spec and warns; a seeded instance with no spec
-seed is not a conflict. Code wins over the spec because a collaborator
-pinning a seed in their own code, against a shared spec they do not
-own, is expressing intent.
+SCALAR FIELDS ARE COERCED, NOT TYPE-GATED. A `${NAME}` placeholder
+resolves to a string (an environment holds only strings), so `seed`,
+`repeat`, and the error thresholds accept a coercible string: `"42"`
+becomes int `42`, `"0.03"` becomes float `0.03`. A literal coercible
+string in the spec is accepted too — a deliberate loosening, so that
+placeholder-sourced and hand-written values behave alike. What is
+refused is a value that is not a number at all (`"banana"`, `"two"`,
+`"high"`) and a boolean, which Python would otherwise coerce silently to
+0/1. The block asserts both directions: the coercions produce the right
+type (not merely that validation did not raise — a no-op coercion would
+also not raise), and the uncoercible values are rejected.
+
+Seed resolution has two cases, because providers are CLASS-ONLY: a
+registered class is constructed with the spec's seed (`seed_effective`
+equals it, `seed_source` is `"spec"`, no warning), and an absent spec
+seed constructs the provider unseeded. There used to be four — a
+registered instance could carry a seed of its own, so the parser had to
+arbitrate against the spec's and warn. Class-only registration removed
+the ambiguity rather than resolving it: nothing can hold a competing
+seed now, so those conflict cases are not merely untested but
+unrepresentable. The block pins that by asserting a provider INSTANCE is
+refused at registration — which is what closes the door the four cases
+used to guard.
 
 `set_seed` must reproduce a *freshly constructed* provider, not merely
 set an attribute — devq builds its RNG in `__init__`, so a provider that
@@ -960,6 +976,45 @@ One assertion is a regression guard rather than a specification: `drain`
 must complete a five-job workload in under 200 cycles. An early version
 stepped the kernel whenever a future was in flight, producing 37,923
 empty cycles and 37,923 `cycle_end` records for twenty real events.
+
+
+### `placeholder_resolution`
+
+Covers `benchmark/placeholders.py`: `${NAME}` environment-variable
+resolution, which runs in `load_spec` after the JSON is read and before
+`validate_spec`, so validation sees the values that will actually run.
+
+Asserts the substitution mechanics: a whole-field `${NAME}` resolves to
+the env value and yields a *string* (the resolver is type-blind, because
+an environment holds only strings — coercion is `spec.py`'s job);
+embedded and repeated placeholders resolve in place
+(`${VENDOR}.${TIER}` → `ibm.simulated`); resolution recurses through
+nested lists and dicts.
+
+Asserts the grammar is fixed and environment-independent: `${}`,
+`${1BAD}`, `${with-dash}`, `$SEED` and a bare `$` are not placeholders
+and pass through as literals, never raising — a spec may legitimately
+contain a `$` or a brace, and only the exact `${identifier}` grammar
+triggers a lookup.
+
+The mutation-critical assertion is the **refusal**: a well-formed but
+unset `${NAME}` raises `SpecError` naming the variable. A resolver that
+never raised on a missing variable would be indistinguishable from a
+working one across every happy-path spec, so the rejection is asserted
+directly, not inferred from the passes (the P1 lesson in
+`docs/MUTATION_TESTING.md` — assert the gate rejects, not just that it
+lets good input through). Lookup being case-sensitive is asserted the
+same way: `${devq_t_seed}` does not find `DEVQ_T_SEED` and is refused,
+with no recasing fallback.
+
+A final end-to-end case composes the two passes: a resolved
+`${DEVQ_T_SEED}` of `"42"` reaches seed validation as a string and is
+coerced to int `42`, and an embedded provider placeholder resolves —
+proving resolve-then-coerce works together, not just in isolation.
+
+The block sets its env vars under a `try/finally` that restores the
+prior environment, since the suite runs in one process and a leaked
+variable would silently change a later block.
 
 
 ### `event_log`
