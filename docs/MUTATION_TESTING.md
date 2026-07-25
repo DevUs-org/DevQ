@@ -43,10 +43,10 @@ cannot.
 
 ## Results
 
-**60 distinct mutants, 58 killed, 2 equivalent** (excluded by
-convention — see below). Grouped by subsystem. Several were re-run
-against `main` after each push to confirm the pushed state matches what
-was verified locally; those re-runs are not counted again here.
+**66 distinct mutants, 64 killed, 2 excluded** (M10 equivalent and P7
+inert — see below). Grouped by subsystem. Several were re-run against
+`main` after each push to confirm the pushed state matches what was
+verified locally; those re-runs are not counted again here.
 
 ### Device identity — `hardware/device.py`, `providers/`, `devq.py`
 
@@ -108,11 +108,46 @@ behind by the refactor.
 |---|---|---|
 | S1 | unknown spec keys silently accepted | killed (1) |
 | S2 | `repeat` ignored (always 1 job) | killed (1) |
-| S3 | seed conflict never detected | killed (1) |
 | S4 | `set_seed` does not rebuild the RNG | killed (1) |
 | S5 | late-`set_seed` guard removed | killed (1) |
 | S6 | `exec_on` device ids unchecked | killed (1) |
 | S7 | `drain` busy-waits | killed (1) |
+| S8 | scalar coercion is a no-op (returns the string unchanged) | killed (1) |
+| S9 | header records the RESOLVED spec instead of verbatim | killed (1) |
+| S10 | `seed_requested` reverts to the resolved int | killed (1) |
+
+S3 (*seed conflict never detected*) was retired, not killed: class-only
+registration removed the negotiation it broke, so nothing can hold a
+competing seed and the conflict is unrepresentable rather than merely
+untested. The `workload_spec` block pins that by asserting an instance
+is refused at registration.
+
+S8–S10 cover the placeholder feature's failure modes in `spec.py`. S8 is
+the self-satisfying-test guard made concrete: a coercion that silently
+returned its input would pass any "did not raise" check, so the block
+asserts the OUTPUT TYPE (`"42"` becomes int `42`), which S8 violates. S9
+and S10 are the secret-leak guards — S9 is the exact bug found this
+session, where the header recorded the resolved spec, so a resolved
+`${IONQ_API_KEY}` would reach disk; both are caught by the
+`placeholders.json` assertions that the header keeps `${NAME}` literal.
+
+### Placeholder resolution — `benchmark/placeholders.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| PH1 | an unset `${NAME}` resolves to `''` instead of raising | killed (1) |
+| PH2 | lookup recases (`${name}` falls back to `NAME`) | killed (1) |
+
+PH1 is the mutation-critical refusal, the same shape as P1: a resolver
+that never raises on a missing variable is indistinguishable from a
+working one across every happy-path spec, so the `placeholder_resolution`
+block asserts the rejection directly rather than inferring it from the
+passes. PH2 guards case-sensitivity — a recasing fallback would resolve
+`${seed}` from `SEED`, a silent wrong-value of exactly the kind DevQ
+refuses elsewhere; the block sets `DEVQ_T_SEED` and asserts
+`${devq_t_seed}` does *not* find it. (The no-op-coercion mutant lives
+under Workload spec as S8, since coercion is `spec.py`'s job, not the
+resolver's — the resolver only ever emits strings.)
 
 ### Benchmark runner — `benchmark/runner.py`
 
@@ -127,6 +162,15 @@ behind by the refactor.
 | R7 | default output directory renamed `results/` → `result/` | killed (1) |
 | R8 | spec name dropped from the run directory | killed (1) |
 | R9 | manifest records the wrong `out_dir` | killed (1) |
+| R10 | manifest records the RESOLVED spec instead of verbatim | killed (2) |
+
+R10 survived first time: the header leak (S9) was asserted but the
+manifest, written to disk beside the log, was not — so a resolved
+`${SECRET}` in the manifest passed every check. `shipped_workloads` now
+reads `manifest["spec"]` for the placeholder spec and asserts the
+placeholder stays literal, closing the second leak site. It is a paired
+guard with S9: the log and the manifest are both published artifacts,
+and a credential must not survive resolution into either.
 
 ### Provider registration — `registry/registry.py`, `devq.py`
 
@@ -153,6 +197,13 @@ assumed.
 | H1 | `Tags:` header removed from a source file | killed (1) |
 | H2 | block count in `TEST_BLOCKS.md` left stale | killed (1) |
 | H3 | a documented block renamed out of sync with the code | killed (1) |
+| H4 | shipped specs validated RAW, without resolving `${NAME}` | killed (1) |
+
+H4 confirms the block resolves before validating: reverted to
+`json.load` + `validate_spec`, the placeholder spec's raw `${DEVQ_SEED}`
+fails integer coercion and the block's own "validates" assertion goes
+red. A placeholder spec is only well-formed after resolution, so a
+hygiene check that skipped it would wrongly reject a valid shipped spec.
 
 These guard invariants that break silently rather than loudly — nothing
 at runtime depends on them, so only a direct assertion catches a drift.
@@ -174,9 +225,9 @@ an example forces a deliberate change to the pin.
 
 ---
 
-## The four that survived first time
+## The five that survived first time
 
-Each exposed a real gap and produced a new test block.
+Each exposed a real gap and produced a new test block or assertion.
 
 **M3 — the alias was dropped and 37 blocks stayed green.** Removing the
 device name in `DevQ.build()` broke nothing visible, because
@@ -203,6 +254,16 @@ the enforcement entirely, and nothing noticed. Every block registers its
 providers correctly, so a gate that never rejects is indistinguishable
 from one that works: the *happy path* was covered 45 times over and the
 refusal not once. → `provider_registration`.
+
+**R10 — the manifest leak hid behind the header guard.** The header was
+asserted to keep `${NAME}` literal (S9), so it was tempting to think the
+leak was covered — but the manifest is a *second* artifact written to
+the same directory, and nothing read its spec. A resolved `${SECRET}`
+there would ship just as surely. The same one-of-two-sites blind spot as
+P1: the guarded site passed and the unguarded twin went unnoticed. →
+`shipped_workloads` now asserts the manifest verbatim too. The lesson
+generalises to 5.8: every path that writes a spec to disk is a leak
+site, and each needs its own assertion — one is not proxy for another.
 
 ---
 

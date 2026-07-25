@@ -60,6 +60,19 @@ GHZ    = "test_circuits/ghz.qasm"
 
 SEED = 42   # fixed everywhere so mock-device topologies never flap
 
+# The env values placeholders.json resolves against. Held as a constant
+# — not set at module scope — so the two blocks that run that spec set
+# them under their own try/finally and neither leaks DEVQ_* into the
+# rest of the suite. Chosen so the spec resolves to a real,
+# registration-free session (devq.simulated), a coercible int seed, and
+# a coercible float threshold.
+PLACEHOLDER_ENV = {
+    "DEVQ_SEED"     : "42",
+    "DEVQ_VENDOR"   : "devq",
+    "DEVQ_TIER"     : "simulated",
+    "DEVQ_MAX_QERR" : "0.03",
+}
+
 
 
 # ── Session construction ──────────────────────────────────────────────────────
@@ -1520,6 +1533,7 @@ def block_shipped_workloads():
     EXPECTED_JOBS = {
         "smoke.json"          : 5,
         "ibm_federation.json" : 8,
+        "placeholders.json"   : 5,
     }
 
     # KEPT, not deleted. block_benchmark_runner runs 19 sessions into a
@@ -1555,6 +1569,14 @@ def block_shipped_workloads():
           f"every shipped spec has a pinned job count; "
           f"unpinned={sorted(set(specs) - set(EXPECTED_JOBS))}, "
           f"stale={sorted(set(EXPECTED_JOBS) - set(specs))}")
+
+    # The placeholders.json spec references environment variables via
+    # ${NAME}. They must be set BEFORE any spec runs, because R.run ->
+    # load_spec resolves them at load time, and stay set for the
+    # reproduce re-run further down. Values live in PLACEHOLDER_ENV.
+    # Restored in the finally so nothing leaks into later blocks.
+    ph_saved = {k: os.environ.get(k) for k in PLACEHOLDER_ENV}
+    os.environ.update(PLACEHOLDER_ENV)
 
     tmp = tempfile.mkdtemp()
     try:
@@ -1593,6 +1615,45 @@ def block_shipped_workloads():
                   f"{filename} header records its own spec verbatim")
             check(records[-1]["event"] == "summary",
                   f"{filename} log closes with a summary")
+
+            # THE VERBATIM/RESOLVED SPLIT, asserted where it matters most.
+            # For the placeholder spec the header must show ${NAME}
+            # LITERALLY — never the resolved value — because a resolved
+            # ${IONQ_API_KEY} in the header is a secret on disk. Meanwhile
+            # the run must have USED the resolved values. Asserting both
+            # on the same log is what pins the split: the same fields that
+            # read literally in the header drove a real, correct run.
+            if filename == "placeholders.json":
+                header_spec = records[0]["spec"]
+                check(header_spec["seed"] == "${DEVQ_SEED}",
+                      "placeholder header keeps ${DEVQ_SEED} literal, "
+                      f"not resolved — got {header_spec['seed']!r}")
+                check(header_spec["devices"][0]["provider"]
+                      == "${DEVQ_VENDOR}.${DEVQ_TIER}",
+                      "placeholder header keeps the embedded provider "
+                      "placeholder literal")
+                check(header_spec["jobs"][1]["max_qubit_error"]
+                      == "${DEVQ_MAX_QERR}",
+                      "placeholder header keeps the threshold placeholder "
+                      "literal")
+                # ...and the run actually resolved. seed_requested now
+                # mirrors the verbatim literal (Option 2: requested = what
+                # was written), while the per-device seed_effective is the
+                # coerced int the run truly used. Asserting both proves
+                # the split holds end to end.
+                check(records[0]["seed_requested"] == "${DEVQ_SEED}",
+                      "placeholder seed_requested is the verbatim literal, "
+                      f"not the resolved int — got {records[0]['seed_requested']!r}")
+                check(records[0]["devices"][0]["seed_effective"] == 42,
+                      "placeholder run resolved ${DEVQ_SEED} to int 42 "
+                      "for the device that actually ran")
+                # The manifest is written to disk beside the log, so it
+                # is a leak site too — assert it keeps the placeholder
+                # literal, not just the header. (Without this, a manifest
+                # recording the resolved spec passes every other check.)
+                check(manifest["spec"]["seed"] == "${DEVQ_SEED}",
+                      "placeholder manifest keeps ${DEVQ_SEED} literal, "
+                      f"not resolved — got {manifest['spec']['seed']!r}")
 
             # Expanded job count, PINNED per spec rather than computed
             # from the spec being checked. Deriving `expected` from the
@@ -1653,6 +1714,14 @@ def block_shipped_workloads():
                       f"{filename}'s kept log has content, got {len(lines)} records")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+        # Restore the placeholder env vars exactly as found — including
+        # deleting ones that were not set before — so no later block
+        # sees DEVQ_* leaking in.
+        for k, v in ph_saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def block_repo_hygiene():
@@ -1704,29 +1773,45 @@ def block_repo_hygiene():
     # builds its own specs in a temp directory and deletes them, so
     # without these there is nothing a user can actually execute, and
     # nothing would notice if the schema drifted away from them.
-    from benchmark.spec import validate_spec, SpecError
-    import json as _json
+    #
+    # Specs may carry ${NAME} placeholders, which are only valid AFTER
+    # resolution — validating the raw file would reject a ${SEED} the
+    # resolved spec legitimately coerces. So resolve via load_spec under
+    # the documented env, restored immediately after. load_spec returns
+    # (resolved, verbatim); only the resolved half is validated here.
+    from benchmark.spec import load_spec, SpecError
 
     workloads = os.path.join(root, "benchmark", "workloads")
     shipped = sorted(f for f in os.listdir(workloads) if f.endswith(".json"))
     check(shipped, f"workload specs are shipped, found {shipped}")
 
-    for filename in shipped:
-        path = os.path.join(workloads, filename)
-        try:
-            spec = validate_spec(_json.load(open(path)), filename)
-            ok, detail = True, ""
-        except (SpecError, ValueError) as exc:
-            ok, detail = False, str(exc)[:80]
-        check(ok, f"shipped spec {filename} validates{': ' + detail if detail else ''}")
+    ph_saved = {k: os.environ.get(k) for k in PLACEHOLDER_ENV}
+    os.environ.update(PLACEHOLDER_ENV)
+    try:
+        for filename in shipped:
+            path = os.path.join(workloads, filename)
+            try:
+                spec, _verbatim = load_spec(path)
+                ok, detail = True, ""
+            except (SpecError, ValueError) as exc:
+                ok, detail = False, str(exc)[:80]
+            check(ok, f"shipped spec {filename} validates{': ' + detail if detail else ''}")
 
-        # A spec naming a circuit that does not exist would fail only
-        # when someone tried to run it.
-        if ok:
+            if not ok:
+                continue
+
+            # A spec naming a circuit that does not exist would fail only
+            # when someone tried to run it.
             missing = [j["circuit"] for j in spec["jobs"]
                        if not os.path.exists(os.path.join(root, j["circuit"]))]
             check(not missing,
                   f"{filename} references existing circuits, missing {missing}")
+    finally:
+        for k, v in ph_saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     # TEST_BLOCKS.md must stay 1:1 with the block list — a documented
     # block that no longer exists, or an undocumented one, means the

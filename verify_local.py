@@ -241,13 +241,14 @@ def check_spec_runner():
     handle.close()
 
     try:
-        spec = load_spec(handle.name)
+        spec, verbatim = load_spec(handle.name)
         check(True, "spec file loads and validates")
 
         dq = DevQ()
         dq.register_provider("ibm.simulated", IBMSimulatedProvider)
         with contextlib.redirect_stdout(io.StringIO()):
-            shell, meta = build_session(spec, dq, handle.name)
+            shell, meta = build_session(spec, dq, handle.name,
+                                        verbatim=verbatim)
             jobs = submit_jobs(shell, spec, handle.name)
             started = time.monotonic()
             cycles = drain(shell)

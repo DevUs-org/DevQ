@@ -840,6 +840,26 @@ A spec naming a provider the caller must register (`ibm_federation.json`
 does) is not broken — that is the documented extension model — so the
 block supplies the providers DevQ ships.
 
+`placeholders.json` exercises `${NAME}` environment substitution across
+four field shapes: a whole-field int-coerced `seed`, an embedded
+double-substitution `${DEVQ_VENDOR}.${DEVQ_TIER}` in the provider, a
+whole-field float-coerced threshold, and literal fields alongside. The
+block sets the referenced variables (from `PLACEHOLDER_ENV`) before any
+spec runs and restores them in a `finally`, because resolution happens
+at load time and a leaked variable would silently change a later block.
+The values resolve to a registration-free `devq.simulated` session so
+the spec runs without credentials.
+
+That spec also pins the verbatim/resolved split, which is where a secret
+leak would show. The header must record the placeholders LITERALLY —
+`seed` reads `"${DEVQ_SEED}"`, the provider reads
+`"${DEVQ_VENDOR}.${DEVQ_TIER}"` — never their resolved values, since a
+resolved `${IONQ_API_KEY}` in a header is a credential on disk.
+`seed_requested` mirrors the literal for the same reason; the per-device
+`seed_effective` is the resolved integer the run actually used. The
+block asserts both on one log, which is what proves the fields that read
+literally still drove a real, correct run rather than being cosmetic.
+
 Output is written to `test_results/` and KEPT, unlike every other block,
 so a run can be opened and read after the suite finishes. It is
 overwritten each run rather than timestamped, so it cannot accumulate,
@@ -870,7 +890,13 @@ are the only runnable examples of the benchmark runner —
 `block_benchmark_runner` builds its specs in a temp directory and
 deletes them — so without this nothing would notice if the schema
 drifted away from them, and the failure would surface only when someone
-tried to run one.
+tried to run one. It validates through `load_spec`, which RESOLVES
+`${NAME}` placeholders first — a raw `${DEVQ_SEED}` is not a valid
+integer, so a placeholder spec is only well-formed after resolution.
+The block sets `PLACEHOLDER_ENV` around that loop and restores it in a
+`finally`, the same discipline `shipped_workloads` uses, so the check
+sees the resolved values without leaking the variables into later
+blocks.
 
 The tag scan walks DevQ's own packages by name, plus the top-level
 scripts. It must NOT walk the repository root with a blocklist: the
@@ -892,7 +918,10 @@ matrix, so a reader never branches on which it is looking at. The log
 opens with a `header` carrying the spec verbatim and the device table
 (written once, not repeated per record) and closes with a `summary`
 carrying one row per job ordered by job id. The log body itself stays
-chronological; the per-job table is a derived view.
+chronological; the per-job table is a derived view. The manifest records
+the spec verbatim as well — it is written to disk like the log, so a
+resolved `${NAME}` there would leak just as surely; both sites take the
+unresolved copy `load_spec` returns alongside the resolved one.
 
 Three outcomes are distinguished, and the first two must not be
 confused: `completed`, `completed_with_failures` (jobs were rejected or

@@ -87,7 +87,8 @@ def _session_id(config):
     return "__".join(str(config[k]) for k in sorted(config))
 
 
-def _run_one(spec, config, out_dir, session_id, register_providers=None):
+def _run_one(spec, config, out_dir, session_id, register_providers=None,
+             verbatim=None):
     '''
     Run one session to completion and write its event log.
 
@@ -112,7 +113,10 @@ def _run_one(spec, config, out_dir, session_id, register_providers=None):
             json.dump(config, handle, indent=2)
         # A matrix session overrides the spec's own global config: the
         # matrix is what is being varied, and the spec supplies
-        # everything else.
+        # everything else. Only the RESOLVED spec is mutated — verbatim
+        # stays as written, so the header shows the user's spec, not the
+        # runner's injected config path (which the separate `config`
+        # field already records).
         spec = dict(spec)
         spec["config"] = config_path
 
@@ -127,7 +131,8 @@ def _run_one(spec, config, out_dir, session_id, register_providers=None):
                 for name, provider in register_providers.items():
                     dq.register_provider(name, provider)
 
-            shell, meta = build_session(spec, dq, session_id)
+            shell, meta = build_session(spec, dq, session_id,
+                                        verbatim=verbatim)
             shell.kernel.sink = sink
 
             # The header is written ONCE per log rather than repeated on
@@ -227,7 +232,7 @@ def run(spec_path, out_dir=None, matrix=False, resume=False,
     Returns the manifest dict. Writes one JSONL log per session plus
     manifest.json into out_dir.
     '''
-    spec = load_spec(spec_path)
+    spec, verbatim = load_spec(spec_path)
 
     if out_dir is None:
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -245,7 +250,9 @@ def run(spec_path, out_dir=None, matrix=False, resume=False,
                     previous[entry["session_id"]] = entry
 
     manifest = {
-        "spec"       : spec,
+        # Verbatim, not resolved: the manifest is written to disk like
+        # the log, so a resolved ${SECRET} here would leak just as surely.
+        "spec"       : verbatim,
         "spec_path"  : os.path.abspath(spec_path),
         # Recorded rather than reconstructed by the caller: session logs
         # are stored as bare filenames, so deriving the directory from
@@ -272,7 +279,7 @@ def run(spec_path, out_dir=None, matrix=False, resume=False,
             print(f"  [{i}/{len(configs)}] {session_id} ...", end="", flush=True)
 
         entry = _run_one(spec, config, out_dir, session_id,
-                         register_providers)
+                         register_providers, verbatim)
         manifest["sessions"].append(entry)
 
         # Written after EVERY session, not once at the end: an

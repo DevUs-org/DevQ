@@ -1,0 +1,39 @@
+{
+    "name": "placeholders",
+    "seed": "${DEVQ_SEED}",
+    "devices": [
+        {
+            "id": "sim",
+            "provider": "${DEVQ_VENDOR}.${DEVQ_TIER}",
+            "backend": {
+                "kind": "random",
+                "num_qubits": 7
+            }
+        },
+        {
+            "id": "linear",
+            "provider": "devq.simulated",
+            "backend": {
+                "kind": "linear",
+                "num_qubits": 7
+            }
+        }
+    ],
+    "arrival": {
+        "pattern": "batch"
+    },
+    "jobs": [
+        {
+            "circuit": "test_circuits/bell.qasm",
+            "repeat": 3
+        },
+        {
+            "circuit": "test_circuits/ghz.qasm",
+            "repeat": 2,
+            "max_qubit_error": "${DEVQ_MAX_QERR}",
+            "no_exec_on": [
+                "sim"
+            ]
+        }
+    ]
+}

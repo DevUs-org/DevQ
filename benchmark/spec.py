@@ -43,8 +43,12 @@ does not name constructs the provider themselves and attaches its
 device with add_device(), which is the same path a credentialed
 provider takes.
 
-The log still records seed_requested, seed_effective and seed_source,
-so an artifact never claims a seed that did not run.
+The log records seed_requested, seed_effective and seed_source, so an
+artifact never claims a seed that did not run. seed_requested is the
+value AS WRITTEN — for a ${NAME} placeholder spec it is the literal
+"${NAME}", matching the verbatim spec in the header — while
+seed_effective is the resolved integer the run actually used. The two
+coincide for a spec with no placeholder.
 '''
 
 import json
@@ -141,7 +145,19 @@ def _coerce_float(value, key, where):
 
 def load_spec(path):
     '''
-    Read and validate a workload spec file. Returns the parsed dict.
+    Read and validate a workload spec file.
+
+    Returns (resolved, verbatim): the resolved spec drives construction,
+    the verbatim spec is what the log header records. They differ only
+    when the file contains ${NAME} placeholders — resolved has the
+    environment values substituted, verbatim keeps the literal ${NAME}.
+
+    WHY BOTH. A resolved ${IONQ_API_KEY} must never reach disk, so the
+    header records verbatim; but construction needs the real value, so
+    device-building reads resolved. Returning both keeps the two honest
+    and puts the choice at each use site rather than guessing. When a
+    spec has no placeholders the two are equal, so a caller that ignores
+    verbatim loses nothing.
 
     Validation is structural only — it does not resolve providers or
     touch the filesystem beyond reading this file. build_session() does
@@ -163,15 +179,20 @@ def load_spec(path):
 
     # Resolve ${NAME} placeholders against the environment BEFORE
     # validation, so validate_spec checks the values that will actually
-    # run rather than the placeholder text. The unresolved `spec` is not
-    # passed on — but the caller (the runner) records its own verbatim
-    # copy in the log header, so ${...} still appears literally on disk
-    # and a resolved secret never does. Function-level import avoids a
-    # cycle: placeholders imports SpecError from this module.
+    # run rather than the placeholder text. resolve_placeholders returns
+    # a NEW object, so `spec` remains the verbatim original — that copy
+    # is what the header must record, and returning it here is what makes
+    # the "never log a resolved secret" rule enforceable rather than
+    # aspirational. Function-level import avoids a cycle: placeholders
+    # imports SpecError from this module.
     from benchmark.placeholders import resolve_placeholders
     resolved = resolve_placeholders(spec, source=path)
 
-    return validate_spec(resolved, source=path)
+    # Validate the resolved spec (coercion, structural checks). The
+    # verbatim copy is returned unvalidated by design: it is a record of
+    # what was written, not something that will run, and validating it
+    # would reject a ${SEED} the resolved spec legitimately coerced.
+    return validate_spec(resolved, source=path), spec
 
 
 def validate_spec(spec, source="<spec>"):
@@ -311,7 +332,7 @@ def resolve_seed(provider_entry, spec_seed, device_id):
     return instance, spec_seed, source, None
 
 
-def build_session(spec, registry_owner, source="<spec>"):
+def build_session(spec, registry_owner, source="<spec>", verbatim=None):
     '''
     Turn a validated spec into a built DevQ session.
 
@@ -322,9 +343,19 @@ def build_session(spec, registry_owner, source="<spec>"):
     something: a data file that can trigger arbitrary imports is a data
     file that can run arbitrary code.
 
+    `spec` is the RESOLVED spec — placeholders substituted — because
+    device construction needs real values. `verbatim` is what the header
+    records: the spec with ${NAME} placeholders still literal, so a
+    resolved secret never reaches the log. It defaults to `spec`, which
+    is correct for any spec built in code or loaded without placeholders,
+    where the two are identical. A caller with a placeholder spec passes
+    both: build from resolved, record verbatim.
+
     Returns (shell, meta) where meta records the seed resolution per
     device, for the log header.
     '''
+    if verbatim is None:
+        verbatim = spec
     spec_seed = spec.get("seed")
     warnings  = []
     devices   = []
@@ -386,8 +417,16 @@ def build_session(spec, registry_owner, source="<spec>"):
     shell = dq.build(interactive=False)
 
     meta = {
-        "spec": spec,
-        "seed_requested": spec_seed,
+        "spec": verbatim,
+        # WHAT WAS REQUESTED, taken from the verbatim spec: a placeholder
+        # spec shows "${DEVQ_SEED}" here, not 42. This keeps the field
+        # true to its name and consistent with the verbatim `spec` beside
+        # it — "requested" is what the author wrote. The per-device
+        # seed_effective below is the resolved int the run actually used;
+        # requested-vs-effective is the honest provenance pair. For a
+        # spec with no placeholder the two coincide, since the literal is
+        # already the value.
+        "seed_requested": verbatim.get("seed"),
         "devices": [{"id": d["id"], "provider": d["provider"],
                      "kind": d["device"].kind,
                      "index": d["device"].index,
