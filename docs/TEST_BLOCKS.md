@@ -1,7 +1,7 @@
 # DevQ Sanity Test Plan
 
-Specification for the 47 sanity blocks in `run_tests.py`, covering
-Phases 0–5.2 plus the component registry.
+Specification for the 48 sanity blocks in `run_tests.py`, covering
+Phases 0–5.2, the component registry, and the Phase 5.3 metrics layer.
 
 `run_tests.py` asserts **what** each block expects. This document
 records **why** those values are correct — the S-cost arithmetic behind
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 47 blocks, one line each
+python run_tests.py              # all 48 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -1077,6 +1077,59 @@ resolves in varies between runs. DevQ guarantees *decision* determinism
 (same seed, same routing, allocation and counts), not completion-order
 determinism. A determinism comparison therefore sorts on `seq` and
 excludes wall-clock fields.
+
+
+### `metrics`
+
+Covers the Phase 5.3 offline metrics layer — throughput, queue latency
+and utilisation — defined in [`METRICS.md`](METRICS.md).
+
+The block has two halves, because wall-clock `*_at` is
+non-deterministic. Exact numbers are asserted only against a **hand-built
+records list** with timestamps chosen for checkable arithmetic; the real
+run asserts shape, population and invariants that hold regardless of the
+actual times. Asserting a metric against the module's own output on a
+real run would prove nothing, so it is never done.
+
+The synthetic fixture is four jobs: three dispatched (dev 0 at
+`[110,160)` and `[130,170)`, dev 1 at `[120,140)`) and one rejected with
+`None` timings. The values it must reproduce, all computed by hand:
+
+- **execution throughput** `3/60` — span `max(resolved)=170 −
+  min(dispatched)=110`, over the 3 dispatched jobs.
+- **turnaround throughput** `4/70` — span `170 − min(submitted)=100`,
+  over all 4 submitted.
+- **queue latency** over waits `[10,20,30]` — the rejected job's `None`
+  is skipped, not counted as `0`; median and mean are `20`, and the
+  **nearest-rank** p95 is `ceil(0.95·3)=3`rd value `= 30`. Nearest-rank
+  is the fixed convention (small job counts make interpolation invent
+  precision); a library default would change this number.
+- **utilisation** — dev 0's two intervals `[110,160)` and `[130,170)`
+  *overlap*, so their union is `[110,170)=60`, giving `60/60 = 1.0`.
+  Summing instead would give `90/60 = 1.5`, an impossible utilisation —
+  so this directly asserts the interval **union**, not a sum. Dev 1 is
+  `20/60 = 1/3`. System is `(60+20)/(60·2) = 2/3`, the busy-weighted
+  mean of the per-device fractions over the shared execution-span
+  window.
+
+The **population rule** is asserted on its own: an all-rejected run makes
+every metric `None`, never `0` — a run that rejected everything has an
+honestly undefined throughput, not a throughput of zero. A
+dispatched-but-unresolved job contributes no interval, so the
+utilisation window is undefined too.
+
+The real half runs a two-device `devq.simulated` session and asserts the
+bundle carries the three groups; that execution throughput ≥ turnaround
+(the execution span is a subset of the turnaround span); that every
+per-device fraction is in `[0,1]` and the system figure lies between the
+extremes; and that the latency distribution is internally ordered. It
+also asserts the **two ways in** agree — a `RecordSink` and the reparsed
+`.jsonl` are the same records, so `compute` gives the same bundle shape
+from both. Finally the writer is checked: `write_metrics` drops
+`metrics.json` beside the manifest, keyed by session id, and its return
+value equals the file byte-for-byte — the round-trip matters because
+JSON has no integer keys, so per-device maps carry **string** device
+keys on disk and a caller must see the same.
 
 
 ### `router_scoring`

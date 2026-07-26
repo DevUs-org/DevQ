@@ -43,10 +43,15 @@ cannot.
 
 ## Results
 
-**66 distinct mutants, 64 killed, 2 excluded** (M10 equivalent and P7
+**70 distinct mutants, 68 killed, 2 excluded** (M10 equivalent and P7
 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
+
+The total is delta-consistent, not recounted: 66/64/2 from the prior
+state plus the 4 new Metrics mutants below, each verified by running the
+mutant against the `metrics` block, not assumed. The pre-existing set was
+taken as given.
 
 ### Device identity — `hardware/device.py`, `providers/`, `devq.py`
 
@@ -101,6 +106,31 @@ behind by the refactor.
 | T5 | `execution_time` `None` guard removed | killed (1) |
 | T6 | `resolved_at` never stamped | killed (1) |
 | T7 | `queue_latency` `None` guard removed | killed (1) |
+
+### Metrics — `benchmark/metrics.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| MET1 | interval union counts overlap twice (`sum`, not union) | killed (1) |
+| MET2 | population rule disabled (`None` timings not skipped) | killed (1) |
+| MET3 | nearest-rank p95 uses `floor` instead of `ceil` | killed (1) |
+| MET4 | empty-population throughput returns `0` instead of `None` | killed (1) |
+
+These are the four claims the module makes, each turned into a mutant and
+run against the `metrics` block rather than assumed dead from a green
+suite. MET1 is the load-bearing one: summing overlapping intervals gives
+dev 0 a utilisation of `90/60 = 1.5`, so the block's `≤ 1.0` and
+`= 1.0` assertions on the hand-built fixture both fail — the union is
+what makes utilisation a fraction at all. MET2 breaks the skip rule a
+rejected job depends on: counting its `None` wait folds a phantom `0`
+into the latency distribution and its absent interval into utilisation.
+MET3 is why the p95 convention is pinned — `floor(0.95·3)=2` returns the
+2nd value `20` where nearest-rank returns the 3rd, `30`; a silent switch
+to a library default would move the number without any test noticing
+unless the convention is asserted, which it is. MET4 is the
+`None`-not-zero rule: a run that rejected everything has an undefined
+throughput, and a `0` would misreport it as infinitely slow work rather
+than no work.
 
 ### Workload spec — `benchmark/spec.py`, `providers/base_provider.py`
 

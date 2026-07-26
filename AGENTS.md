@@ -47,6 +47,7 @@ lets them run as plugins in one system on identical workloads.
 | `circuits/` | Circuit representation, QASM loading, execution futures |
 | `run_tests.py` | The whole test suite — 46 blocks, no pytest |
 | `benchmark/runner.py` | Run a workload spec, or the whole component matrix, into a run directory |
+| `benchmark/metrics.py` | Offline metrics from a finished run — throughput, queue latency, utilisation — see `docs/METRICS.md` |
 | `benchmark/workloads/` | Runnable example specs, also used as test fixtures — see `docs/WORKLOADS.md` |
 | `test_results/` | Output of those specs from the last test run, kept for inspection. Gitignored, overwritten, safe to delete |
 | `verify_local.py` | Run on YOUR machine: interactive shell, readline backend, real concurrency, pinned values |
@@ -60,6 +61,7 @@ Documentation, all under `docs/`:
 | `CONFIGURATION.md` | Config keys, the cascade, scopes, seeding |
 | `REGISTRY.md` | Writing a plugin — contracts, `KeySpec`, validation |
 | `COST_MODEL.md` | The maths behind routing and allocation scores |
+| `METRICS.md` | Reading a run's results — the metric definitions |
 | `TEST_BLOCKS.md` | What each test block proves and why |
 | `WORKLOADS.md` | The shipped workload specs, what each exercises, and how to run them |
 | `MUTATION_TESTING.md` | Whether the tests would notice a regression — mutants run, killed, and the gaps they exposed |

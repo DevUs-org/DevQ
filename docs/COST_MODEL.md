@@ -11,9 +11,9 @@ selection). Weight resolution and normalisation live in
 `config/config_loader.py`. The values below are what `qconfig` reports
 and what [`TEST_BLOCKS.md`](TEST_BLOCKS.md) asserts against.
 
-**Scope.** Phase 5.1. Phase 5.3 will extend this file with the metrics
-layer (fidelity against closed-form ideals, throughput, queue latency,
-utilisation, rejection rate, load balance) using the same notation.
+**Scope.** Phase 5.1. The Phase 5.3 metrics layer — the quantities
+computed from a completed run — is defined in [`METRICS.md`](METRICS.md),
+in this notation.
 
 ---
 

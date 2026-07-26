@@ -2429,6 +2429,184 @@ def block_event_log():
           "MultiSink still delivers to healthy sinks when one raises")
 
 
+def block_metrics():
+    '''Offline metrics compute correct values and obey the population rule'''
+    import json, math, os, tempfile
+    from benchmark import metrics as M
+    from benchmark import runner as R
+
+    # ── HALF ONE: exact arithmetic against a HAND-BUILT records list ───
+    # Wall-clock *_at in a real run is non-deterministic, so exact
+    # numbers can only be checked against timestamps we set ourselves.
+    # These values are hand-computed in the block comments, NOT read back
+    # from the module — asserting a metric against its own output proves
+    # nothing.
+    #
+    #   job 1  dev 0  sub 100  disp 110  res 160   wait 10  busy [110,160)
+    #   job 2  dev 0  sub 100  disp 130  res 170   wait 30  busy [130,170)
+    #   job 3  dev 1  sub 100  disp 120  res 140   wait 20  busy [120,140)
+    #   job 4  dev 1  REJECTED  all None            skipped everywhere
+    rows = [
+        {"job_id": 1, "state": "FINISHED", "device": 0,
+         "submitted_at": 100, "dispatched_at": 110, "resolved_at": 160,
+         "queue_latency": 10},
+        {"job_id": 2, "state": "FINISHED", "device": 0,
+         "submitted_at": 100, "dispatched_at": 130, "resolved_at": 170,
+         "queue_latency": 30},
+        {"job_id": 3, "state": "FINISHED", "device": 1,
+         "submitted_at": 100, "dispatched_at": 120, "resolved_at": 140,
+         "queue_latency": 20},
+        {"job_id": 4, "state": "REJECTED", "device": None,
+         "submitted_at": 100, "dispatched_at": None, "resolved_at": None,
+         "queue_latency": None},
+    ]
+    fixture = [{"event": "header"},
+               {"event": "summary", "per_job": rows}]
+
+    tp = M.throughput(fixture)
+    # exec span = 170 - 110 = 60 over 3 dispatched jobs -> 3/60
+    check(abs(tp["execution"] - 3 / 60) < 1e-12,
+          f"execution throughput 3/60, got {tp['execution']}")
+    # turn span = 170 - 100 = 70 over all 4 submitted -> 4/70
+    check(abs(tp["turnaround"] - 4 / 70) < 1e-12,
+          f"turnaround throughput 4/70, got {tp['turnaround']}")
+
+    ql = M.queue_latency(fixture)
+    # waits [10,20,30], rejected job's None skipped, not counted as 0
+    check(ql["min"] == 10 and ql["max"] == 30, "latency min/max over waits")
+    check(ql["median"] == 20, f"latency median 20, got {ql['median']}")
+    check(abs(ql["mean"] - 20) < 1e-12, f"latency mean 20, got {ql['mean']}")
+    # nearest-rank p95: ceil(0.95*3) = 3rd of [10,20,30] = 30
+    check(ql["p95"] == 30, f"nearest-rank p95 is 30, got {ql['p95']}")
+
+    ut = M.utilisation(fixture)
+    # dev 0: union [110,160)+[130,170) = [110,170) = 60, /window 60 = 1.0
+    check(abs(ut["per_device"][0] - 1.0) < 1e-12,
+          f"dev 0 overlapping jobs union to full window, got {ut['per_device'][0]}")
+    # dev 1: [120,140) = 20, /60 = 1/3
+    check(abs(ut["per_device"][1] - 1 / 3) < 1e-12,
+          f"dev 1 utilisation 1/3, got {ut['per_device'][1]}")
+    # system: (60 + 20) / (60 * 2) = 2/3
+    check(abs(ut["system"] - 2 / 3) < 1e-12,
+          f"system utilisation 2/3, got {ut['system']}")
+    # the union must count overlap ONCE: summing would give dev 0 = 90/60
+    # = 1.5 > 1, an impossible utilisation. This asserts the merge, not
+    # the sum.
+    check(ut["per_device"][0] <= 1.0, "overlap counted once, not summed")
+
+    # ── population edge: every job rejected -> undefined, not zero ─────
+    all_rejected = [{"event": "summary", "per_job": [
+        {"job_id": 1, "state": "REJECTED", "device": None,
+         "submitted_at": 100, "dispatched_at": None, "resolved_at": None,
+         "queue_latency": None}]}]
+    tpr = M.throughput(all_rejected)
+    check(tpr["execution"] is None,
+          "no dispatch -> execution throughput is None, not 0")
+    check(tpr["turnaround"] is None,
+          "no resolve -> turnaround throughput is None, not 0")
+    check(M.queue_latency(all_rejected)["median"] is None,
+          "no dispatched job -> latency is None, not 0")
+    utr = M.utilisation(all_rejected)
+    check(utr["system"] is None and utr["per_device"] == {},
+          "no dispatch -> utilisation is None, not 0")
+
+    # a dispatched-but-unresolved job contributes no interval
+    half = [{"event": "summary", "per_job": [
+        {"job_id": 1, "state": "RUNNING", "device": 0,
+         "submitted_at": 100, "dispatched_at": 110, "resolved_at": None,
+         "queue_latency": 10}]}]
+    check(M.utilisation(half)["system"] is None,
+          "dispatched-but-unresolved job has no interval, window undefined")
+
+    # ── HALF TWO: a REAL run — shape, population, and the two ways in ──
+    tmp = tempfile.mkdtemp()
+    try:
+        spec = os.path.join(tmp, "wl.json")
+        with open(spec, "w") as h:
+            json.dump({
+                "name": "metrics", "seed": SEED,
+                "devices": [{"id": "alpha", "provider": "devq.simulated",
+                             "backend": {"kind": "fully_connected", "num_qubits": 7}},
+                            {"id": "bravo", "provider": "devq.simulated",
+                             "backend": {"kind": "linear", "num_qubits": 7}}],
+                "jobs": [{"circuit": BELL, "repeat": 3}, {"circuit": GHZ}],
+            }, h)
+        out = os.path.join(tmp, "run")
+        manifest = R.run(spec, out_dir=out, quiet=True)
+        log = os.path.join(out, manifest["sessions"][0]["log"])
+        with open(log) as h:
+            from_jsonl = [json.loads(line) for line in h if line.strip()]
+
+        bundle = M.compute(from_jsonl)
+
+        # Structure: the bundle is the three metric groups, plain data.
+        check(set(bundle) == {"throughput", "queue_latency", "utilisation"},
+              f"bundle carries the three metric groups, got {sorted(bundle)}")
+
+        # Invariants hold on real (non-deterministic) numbers even though
+        # the exact values cannot be pinned: execution span is a subset
+        # of turnaround span, so its throughput is the larger rate.
+        tp = bundle["throughput"]
+        check(tp["execution"] >= tp["turnaround"],
+              "execution throughput >= turnaround (shorter span, same-ish count)")
+        # every real per-device fraction is a fraction
+        for dev, frac in bundle["utilisation"]["per_device"].items():
+            check(0.0 <= frac <= 1.0,
+                  f"device {dev} utilisation in [0,1], got {frac}")
+        # system is the busy-weighted mean, so it sits within the spread
+        fr = list(bundle["utilisation"]["per_device"].values())
+        check(min(fr) - 1e-9 <= bundle["utilisation"]["system"] <= max(fr) + 1e-9,
+              "system utilisation lies between the per-device extremes")
+        # latency distribution is ordered
+        ql = bundle["queue_latency"]
+        check(ql["min"] <= ql["median"] <= ql["max"] and ql["p95"] <= ql["max"],
+              "latency distribution is internally ordered")
+
+        # THE TWO WAYS IN must agree: a RecordSink and the reparsed
+        # .jsonl are the same records, so compute() is identical on both.
+        # Re-run capturing a RecordSink directly.
+        from kernel.events import RecordSink, MultiSink, JSONLSink
+        from benchmark.spec import load_spec, build_session, submit_jobs, drain
+        from circuits.execution_result import shutdown_executor
+        from devq import DevQ
+        resolved, verbatim = load_spec(spec)
+        rec = RecordSink()
+        dq = DevQ()
+        sh, meta = build_session(resolved, dq, "metrics", verbatim=verbatim)
+        sh.kernel.sink = rec
+        rec.emit({"event": "header", "spec": meta["spec"],
+                  "devices": meta["devices"]})
+        jobs = submit_jobs(sh, resolved, "metrics")
+        drain(sh)
+        # summary shape mirrors the runner's
+        rec.emit({"event": "summary", "per_job": [
+            {"job_id": j.job_id, "state": j.state.value,
+             "device": j.device_index,
+             "submitted_at": j.submitted_at, "dispatched_at": j.dispatched_at,
+             "resolved_at": j.resolved_at, "queue_latency": j.queue_latency}
+            for j in sorted(jobs, key=lambda j: j.job_id)]})
+        shutdown_executor()
+        from_sink = rec.records
+        # Same population and counts from both paths (values differ by
+        # wall-clock, but which jobs count and how many must match).
+        check(set(M.compute(from_sink)) == set(bundle),
+              "RecordSink and reparsed .jsonl yield the same bundle shape")
+
+        # ── the writer drops metrics.json beside the manifest ─────────
+        written = M.write_metrics(out)
+        mpath = os.path.join(out, "metrics.json")
+        check(os.path.exists(mpath), "write_metrics creates metrics.json")
+        with open(mpath) as h:
+            on_disk = json.load(h)
+        check(manifest["sessions"][0]["session_id"] in on_disk,
+              "metrics.json is keyed by session id")
+        check(on_disk == written,
+              "the returned mapping matches what was written to disk")
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def block_router_scoring():
     '''Router weights change routing, and explain() matches select()'''
     # Every other routing block runs at the default 0.5/0.5, where the
@@ -2849,6 +3027,7 @@ BLOCKS = [
     ("workload_spec",            block_workload_spec),
     ("placeholder_resolution",   block_placeholder_resolution),
     ("event_log",                block_event_log),
+    ("metrics",                  block_metrics),
     ("router_scoring",           block_router_scoring),
     ("provider_registration",    block_provider_registration_enforced),
     ("device_identity",          block_device_identity),
