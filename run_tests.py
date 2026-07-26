@@ -1864,6 +1864,19 @@ def block_benchmark_runner():
         check(entry["jobs"] == 3, f"repeat expanded to 3 jobs, got {entry['jobs']}")
         check(os.path.exists(os.path.join(out, "manifest.json")),
               "a manifest is written")
+        # run() computes metrics as part of finishing a run, so a run
+        # directory is self-contained: logs, manifest, AND metrics.json.
+        # The comparative modes read this file, so a run that produced
+        # logs but no metrics would be a silent gap.
+        mpath = os.path.join(out, "metrics.json")
+        check(os.path.exists(mpath), "run() writes metrics.json beside the manifest")
+        with open(mpath) as handle:
+            metrics_json = json.load(handle)
+        check(entry["session_id"] in metrics_json,
+              "metrics.json carries the session's metrics, keyed by session id")
+        check(set(metrics_json[entry["session_id"]]) ==
+              {"throughput", "queue_latency", "utilisation"},
+              "the session's metrics carry the three metric groups")
 
         # A single run uses the SAME directory structure as a matrix, so
         # a reader never branches on which it is looking at.

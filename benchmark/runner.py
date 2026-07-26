@@ -9,6 +9,7 @@ ended.
 
     results/matrix_20260723_142530/
         manifest.json
+        metrics.json
         packing__noise_graph__noise.jsonl
         packing__noise_graph__round_robin.jsonl
         ...
@@ -296,6 +297,21 @@ def run(spec_path, out_dir=None, matrix=False, resume=False,
                 print(f" {entry['outcome']} "
                       f"({entry.get('jobs', 0)} jobs, "
                       f"{entry.get('cycles', 0)} cycles)")
+
+    # Metrics are computed AFTER the manifest is whole, and their failure
+    # is swallowed by design: an expensive run's logs must never be lost
+    # to a bug in the metrics pass, the same isolation the per-session
+    # crash handling gives. A missing metrics.json is recoverable — the
+    # logs are intact and `metrics.write_metrics(out_dir)` reruns it —
+    # whereas a lost log is not. write_metrics itself skips crashed and
+    # summary-less sessions, so it degrades to whatever succeeded.
+    try:
+        from benchmark.metrics import write_metrics
+        write_metrics(out_dir)
+    except Exception as exc:      # noqa: BLE001 — observability, not control
+        if not quiet:
+            print(f"  metrics pass failed ({type(exc).__name__}: {exc}); "
+                  f"logs are intact, rerun write_metrics(out_dir)")
 
     return manifest
 

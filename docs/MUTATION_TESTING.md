@@ -43,14 +43,14 @@ cannot.
 
 ## Results
 
-**70 distinct mutants, 68 killed, 2 excluded** (M10 equivalent and P7
+**71 distinct mutants, 69 killed, 2 excluded** (M10 equivalent and P7
 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
 The total is delta-consistent, not recounted: 66/64/2 from the prior
-state plus the 4 new Metrics mutants below, each verified by running the
-mutant against the `metrics` block, not assumed. The pre-existing set was
+state plus the 5 new Metrics mutants below, each verified by running the
+mutant against the affected block, not assumed. The pre-existing set was
 taken as given.
 
 ### Device identity — `hardware/device.py`, `providers/`, `devq.py`
@@ -115,6 +115,7 @@ behind by the refactor.
 | MET2 | population rule disabled (`None` timings not skipped) | killed (1) |
 | MET3 | nearest-rank p95 uses `floor` instead of `ceil` | killed (1) |
 | MET4 | empty-population throughput returns `0` instead of `None` | killed (1) |
+| MET5 | `run()` skips the `write_metrics` pass | killed (1) |
 
 These are the four claims the module makes, each turned into a mutant and
 run against the `metrics` block rather than assumed dead from a green
@@ -130,7 +131,12 @@ to a library default would move the number without any test noticing
 unless the convention is asserted, which it is. MET4 is the
 `None`-not-zero rule: a run that rejected everything has an undefined
 throughput, and a `0` would misreport it as infinitely slow work rather
-than no work.
+than no work. MET5 guards the wiring rather than a formula — `run()`
+computes metrics as part of finishing a run, so a run directory is
+self-contained (logs, manifest, `metrics.json`); skipping the pass leaves
+a directory the comparative modes cannot read, and the `benchmark_runner`
+block fails on the missing file. The pass itself is failure-swallowed, so
+this mutant tests that the call is *present*, not that it is fatal.
 
 ### Workload spec — `benchmark/spec.py`, `providers/base_provider.py`
 
