@@ -23,8 +23,9 @@ python benchmark/runner.py benchmark/workloads/smoke.json --matrix --resume
 
 Output lands in `results/<name>_<timestamp>/` — gitignored, so it never
 pollutes the repo, and safe to delete whenever you are done with a run.
-Each directory holds one JSONL event log per session plus a
-`manifest.json`. Override the location with `--out`.
+Each directory holds one JSONL event log per session, a `manifest.json`,
+and a `metrics.json` computed from the logs once the run finishes (see
+[`METRICS.md`](METRICS.md)). Override the location with `--out`.
 
 ### Where the test suite puts things
 
@@ -37,7 +38,8 @@ Two directories, both gitignored, for two different purposes:
 
 `test_results/` exists so a run is inspectable after the suite finishes —
 open `test_results/smoke/default.jsonl` to see exactly what the runner
-produced. It holds only these shipped specs.
+produced, or `test_results/smoke/metrics.json` for the computed metrics.
+It holds only these shipped specs.
 
 The other 19 sessions the suite runs (`benchmark_runner`'s matrix and its
 deliberately crashed session) still go to a temp directory and are

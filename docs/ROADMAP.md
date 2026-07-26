@@ -137,6 +137,27 @@ without touching DevQ core. Open research problems that live at the router
 layer: cross-backend shot aggregation, coherence-window scheduling, and
 work migration of WAITING jobs.
 
+Phase 5 is tracked in sub-phases while it is in flight. This breakdown is
+a working tracker and will be collapsed back into the single description
+above once Phase 5 ships:
+
+- **5.1 — determinism, registry, event log** ✅ seeded per-device
+  determinism, the component registry, and the structured event log with
+  two-clock timestamps.
+- **5.2 — spec and runner** ✅ workload specs, the run directory, and
+  `${}` spec placeholders that keep credentials out of logged artifacts.
+- **5.3 — metrics layer** ✅ throughput, queue latency and utilisation,
+  computed offline from a finished run (see [`METRICS.md`](METRICS.md)).
+  Rejection rate, load balance and fidelity remain to be added.
+- **5.4 — workload suite** 🔭 QASMBench and a noiseless reference run for
+  the circuits without a closed-form ideal.
+- **5.5 — comparison matrix and α/β sweep** 🔭 answerable from one
+  recorded run via the per-candidate route scores.
+- **5.6 — baseline plugins** 🔭 published baselines to compare against;
+  this is what turns the platform into a result.
+- **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer.
+- **5.8 — real hardware** 🔭 gated on credits and access.
+
 ### 🔭 Phase 6 — Interchangeable Frontends (planned)
 Today circuits enter DevQ as OpenQASM files. Phase 6 opens the top of the
 stack the same way `BaseProvider` opens the bottom: a frontend adapter

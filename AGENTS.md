@@ -45,7 +45,7 @@ lets them run as plugins in one system on identical workloads.
 | `config/` | `ConfigLoader` — the four-level configuration cascade |
 | `shell/` | QShell and the JobSpec parser |
 | `circuits/` | Circuit representation, QASM loading, execution futures |
-| `run_tests.py` | The whole test suite — 46 blocks, no pytest |
+| `run_tests.py` | The whole test suite — 48 blocks, no pytest |
 | `benchmark/runner.py` | Run a workload spec, or the whole component matrix, into a run directory |
 | `benchmark/metrics.py` | Offline metrics from a finished run — throughput, queue latency, utilisation — see `docs/METRICS.md` |
 | `benchmark/workloads/` | Runnable example specs, also used as test fixtures — see `docs/WORKLOADS.md` |
@@ -328,7 +328,7 @@ concurrency and the pinned calibration values — three past bugs were
 invisible in a 1-CPU sandbox and only appeared under macOS/libedit.
 
 Before trusting a green suite, see
-[`docs/MUTATION_TESTING.md`](docs/MUTATION_TESTING.md): three mutants
+[`docs/MUTATION_TESTING.md`](docs/MUTATION_TESTING.md): five mutants
 survived a fully green run, and each exposed a test that was asserting
 nothing.
 

@@ -303,7 +303,7 @@ site, and each needs its own assertion — one is not proxy for another.
 
 ---
 
-## Two test blocks were self-satisfying when first written
+## Three test blocks were self-satisfying when first written
 
 This happened three times. `router_scoring` originally asserted
 `explain()` against `select()`.
@@ -311,10 +311,10 @@ Both read one shared scoring path, so a mutation moves them *together*
 and the comparison still holds — 3 of 7 mutants survived. Fixed by
 pinning scores to independently computed values.
 
-`shipped_workloads` later did the same thing in a third costume,
+`shipped_workloads` later did the same thing in a second costume,
 deriving a spec's expected job count from that spec.
 
-A fourth costume appeared with `provider_registration`, and it is worth
+A third costume appeared with `provider_registration`, and it is worth
 recording because the mechanism is different. The assertion was written
 as `check(False, ...)` inside a `try` whose `except Exception` followed —
 so when the mutant made registration *succeed*, `check(False)` raised its
