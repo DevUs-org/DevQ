@@ -860,6 +860,16 @@ resolved `${IONQ_API_KEY}` in a header is a credential on disk.
 block asserts both on one log, which is what proves the fields that read
 literally still drove a real, correct run rather than being cosmetic.
 
+`rejection.json` is the shipped fixture for the rejection-rate metric.
+Half its jobs carry an impossibly strict `max_qubit_error`, so routing
+finds no feasible device and rejects them terminally while the rest
+complete — a `completed_with_failures` outcome, which is a *result*, not
+a crash. The block computes `rejection_rate` on this real shipped run and
+asserts the hand-known 2-of-4 (rate `0.5`); asserting the metric on a
+genuine run, not a hand-built records list, is what proves it works end
+to end. This is also the one spec whose kept `test_results/` output has a
+non-zero rejection rate to inspect.
+
 Output is written to `test_results/` and KEPT, unlike every other block,
 so a run can be opened and read after the suite finishes. It is
 overwritten each run rather than timestamped, so it cannot accumulate,
