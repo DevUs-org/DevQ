@@ -164,6 +164,18 @@ def _run_one(spec, config, out_dir, session_id, register_providers=None,
                 "jobs"  : len(jobs),
                 "cycles": cycles,
                 "states": states,
+                # The full attached-device roster, index -> id, in device
+                # order. per_job only names devices that RAN, so a metric
+                # measuring spread across the fleet (load balance) cannot
+                # see an idle device from per_job alone. Recording the
+                # roster here keeps the summary self-sufficient — every
+                # metric reads one record, not the header too — and lets
+                # metrics.json label per-device output by id rather than
+                # bare index. Every device has an id (the spec requires
+                # it), and indices are dense in add order.
+                "devices_attached": {
+                    str(i): d["id"] for i, d in enumerate(meta["devices"])
+                },
                 "per_job": [{
                     "job_id"        : j.job_id,
                     "state"         : j.state.value,

@@ -11,10 +11,11 @@ Notation follows [`COST_MODEL.md`](COST_MODEL.md). The two-clock model
 (`seq` vs `*_at`) and the event-log structure it refers to are defined in
 [`REGISTRY.md`](REGISTRY.md).
 
-**Status.** Throughput, queue latency, utilisation and rejection rate are
-specified below and implemented in `benchmark/metrics.py`, verified by the
-`metrics` test block. Load balance and fidelity are named but not yet
-specified, and will be added as they are settled.
+**Status.** Throughput, queue latency, utilisation, rejection rate and
+load balance are specified below and implemented in
+`benchmark/metrics.py`, verified by the `metrics` test block. Fidelity is
+named but not yet specified, and will be added once its noiseless
+reference (Phase 5.4) exists.
 
 ---
 
@@ -25,9 +26,10 @@ specified, and will be added as they are settled.
 Metrics are computed **offline** from a finished run: either the JSONL
 log in a run directory, or an in-memory `RecordSink` from the same
 session. Nothing here runs during execution or touches the kernel; the
-layer is a read-only pass over the logged artifact. All three metrics
-below are derivable from the per-job rows in the closing `summary` record
-alone — none requires a change to the execution path.
+layer is a read-only pass over the logged artifact. Every metric below is
+derived from the closing `summary` record — mostly its per-job rows, and
+for load balance also its `devices_attached` roster — so none requires a
+change to the execution path, and each reads a single record type.
 
 ### The two clocks
 
@@ -234,3 +236,52 @@ A reason breakdown (rejected *why*) is deferrable: rejection reasons are
 free-text router strings today and REJECTED is uniformly "no feasible
 device", so a breakdown would couple the metric to unstructured messages.
 It lands once reasons are structured.
+---
+
+## Load balance
+
+Input: `summary` per-job rows and the `devices_attached` roster.
+
+How evenly work spread across **all attached devices**, including idle
+ones. The idle device is the whole point: a router that sends everything
+to one device and starves another is the opposite of balanced, and that
+is only visible if the idle device counts as zero load. Measuring spread
+over only the devices that *ran* would report a starved fleet as
+perfectly balanced.
+
+This is why the summary records `devices_attached` (an index → id map of
+the full roster): the per-job rows name only devices that ran, so an idle
+device is invisible without it. Recording the roster in the summary keeps
+every metric reading a single record, and lets the per-device output be
+labelled by device id rather than bare index.
+
+Reported on two bases, because they can disagree — a device running one
+long job versus three short ones is balanced by count but not by busy
+time:
+
+- **by_count** — dispatched job count per device.
+- **by_busy_time** — union-busy time per device, reusing utilisation's
+  interval union so "busy" means one thing across the metrics.
+
+Each basis carries the per-device distribution (idle devices at `0`), the
+spread as a **population coefficient of variation**, and a convenience
+reading:
+
+$$\text{cv} = \frac{\sigma}{\mu}, \qquad \text{load\_balance} = \frac{1}{1 + \text{cv}}$$
+
+where $\sigma$ is the **population** standard deviation (denominator $n$,
+not $n-1$: we measure the actual device set, not a sample from a larger
+population — and it keeps the value reproducible and hand-checkable). CV
+is `0` for a perfectly even spread and grows without bound as imbalance
+increases; it is the standard load-imbalance measure and is scale-free,
+so it compares across runs with different job counts. Because a high CV
+means *worse* balance, the `load_balance` field inverts it into $(0, 1]$
+— `1.0` perfectly balanced, approaching `0` as one device is starved —
+for whoever wants a higher-is-better reading without inverting the CV
+themselves.
+
+Edge cases follow the population rule. A single attached device has no
+spread, so CV is `0` and load_balance `1.0` — one device cannot be
+imbalanced. When there is no load to spread (every job rejected, so the
+per-device mean is zero), CV is undefined and both `cv` and
+`load_balance` are `None`, not `0`.

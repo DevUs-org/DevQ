@@ -236,6 +236,104 @@ def rejection_rate(records):
     return {"rejected": rejected, "submitted": submitted, "rate": rate}
 
 
+# ── load balance ────────────────────────────────────────────────────────
+
+def _cv(values):
+    '''
+    Population coefficient of variation: stddev / mean, with population
+    stddev (denominator n, not n-1). We measure the actual set of devices
+    in this run, not a sample from a larger population, so n is correct —
+    and it keeps the value reproducible and hand-checkable.
+
+    Returns None when the mean is zero (no load to spread), since CV is
+    undefined there rather than zero. A single value has zero spread, so
+    CV is 0.0 — one device cannot be imbalanced.
+    '''
+    n = len(values)
+    if n == 0:
+        return None
+    m = sum(values) / n
+    if m == 0:
+        return None
+    var = sum((v - m) ** 2 for v in values) / n
+    return (var ** 0.5) / m
+
+
+def _roster(records):
+    '''
+    Attached-device roster as an ordered list of (index, id).
+
+    Prefers the summary's `devices_attached` — the whole point of
+    recording it is that per_job names only devices that RAN, so an idle
+    device is invisible without the roster. Falls back to the devices
+    that appear in per_job when the roster is absent (a hand-built or
+    pre-roster log); that fallback cannot see idle devices, so a real run
+    always carries the roster.
+    '''
+    summary = _summary(records)
+    attached = summary.get("devices_attached")
+    if attached:
+        return [(int(i), name) for i, name in sorted(
+            attached.items(), key=lambda kv: int(kv[0]))]
+    # Fallback: only devices that ran are recoverable.
+    seen = {}
+    for r in summary["per_job"]:
+        dev = r.get("device")
+        if dev is not None:
+            seen.setdefault(dev, str(dev))
+    return sorted(seen.items())
+
+
+def load_balance(records):
+    '''
+    How evenly work spread across ALL attached devices — including idle
+    ones, which is the whole point: a router that starves a device is the
+    opposite of balanced, and that is only visible if idle devices count
+    as zero load.
+
+    Reported on two bases, because they can disagree — a device running
+    one long job versus three short ones is balanced by count but not by
+    busy time:
+      - by_count:     dispatched job count per device
+      - by_busy_time: union-busy time per device (reusing utilisation's
+                      interval union, so "busy" means one thing)
+
+    Each basis carries the per-device distribution (labelled by device
+    id), the population coefficient of variation `cv` (0 = perfectly
+    balanced, growing with imbalance), and a `load_balance` convenience
+    reading `1 / (1 + cv)` in (0, 1] for whoever wants "higher = better"
+    without inverting the CV themselves. When cv is None (no load to
+    spread), load_balance is None too.
+    '''
+    rows = _summary(records)["per_job"]
+    roster = _roster(records)
+
+    # Count per device: every attached device, idle ones at 0.
+    counts = {idx: 0 for idx, _ in roster}
+    for r in rows:
+        dev = r.get("device")
+        if dev is not None and dev in counts:
+            counts[dev] += 1
+
+    # Busy time per device: union of each device's intervals, idle at 0.0.
+    intervals = {idx: [] for idx, _ in roster}
+    for r in rows:
+        dev = r.get("device")
+        if (dev is not None and dev in intervals
+                and r.get("dispatched_at") is not None
+                and r.get("resolved_at") is not None):
+            intervals[dev].append((r["dispatched_at"], r["resolved_at"]))
+    busy = {idx: _union_length(ivs) for idx, ivs in intervals.items()}
+
+    def basis(per_index):
+        labelled = {name: per_index[idx] for idx, name in roster}
+        cv = _cv([per_index[idx] for idx, _ in roster])
+        balance = 1 / (1 + cv) if cv is not None else None
+        return {"per_device": labelled, "cv": cv, "load_balance": balance}
+
+    return {"by_count": basis(counts), "by_busy_time": basis(busy)}
+
+
 # ── bundle ──────────────────────────────────────────────────────────────
 
 def compute(records):
@@ -249,6 +347,7 @@ def compute(records):
         "queue_latency": queue_latency(records),
         "utilisation" : utilisation(records),
         "rejection_rate": rejection_rate(records),
+        "load_balance": load_balance(records),
     }
 
 

@@ -420,9 +420,14 @@ Example specs live in `benchmark/workloads/`; output goes to
 
 One JSONL log per session plus a `manifest.json`. The log opens with a
 `header` — the spec verbatim and the device table, written once — and
-closes with a `summary` carrying a per-job row. The body between them is
-chronological, because it records what happened; the per-job table is a
-derived view for reading by job.
+closes with a `summary` carrying a per-job row, the terminal `states`
+counts, and a `devices_attached` roster (index → id of every attached
+device). The roster is there because the per-job table names only devices
+that ran: a metric measuring spread across the fleet needs to see the
+devices that ran *nothing*, and recording the roster in the summary keeps
+that a one-record read rather than a cross-reference back to the header.
+The body between them is chronological, because it records what happened;
+the per-job table is a derived view for reading by job.
 
 The manifest distinguishes `completed`, `completed_with_failures` and
 `crashed`. The middle one is a result rather than an error: a threshold

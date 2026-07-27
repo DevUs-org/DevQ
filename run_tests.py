@@ -1897,8 +1897,9 @@ def block_benchmark_runner():
         check(entry["session_id"] in metrics_json,
               "metrics.json carries the session's metrics, keyed by session id")
         check(set(metrics_json[entry["session_id"]]) ==
-              {"throughput", "queue_latency", "utilisation", "rejection_rate"},
-              "the session's metrics carry the four metric groups")
+              {"throughput", "queue_latency", "utilisation", "rejection_rate",
+               "load_balance"},
+              "the session's metrics carry the five metric groups")
 
         # A single run uses the SAME directory structure as a matrix, so
         # a reader never branches on which it is looking at.
@@ -1920,6 +1921,15 @@ def block_benchmark_runner():
               "the summary carries a per-job row")
         check([r["job_id"] for r in records[-1]["per_job"]] == [1, 2, 3],
               "per-job rows are ordered by job id — the log itself stays chronological")
+        # The summary records the full attached-device roster, index->id.
+        # Load balance needs it to see devices that ran NOTHING, so it
+        # must list every attached device, not only those that dispatched.
+        # (This spec's jobs may all land on one device; the roster must
+        # still name both — the metrics block alone cannot catch an empty
+        # roster because its fallback would recover the devices that ran.)
+        check(records[-1].get("devices_attached") == {"0": "alpha", "1": "bravo"},
+              f"summary carries the full device roster, got "
+              f"{records[-1].get('devices_attached')}")
 
         kinds = {r["event"] for r in records}
         check({"submit", "route", "dispatch", "resolve"} <= kinds,
@@ -2589,6 +2599,73 @@ def block_metrics():
     check(rre["rate"] is None,
           "empty run: rate is None (no fraction to divide), not 0")
 
+    # ── load balance ──────────────────────────────────────────────────
+    # Counts [3, 1] over two devices: mean 2, population stddev 1, so
+    # CV = 1/2 = 0.5 and load_balance = 1/(1+0.5) = 2/3. Hand-computed,
+    # not read back from the metric.
+    lb_fixture = [{"event": "summary",
+                   "devices_attached": {"0": "alpha", "1": "bravo"},
+                   "per_job": [
+        {"job_id": 1, "state": "FINISHED", "device": 0,
+         "submitted_at": 0, "dispatched_at": 10, "resolved_at": 20,
+         "queue_latency": 10},
+        {"job_id": 2, "state": "FINISHED", "device": 0,
+         "submitted_at": 0, "dispatched_at": 20, "resolved_at": 30,
+         "queue_latency": 20},
+        {"job_id": 3, "state": "FINISHED", "device": 0,
+         "submitted_at": 0, "dispatched_at": 30, "resolved_at": 40,
+         "queue_latency": 30},
+        {"job_id": 4, "state": "FINISHED", "device": 1,
+         "submitted_at": 0, "dispatched_at": 10, "resolved_at": 20,
+         "queue_latency": 10}]}]
+    lb = M.load_balance(lb_fixture)
+    bc = lb["by_count"]
+    check(bc["per_device"] == {"alpha": 3, "bravo": 1},
+          f"counts labelled by device id, got {bc['per_device']}")
+    check(abs(bc["cv"] - 0.5) < 1e-12,
+          f"count CV for [3,1] is 0.5, got {bc['cv']}")
+    check(abs(bc["load_balance"] - 2 / 3) < 1e-12,
+          f"count load_balance 1/(1+0.5)=2/3, got {bc['load_balance']}")
+
+    # An idle device must appear as 0 and drag the balance down — the
+    # whole reason the roster is recorded. All work on device 0, device 1
+    # idle: counts [3, 0], mean 1.5, stddev 1.5, CV = 1.0, balance = 0.5.
+    idle_fixture = [{"event": "summary",
+                     "devices_attached": {"0": "alpha", "1": "bravo"},
+                     "per_job": [
+        {"job_id": i, "state": "FINISHED", "device": 0,
+         "submitted_at": 0, "dispatched_at": 10 * i, "resolved_at": 10 * i + 5,
+         "queue_latency": 0} for i in (1, 2, 3)]}]
+    lbi = M.load_balance(idle_fixture)
+    check(lbi["by_count"]["per_device"] == {"alpha": 3, "bravo": 0},
+          "an idle device appears as 0, not absent")
+    check(abs(lbi["by_count"]["cv"] - 1.0) < 1e-12,
+          f"idle device drags count CV to 1.0, got {lbi['by_count']['cv']}")
+
+    # Single attached device: no spread possible, CV 0, balance 1.0.
+    solo = [{"event": "summary",
+             "devices_attached": {"0": "solo"},
+             "per_job": [
+        {"job_id": 1, "state": "FINISHED", "device": 0,
+         "submitted_at": 0, "dispatched_at": 10, "resolved_at": 20,
+         "queue_latency": 10}]}]
+    lbs = M.load_balance(solo)
+    check(lbs["by_count"]["cv"] == 0.0 and lbs["by_count"]["load_balance"] == 1.0,
+          "one device cannot be imbalanced: CV 0, balance 1.0")
+
+    # Zero load (all rejected, nothing dispatched): CV undefined -> None,
+    # not zero. Counts are all 0 so the mean is 0.
+    noload = [{"event": "summary",
+               "devices_attached": {"0": "alpha", "1": "bravo"},
+               "per_job": [
+        {"job_id": 1, "state": "REJECTED", "device": None,
+         "submitted_at": 0, "dispatched_at": None, "resolved_at": None,
+         "queue_latency": None}]}]
+    lbn = M.load_balance(noload)
+    check(lbn["by_count"]["cv"] is None
+          and lbn["by_count"]["load_balance"] is None,
+          "no load to spread -> CV and load_balance are None, not 0")
+
     # ── HALF TWO: a REAL run — shape, population, and the two ways in ──
     tmp = tempfile.mkdtemp()
     try:
@@ -2612,12 +2689,19 @@ def block_metrics():
 
         # Structure: the bundle is the four metric groups, plain data.
         check(set(bundle) == {"throughput", "queue_latency", "utilisation",
-                              "rejection_rate"},
-              f"bundle carries the four metric groups, got {sorted(bundle)}")
+                              "rejection_rate", "load_balance"},
+              f"bundle carries the five metric groups, got {sorted(bundle)}")
         # On this all-completing run nothing is rejected.
         check(bundle["rejection_rate"]["rejected"] == 0
               and bundle["rejection_rate"]["rate"] == 0.0,
               "a run where every job finishes has rejection rate 0.0")
+        # Load balance sees the full roster: both devices appear in the
+        # per-device map, even if the router favoured one.
+        lb_real = bundle["load_balance"]["by_count"]["per_device"]
+        check(len(lb_real) == 2,
+              f"load balance covers both attached devices, got {lb_real}")
+        check(0.0 <= bundle["load_balance"]["by_count"]["load_balance"] <= 1.0,
+              "load_balance reading is in (0, 1]")
 
         # Invariants hold on real (non-deterministic) numbers even though
         # the exact values cannot be pinned: execution span is a subset
@@ -2654,8 +2738,11 @@ def block_metrics():
                   "devices": meta["devices"]})
         jobs = submit_jobs(sh, resolved, "metrics")
         drain(sh)
-        # summary shape mirrors the runner's
-        rec.emit({"event": "summary", "per_job": [
+        # summary shape mirrors the runner's, including the device roster
+        rec.emit({"event": "summary",
+                  "devices_attached": {
+                      str(i): d["id"] for i, d in enumerate(meta["devices"])},
+                  "per_job": [
             {"job_id": j.job_id, "state": j.state.value,
              "device": j.device_index,
              "submitted_at": j.submitted_at, "dispatched_at": j.dispatched_at,

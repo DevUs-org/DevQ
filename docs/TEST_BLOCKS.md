@@ -927,11 +927,16 @@ manifest — a single-spec run has the same shape as an 18-session
 matrix, so a reader never branches on which it is looking at. The log
 opens with a `header` carrying the spec verbatim and the device table
 (written once, not repeated per record) and closes with a `summary`
-carrying one row per job ordered by job id. The log body itself stays
-chronological; the per-job table is a derived view. The manifest records
-the spec verbatim as well — it is written to disk like the log, so a
-resolved `${NAME}` there would leak just as surely; both sites take the
-unresolved copy `load_spec` returns alongside the resolved one.
+carrying one row per job ordered by job id, and a `devices_attached`
+roster naming every attached device. The roster is asserted in full here
+rather than in the metrics block, because load balance's fallback would
+recover the devices that ran and mask an empty roster — only a direct
+check on the summary catches a runner that stopped writing it. The log
+body itself stays chronological; the per-job table is a derived view. The
+manifest records the spec verbatim as well — it is written to disk like
+the log, so a resolved `${NAME}` there would leak just as surely; both
+sites take the unresolved copy `load_spec` returns alongside the resolved
+one.
 
 Three outcomes are distinguished, and the first two must not be
 confused: `completed`, `completed_with_failures` (jobs were rejected or
@@ -1137,8 +1142,19 @@ pins the rate at `0.25`, and an empty run is asserted to keep truthful
 zero counts while returning `None` only for the ratio — the one place a
 metric reports real numbers alongside an undefined fraction.
 
+**Load balance** is checked with hand-computed CVs and, above all, that
+an idle device is *seen*. Counts `[3, 1]` over two devices give a
+population CV of `0.5` and a `load_balance` of `2/3`; a run with all work
+on one device and the other idle gives counts `[3, 0]`, CV `1.0` — the
+idle device must appear as `0` and drag the balance down, which is the
+whole reason the `devices_attached` roster is recorded. A single-device
+run has CV `0` and balance `1.0` (one device cannot be imbalanced), and a
+no-load run returns `None` for both, not `0`. The population standard
+deviation (denominator `n`) and the `1/(1+cv)` inversion are both pinned
+by these exact values.
+
 The real half runs a two-device `devq.simulated` session and asserts the
-bundle carries the four groups; that execution throughput ≥ turnaround
+bundle carries the five groups; that execution throughput ≥ turnaround
 (the execution span is a subset of the turnaround span); that every
 per-device fraction is in `[0,1]` and the system figure lies between the
 extremes; and that the latency distribution is internally ordered. It

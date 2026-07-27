@@ -43,13 +43,13 @@ cannot.
 
 ## Results
 
-**74 distinct mutants, 72 killed, 2 excluded** (M10 equivalent and P7
+**79 distinct mutants, 77 killed, 2 excluded** (M10 equivalent and P7
 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
 The total is delta-consistent, not recounted: 66/64/2 from the prior
-state plus the 8 new Metrics mutants below, each verified by running the
+state plus the 13 new Metrics mutants below, each verified by running the
 mutant against the affected block, not assumed. The pre-existing set was
 taken as given.
 
@@ -119,6 +119,11 @@ behind by the refactor.
 | RR1 | `WAITING` counted as a rejection | killed (1) |
 | RR2 | empty-run rejection rate returns `0` instead of `None` | killed (1) |
 | RR3 | rejection denominator excludes `WAITING` (wrong population) | killed (1) |
+| LB1 | load balance ignores the roster, dropping idle devices | killed (1) |
+| LB2 | load-balance CV uses sample stddev (`n-1`) not population (`n`) | killed (1) |
+| LB3 | zero-load CV returns `0` instead of `None` | killed (1) |
+| LB4 | balance inversion is `1-cv` instead of `1/(1+cv)` | killed (1) |
+| LB5 | `run()` writes an empty `devices_attached` roster | killed (1) |
 
 These are the four claims the module makes, each turned into a mutant and
 run against the `metrics` block rather than assumed dead from a green
@@ -150,6 +155,25 @@ the counts-versus-ratio rule unique to this metric: an empty run reports
 truthful zero counts but a `None` rate, and turning that rate into `0`
 would claim a no-op run rejected nothing as a *measured* fact rather than
 an undefined one.
+
+LB1 is the load-balance analogue of the whole design: dropping the roster
+makes idle devices invisible, so a starved fleet reads as balanced — the
+idle-device fixture (all work on device 0, device 1 at zero) catches it.
+LB2 and LB4 pin the two arithmetic conventions, population stddev and the
+`1/(1+cv)` inversion, against hand-computed values that a library default
+or a plausible-looking `1-cv` would move. LB3 is the population rule for
+the zero-load case.
+
+LB5 is worth recording because it **survived first**, the same shape as
+R10. The runner emits `devices_attached`, and blanking it to `{}` left
+the `metrics` block green: load balance falls back to the devices present
+in `per_job` when the roster is absent, and on that all-completing
+fixture both devices had run, so the fallback recovered them and the
+assertion could not tell roster from fallback. One of two paths was
+guarded and its twin invisible. Fixed by asserting the full roster
+directly on the summary in `benchmark_runner`, where an empty roster now
+fails — a green metrics suite around the fallback was not evidence the
+roster itself was tested.
 
 ### Workload spec — `benchmark/spec.py`, `providers/base_provider.py`
 
