@@ -12,7 +12,7 @@ Notation follows [`COST_MODEL.md`](COST_MODEL.md). The two-clock model
 [`REGISTRY.md`](REGISTRY.md).
 
 **Status.** Throughput, queue latency, utilisation, rejection rate and
-load balance are specified below and implemented in
+load imbalance are specified below and implemented in
 `benchmark/metrics.py`, verified by the `metrics` test block. Fidelity is
 named but not yet specified, and will be added once its noiseless
 reference (Phase 5.4) exists.
@@ -190,6 +190,14 @@ $$\text{util}_{\text{sys}} = \frac{\sum_d \text{union-busy}(d)}{t_{\text{exec}} 
 This is the busy-weighted mean of the per-device fractions, so the two
 figures are consistent by construction rather than defined separately.
 
+The per-device map is labelled by **device id** (from the summary
+roster), not by bare index, matching load imbalance and keeping
+`metrics.json` readable. Only devices that *ran* appear here — the
+population is the same as the system denominator. A device that ran
+nothing has an undefined utilisation over this window and is simply
+absent; whether the fleet left a device idle is load imbalance's
+question, not utilisation's.
+
 A job dispatched but never resolved (`resolved_at = None`, possible on a
 crash) contributes no interval, the same as an undispatched job: an
 open-ended interval has no length. If no job dispatched at all, the
@@ -238,9 +246,14 @@ device", so a breakdown would couple the metric to unstructured messages.
 It lands once reasons are structured.
 ---
 
-## Load balance
+## Load imbalance
 
 Input: `summary` per-job rows and the `devices_attached` roster.
+
+The bundle group is `load_imbalance` — its primary statistic is a
+coefficient of variation, which *grows* with imbalance, so the group is
+named for what the number measures. Each basis also carries a
+`load_balance` convenience field, the inverted higher-is-better reading.
 
 How evenly work spread across **all attached devices**, including idle
 ones. The idle device is the whole point: a router that sends everything

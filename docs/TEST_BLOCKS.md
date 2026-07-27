@@ -1119,13 +1119,14 @@ The synthetic fixture is four jobs: three dispatched (dev 0 at
   **nearest-rank** p95 is `ceil(0.95·3)=3`rd value `= 30`. Nearest-rank
   is the fixed convention (small job counts make interpolation invent
   precision); a library default would change this number.
-- **utilisation** — dev 0's two intervals `[110,160)` and `[130,170)`
-  *overlap*, so their union is `[110,170)=60`, giving `60/60 = 1.0`.
-  Summing instead would give `90/60 = 1.5`, an impossible utilisation —
-  so this directly asserts the interval **union**, not a sum. Dev 1 is
-  `20/60 = 1/3`. System is `(60+20)/(60·2) = 2/3`, the busy-weighted
-  mean of the per-device fractions over the shared execution-span
-  window.
+- **utilisation** — `alpha`'s (dev 0) two intervals `[110,160)` and
+  `[130,170)` *overlap*, so their union is `[110,170)=60`, giving
+  `60/60 = 1.0`. Summing instead would give `90/60 = 1.5`, an impossible
+  utilisation — so this directly asserts the interval **union**, not a
+  sum. `bravo` (dev 1) is `20/60 = 1/3`. System is `(60+20)/(60·2) =
+  2/3`, the busy-weighted mean of the per-device fractions over the
+  shared execution-span window. The per-device keys are asserted to be
+  device **ids** (`alpha`, `bravo`), not bare indices.
 
 The **population rule** is asserted on its own: an all-rejected run makes
 every timing metric `None`, never `0` — a run that rejected everything has
@@ -1142,7 +1143,7 @@ pins the rate at `0.25`, and an empty run is asserted to keep truthful
 zero counts while returning `None` only for the ratio — the one place a
 metric reports real numbers alongside an undefined fraction.
 
-**Load balance** is checked with hand-computed CVs and, above all, that
+**Load imbalance** is checked with hand-computed CVs and, above all, that
 an idle device is *seen*. Counts `[3, 1]` over two devices give a
 population CV of `0.5` and a `load_balance` of `2/3`; a run with all work
 on one device and the other idle gives counts `[3, 0]`, CV `1.0` — the

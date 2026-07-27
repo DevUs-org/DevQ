@@ -1898,7 +1898,7 @@ def block_benchmark_runner():
               "metrics.json carries the session's metrics, keyed by session id")
         check(set(metrics_json[entry["session_id"]]) ==
               {"throughput", "queue_latency", "utilisation", "rejection_rate",
-               "load_balance"},
+               "load_imbalance"},
               "the session's metrics carry the five metric groups")
 
         # A single run uses the SAME directory structure as a matrix, so
@@ -2506,7 +2506,9 @@ def block_metrics():
          "queue_latency": None},
     ]
     fixture = [{"event": "header"},
-               {"event": "summary", "per_job": rows}]
+               {"event": "summary",
+                "devices_attached": {"0": "alpha", "1": "bravo"},
+                "per_job": rows}]
 
     tp = M.throughput(fixture)
     # exec span = 170 - 110 = 60 over 3 dispatched jobs -> 3/60
@@ -2525,19 +2527,22 @@ def block_metrics():
     check(ql["p95"] == 30, f"nearest-rank p95 is 30, got {ql['p95']}")
 
     ut = M.utilisation(fixture)
-    # dev 0: union [110,160)+[130,170) = [110,170) = 60, /window 60 = 1.0
-    check(abs(ut["per_device"][0] - 1.0) < 1e-12,
-          f"dev 0 overlapping jobs union to full window, got {ut['per_device'][0]}")
-    # dev 1: [120,140) = 20, /60 = 1/3
-    check(abs(ut["per_device"][1] - 1 / 3) < 1e-12,
-          f"dev 1 utilisation 1/3, got {ut['per_device'][1]}")
+    # alpha (dev 0): union [110,160)+[130,170) = [110,170) = 60, /window 60 = 1.0
+    check(abs(ut["per_device"]["alpha"] - 1.0) < 1e-12,
+          f"alpha's overlapping jobs union to full window, got {ut['per_device']['alpha']}")
+    # bravo (dev 1): [120,140) = 20, /60 = 1/3
+    check(abs(ut["per_device"]["bravo"] - 1 / 3) < 1e-12,
+          f"bravo utilisation 1/3, got {ut['per_device']['bravo']}")
     # system: (60 + 20) / (60 * 2) = 2/3
     check(abs(ut["system"] - 2 / 3) < 1e-12,
           f"system utilisation 2/3, got {ut['system']}")
-    # the union must count overlap ONCE: summing would give dev 0 = 90/60
+    # per-device output is labelled by device id, not bare index
+    check("alpha" in ut["per_device"] and 0 not in ut["per_device"],
+          "utilisation labels devices by id, not index")
+    # the union must count overlap ONCE: summing would give alpha = 90/60
     # = 1.5 > 1, an impossible utilisation. This asserts the merge, not
     # the sum.
-    check(ut["per_device"][0] <= 1.0, "overlap counted once, not summed")
+    check(ut["per_device"]["alpha"] <= 1.0, "overlap counted once, not summed")
 
     # ── population edge: every job rejected -> undefined, not zero ─────
     all_rejected = [{"event": "summary", "per_job": [
@@ -2618,7 +2623,7 @@ def block_metrics():
         {"job_id": 4, "state": "FINISHED", "device": 1,
          "submitted_at": 0, "dispatched_at": 10, "resolved_at": 20,
          "queue_latency": 10}]}]
-    lb = M.load_balance(lb_fixture)
+    lb = M.load_imbalance(lb_fixture)
     bc = lb["by_count"]
     check(bc["per_device"] == {"alpha": 3, "bravo": 1},
           f"counts labelled by device id, got {bc['per_device']}")
@@ -2636,7 +2641,7 @@ def block_metrics():
         {"job_id": i, "state": "FINISHED", "device": 0,
          "submitted_at": 0, "dispatched_at": 10 * i, "resolved_at": 10 * i + 5,
          "queue_latency": 0} for i in (1, 2, 3)]}]
-    lbi = M.load_balance(idle_fixture)
+    lbi = M.load_imbalance(idle_fixture)
     check(lbi["by_count"]["per_device"] == {"alpha": 3, "bravo": 0},
           "an idle device appears as 0, not absent")
     check(abs(lbi["by_count"]["cv"] - 1.0) < 1e-12,
@@ -2649,7 +2654,7 @@ def block_metrics():
         {"job_id": 1, "state": "FINISHED", "device": 0,
          "submitted_at": 0, "dispatched_at": 10, "resolved_at": 20,
          "queue_latency": 10}]}]
-    lbs = M.load_balance(solo)
+    lbs = M.load_imbalance(solo)
     check(lbs["by_count"]["cv"] == 0.0 and lbs["by_count"]["load_balance"] == 1.0,
           "one device cannot be imbalanced: CV 0, balance 1.0")
 
@@ -2661,7 +2666,7 @@ def block_metrics():
         {"job_id": 1, "state": "REJECTED", "device": None,
          "submitted_at": 0, "dispatched_at": None, "resolved_at": None,
          "queue_latency": None}]}]
-    lbn = M.load_balance(noload)
+    lbn = M.load_imbalance(noload)
     check(lbn["by_count"]["cv"] is None
           and lbn["by_count"]["load_balance"] is None,
           "no load to spread -> CV and load_balance are None, not 0")
@@ -2689,7 +2694,7 @@ def block_metrics():
 
         # Structure: the bundle is the four metric groups, plain data.
         check(set(bundle) == {"throughput", "queue_latency", "utilisation",
-                              "rejection_rate", "load_balance"},
+                              "rejection_rate", "load_imbalance"},
               f"bundle carries the five metric groups, got {sorted(bundle)}")
         # On this all-completing run nothing is rejected.
         check(bundle["rejection_rate"]["rejected"] == 0
@@ -2697,10 +2702,10 @@ def block_metrics():
               "a run where every job finishes has rejection rate 0.0")
         # Load balance sees the full roster: both devices appear in the
         # per-device map, even if the router favoured one.
-        lb_real = bundle["load_balance"]["by_count"]["per_device"]
+        lb_real = bundle["load_imbalance"]["by_count"]["per_device"]
         check(len(lb_real) == 2,
               f"load balance covers both attached devices, got {lb_real}")
-        check(0.0 <= bundle["load_balance"]["by_count"]["load_balance"] <= 1.0,
+        check(0.0 <= bundle["load_imbalance"]["by_count"]["load_balance"] <= 1.0,
               "load_balance reading is in (0, 1]")
 
         # Invariants hold on real (non-deterministic) numbers even though

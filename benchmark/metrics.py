@@ -192,10 +192,18 @@ def utilisation(records):
         by_device.setdefault(r["device"], []).append(
             (r["dispatched_at"], r["resolved_at"]))
 
+    # Label per-device output by device id, consistent with load
+    # imbalance and readable in metrics.json. The roster maps index -> id;
+    # a device that ran always has an entry. Fall back to the index as a
+    # string when no roster is present (a pre-roster log). Note the
+    # population is unchanged — only devices that RAN appear here, matching
+    # the system denominator; idle devices are load imbalance's concern.
+    ids = dict(_roster(records))
+
     per_device = {}
     for dev in sorted(by_device):
         busy = _union_length(by_device[dev])
-        per_device[dev] = busy / window
+        per_device[ids.get(dev, str(dev))] = busy / window
 
     # System-wide: total union-busy across all devices over
     # (window x device count). This is the busy-weighted mean of the
@@ -284,12 +292,12 @@ def _roster(records):
     return sorted(seen.items())
 
 
-def load_balance(records):
+def load_imbalance(records):
     '''
-    How evenly work spread across ALL attached devices — including idle
-    ones, which is the whole point: a router that starves a device is the
-    opposite of balanced, and that is only visible if idle devices count
-    as zero load.
+    Load imbalance: how evenly work spread across ALL attached devices —
+    including idle ones, which is the whole point: a router that starves a
+    device is the opposite of balanced, and that is only visible if idle
+    devices count as zero load.
 
     Reported on two bases, because they can disagree — a device running
     one long job versus three short ones is balanced by count but not by
@@ -347,7 +355,7 @@ def compute(records):
         "queue_latency": queue_latency(records),
         "utilisation" : utilisation(records),
         "rejection_rate": rejection_rate(records),
-        "load_balance": load_balance(records),
+        "load_imbalance": load_imbalance(records),
     }
 
 

@@ -43,13 +43,13 @@ cannot.
 
 ## Results
 
-**79 distinct mutants, 77 killed, 2 excluded** (M10 equivalent and P7
+**80 distinct mutants, 78 killed, 2 excluded** (M10 equivalent and P7
 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
 The total is delta-consistent, not recounted: 66/64/2 from the prior
-state plus the 13 new Metrics mutants below, each verified by running the
+state plus the 14 new Metrics mutants below, each verified by running the
 mutant against the affected block, not assumed. The pre-existing set was
 taken as given.
 
@@ -124,6 +124,7 @@ behind by the refactor.
 | LB3 | zero-load CV returns `0` instead of `None` | killed (1) |
 | LB4 | balance inversion is `1-cv` instead of `1/(1+cv)` | killed (1) |
 | LB5 | `run()` writes an empty `devices_attached` roster | killed (1) |
+| UT1 | utilisation per-device reverts to bare index keys, not ids | killed (1) |
 
 These are the four claims the module makes, each turned into a mutant and
 run against the `metrics` block rather than assumed dead from a green
@@ -174,6 +175,11 @@ guarded and its twin invisible. Fixed by asserting the full roster
 directly on the summary in `benchmark_runner`, where an empty roster now
 fails — a green metrics suite around the fallback was not evidence the
 roster itself was tested.
+
+UT1 guards the device-id labelling shared by utilisation and load
+imbalance: reverting utilisation's per-device keys to bare indices fails
+the fixture assertion that the keys are ids (`alpha`, `bravo`), so the
+readable-output property cannot silently regress.
 
 ### Workload spec — `benchmark/spec.py`, `providers/base_provider.py`
 
