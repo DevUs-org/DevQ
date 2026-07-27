@@ -11,9 +11,9 @@ Notation follows [`COST_MODEL.md`](COST_MODEL.md). The two-clock model
 (`seq` vs `*_at`) and the event-log structure it refers to are defined in
 [`REGISTRY.md`](REGISTRY.md).
 
-**Status.** Throughput, queue latency and utilisation are specified below
-and implemented in `benchmark/metrics.py`, verified by the `metrics` test
-block. Rejection rate, load balance and fidelity are named but not yet
+**Status.** Throughput, queue latency, utilisation and rejection rate are
+specified below and implemented in `benchmark/metrics.py`, verified by the
+`metrics` test block. Load balance and fidelity are named but not yet
 specified, and will be added as they are settled.
 
 ---
@@ -121,6 +121,14 @@ so the metric is aggregation, not re-derivation. It is the wait *before*
 running, deliberately excluding execution — including execution would
 duplicate `turnaround`.
 
+This wait **includes any WAITING retry time**. A job whose allocation
+fails on a busy pool is set WAITING and retried on later cycles;
+`dispatched_at` is stamped only at the cycle it actually dispatches, after
+all retries, so contention delay is captured here rather than in a
+separate metric. A high latency mean can therefore come from either queue
+depth or allocation contention — both are genuine "the job waited"
+signals, and folding them together is intended.
+
 Reported as a distribution, not a single number: **min, median, mean,
 max, and p95**. The mean-versus-median gap is the signal a scheduler
 comparison turns on — one job stuck behind a slow device drags the mean
@@ -185,3 +193,44 @@ crash) contributes no interval, the same as an undispatched job: an
 open-ended interval has no length. If no job dispatched at all, the
 window is undefined and utilisation is `None`, not `0` — per-device is an
 empty map and the system figure is `None`.
+---
+
+## Rejection rate
+
+Input: `summary` per-job rows only.
+
+The fraction of submitted jobs the system terminally **refused**:
+
+$$\text{rejection\_rate} = \frac{|\text{REJECTED}|}{|\text{all submitted}|}$$
+
+reported with its raw counts:
+
+```
+"rejection_rate": {"rejected": r, "submitted": n, "rate": r/n}
+```
+
+Only the terminal `REJECTED` state counts. A `WAITING` job is *not*
+rejected — routing found it a feasible device and allocation is retrying;
+it was accepted and merely delayed, and its retry time already appears in
+queue latency. Counting WAITING here would penalise a busy config twice,
+once as latency and once as a phantom rejection. REJECTED and WAITING
+partition cleanly: a WAITING-then-dispatched job has a `dispatched_at` and
+is counted in latency, never here; a REJECTED job has no `dispatched_at`,
+is skipped by latency, and is counted only here.
+
+Every job is terminal at summary time — the run does not finish while any
+job is still WAITING — so the denominator is simply all submitted jobs,
+with no stuck-WAITING population to special-case.
+
+The counts are always truthful integers, including on an empty run, where
+`rejected` and `submitted` are both `0`. Only the **rate** is `None`
+there: a run with no jobs has no meaningful fraction to report, but it
+did, truthfully, reject zero of zero. This is a slightly different rule
+from the timing metrics, where the whole result is `None` on an empty
+population — here the counts are genuinely known even when the ratio is
+not, so only the ratio is withheld.
+
+A reason breakdown (rejected *why*) is deferrable: rejection reasons are
+free-text router strings today and REJECTED is uniformly "no feasible
+device", so a breakdown would couple the metric to unstructured messages.
+It lands once reasons are structured.

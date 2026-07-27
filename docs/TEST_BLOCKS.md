@@ -1113,13 +1113,22 @@ The synthetic fixture is four jobs: three dispatched (dev 0 at
   window.
 
 The **population rule** is asserted on its own: an all-rejected run makes
-every metric `None`, never `0` — a run that rejected everything has an
-honestly undefined throughput, not a throughput of zero. A
+every timing metric `None`, never `0` — a run that rejected everything has
+an honestly undefined throughput, not a throughput of zero. A
 dispatched-but-unresolved job contributes no interval, so the
 utilisation window is undefined too.
 
+**Rejection rate** is checked for the count that matters most — that
+`WAITING` is not a rejection. A hand-built run of one FINISHED, one
+WAITING and one REJECTED job must report exactly one rejection of three,
+not two; the WAITING job is accepted-but-delayed, and counting it would
+double-punish a busy config. The main fixture (one rejected of four)
+pins the rate at `0.25`, and an empty run is asserted to keep truthful
+zero counts while returning `None` only for the ratio — the one place a
+metric reports real numbers alongside an undefined fraction.
+
 The real half runs a two-device `devq.simulated` session and asserts the
-bundle carries the three groups; that execution throughput ≥ turnaround
+bundle carries the four groups; that execution throughput ≥ turnaround
 (the execution span is a subset of the turnaround span); that every
 per-device fraction is in `[0,1]` and the system figure lies between the
 extremes; and that the latency distribution is internally ordered. It

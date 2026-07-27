@@ -1534,6 +1534,7 @@ def block_shipped_workloads():
         "smoke.json"          : 5,
         "ibm_federation.json" : 8,
         "placeholders.json"   : 5,
+        "rejection.json"      : 4,
     }
 
     # KEPT, not deleted. block_benchmark_runner runs 19 sessions into a
@@ -1654,6 +1655,27 @@ def block_shipped_workloads():
                 check(manifest["spec"]["seed"] == "${DEVQ_SEED}",
                       "placeholder manifest keeps ${DEVQ_SEED} literal, "
                       f"not resolved — got {manifest['spec']['seed']!r}")
+
+            # The rejection spec is the shipped fixture for the
+            # rejection-rate metric: half its jobs carry an impossibly
+            # strict max_qubit_error, so no device is feasible and routing
+            # rejects them terminally, while the rest complete. Asserting
+            # the metric on a REAL shipped run (not a hand-built records
+            # list) is what proves rejection rate works end to end — and
+            # the expected 2-of-4 is hand-known from the spec, not read
+            # back from the metric. A WITH_FAILURES outcome here is the
+            # correct result, not a crash.
+            if filename == "rejection.json":
+                from benchmark import metrics as M
+                check(entry["outcome"] == R.WITH_FAILURES,
+                      f"rejection.json is a result, not a crash — "
+                      f"got {entry['outcome']}")
+                rr = M.rejection_rate(records)
+                check(rr["rejected"] == 2 and rr["submitted"] == 4,
+                      f"rejection.json rejects 2 of 4, got "
+                      f"{rr['rejected']}/{rr['submitted']}")
+                check(abs(rr["rate"] - 0.5) < 1e-12,
+                      f"rejection.json rejection rate 0.5, got {rr['rate']}")
 
             # Expanded job count, PINNED per spec rather than computed
             # from the spec being checked. Deriving `expected` from the
@@ -1875,8 +1897,8 @@ def block_benchmark_runner():
         check(entry["session_id"] in metrics_json,
               "metrics.json carries the session's metrics, keyed by session id")
         check(set(metrics_json[entry["session_id"]]) ==
-              {"throughput", "queue_latency", "utilisation"},
-              "the session's metrics carry the three metric groups")
+              {"throughput", "queue_latency", "utilisation", "rejection_rate"},
+              "the session's metrics carry the four metric groups")
 
         # A single run uses the SAME directory structure as a matrix, so
         # a reader never branches on which it is looking at.
@@ -2531,6 +2553,42 @@ def block_metrics():
     check(M.utilisation(half)["system"] is None,
           "dispatched-but-unresolved job has no interval, window undefined")
 
+    # ── rejection rate ────────────────────────────────────────────────
+    # The main fixture is 3 FINISHED + 1 REJECTED = 1 of 4 rejected.
+    rr = M.rejection_rate(fixture)
+    check(rr["rejected"] == 1 and rr["submitted"] == 4,
+          f"rejection counts 1 of 4, got {rr['rejected']}/{rr['submitted']}")
+    check(abs(rr["rate"] - 0.25) < 1e-12,
+          f"rejection rate 1/4 = 0.25, got {rr['rate']}")
+
+    # WAITING is NOT a rejection — accepted-but-delayed, its wait lives in
+    # queue latency. A run of one FINISHED, one WAITING, one REJECTED must
+    # count exactly one rejection of three, not two.
+    mixed = [{"event": "summary", "per_job": [
+        {"job_id": 1, "state": "FINISHED", "device": 0,
+         "submitted_at": 100, "dispatched_at": 110, "resolved_at": 160,
+         "queue_latency": 10},
+        {"job_id": 2, "state": "WAITING", "device": 0,
+         "submitted_at": 100, "dispatched_at": None, "resolved_at": None,
+         "queue_latency": None},
+        {"job_id": 3, "state": "REJECTED", "device": None,
+         "submitted_at": 100, "dispatched_at": None, "resolved_at": None,
+         "queue_latency": None}]}]
+    rrm = M.rejection_rate(mixed)
+    check(rrm["rejected"] == 1 and rrm["submitted"] == 3,
+          f"WAITING is not counted: 1 of 3 rejected, got "
+          f"{rrm['rejected']}/{rrm['submitted']}")
+    check(abs(rrm["rate"] - 1 / 3) < 1e-12,
+          f"rejection rate 1/3, got {rrm['rate']}")
+
+    # Empty run: counts are the true zeros, only the ratio is undefined.
+    empty = [{"event": "summary", "per_job": []}]
+    rre = M.rejection_rate(empty)
+    check(rre["rejected"] == 0 and rre["submitted"] == 0,
+          "empty run: counts are truthful zeros")
+    check(rre["rate"] is None,
+          "empty run: rate is None (no fraction to divide), not 0")
+
     # ── HALF TWO: a REAL run — shape, population, and the two ways in ──
     tmp = tempfile.mkdtemp()
     try:
@@ -2552,9 +2610,14 @@ def block_metrics():
 
         bundle = M.compute(from_jsonl)
 
-        # Structure: the bundle is the three metric groups, plain data.
-        check(set(bundle) == {"throughput", "queue_latency", "utilisation"},
-              f"bundle carries the three metric groups, got {sorted(bundle)}")
+        # Structure: the bundle is the four metric groups, plain data.
+        check(set(bundle) == {"throughput", "queue_latency", "utilisation",
+                              "rejection_rate"},
+              f"bundle carries the four metric groups, got {sorted(bundle)}")
+        # On this all-completing run nothing is rejected.
+        check(bundle["rejection_rate"]["rejected"] == 0
+              and bundle["rejection_rate"]["rate"] == 0.0,
+              "a run where every job finishes has rejection rate 0.0")
 
         # Invariants hold on real (non-deterministic) numbers even though
         # the exact values cannot be pinned: execution span is a subset

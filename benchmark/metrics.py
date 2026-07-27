@@ -207,6 +207,35 @@ def utilisation(records):
     return {"per_device": per_device, "system": system}
 
 
+# ── rejection rate ──────────────────────────────────────────────────────
+
+def rejection_rate(records):
+    '''
+    The fraction of submitted jobs the system terminally REFUSED.
+
+    REJECTED only. A WAITING job is accepted-but-delayed — routing found
+    it a feasible device and allocation is retrying — so it is NOT a
+    rejection; its retry time already lands in queue latency, because
+    `dispatched_at` is stamped at real dispatch, after all retries.
+    Counting WAITING here would double-punish a busy config, once as
+    latency and once as a phantom rejection.
+
+    Every job is terminal at summary time (drain does not exit while any
+    job is still WAITING), so the denominator is simply all submitted
+    jobs — there is no stuck-WAITING third population to decide about.
+
+    The counts are always the true integers, even on an empty run; only
+    the ratio is `None` when there is nothing to divide, since a run with
+    no jobs has no meaningful rejection fraction but still, truthfully,
+    rejected zero of zero.
+    '''
+    rows = _summary(records)["per_job"]
+    submitted = len(rows)
+    rejected = sum(1 for r in rows if r.get("state") == "REJECTED")
+    rate = rejected / submitted if submitted else None
+    return {"rejected": rejected, "submitted": submitted, "rate": rate}
+
+
 # ── bundle ──────────────────────────────────────────────────────────────
 
 def compute(records):
@@ -219,6 +248,7 @@ def compute(records):
         "throughput"  : throughput(records),
         "queue_latency": queue_latency(records),
         "utilisation" : utilisation(records),
+        "rejection_rate": rejection_rate(records),
     }
 
 
