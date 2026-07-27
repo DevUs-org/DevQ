@@ -53,6 +53,7 @@ read.
 | `ibm_federation.json` | Two IBM fake backends plus a mock device, `exec_on`, and a threshold tight enough to reject. Requires the qiskit stack, and `ibm` registered — see below. |
 | `placeholders.json` | Five jobs whose seed, provider and threshold come from `${NAME}` environment placeholders, resolved at load. Shows the credential-safe spec mechanism; needs the `DEVQ_*` vars set (see the suite's `PLACEHOLDER_ENV`). |
 | `rejection.json` | Four jobs, half carrying an impossibly strict `max_qubit_error` so no device is feasible and routing rejects them terminally while the rest complete. The fixture for the rejection-rate metric — a deliberately aggressive threshold sweep, yielding a rejection rate of 0.5. Finishes `completed_with_failures`, which is a result, not a crash. |
+| `contention.json` | Twenty-five jobs across two devices under batch arrival, so jobs queue behind one another and their waits spread. The fixture for queue-latency p95 at a realistic job count: with nearest-rank, p95 only falls below max at n ≥ 21, so this is the spec where the two differ. Also a strong load-imbalance case — sticky routing sends the whole batch to one device. |
 
 `ibm_federation.json` names the `ibm` provider, which is not registered
 by default. Register it in Python first — specs reference registered

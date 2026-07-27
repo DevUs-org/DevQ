@@ -1,0 +1,35 @@
+{
+    "name": "contention",
+    "seed": 42,
+    "devices": [
+        {
+            "id": "alpha",
+            "provider": "devq.simulated",
+            "backend": {
+                "kind": "linear",
+                "num_qubits": 7
+            }
+        },
+        {
+            "id": "bravo",
+            "provider": "devq.simulated",
+            "backend": {
+                "kind": "fully_connected",
+                "num_qubits": 7
+            }
+        }
+    ],
+    "arrival": {
+        "pattern": "batch"
+    },
+    "jobs": [
+        {
+            "circuit": "test_circuits/bell.qasm",
+            "repeat": 13
+        },
+        {
+            "circuit": "test_circuits/ghz.qasm",
+            "repeat": 12
+        }
+    ]
+}

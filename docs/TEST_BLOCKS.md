@@ -870,6 +870,14 @@ genuine run, not a hand-built records list, is what proves it works end
 to end. This is also the one spec whose kept `test_results/` output has a
 non-zero rejection rate to inspect.
 
+`contention.json` is the shipped fixture for queue-latency p95 at a
+realistic job count. Twenty-five jobs under batch arrival queue behind
+one another, so their waits spread. With nearest-rank, p95 is the
+`ceil(0.95·n)`-th sorted wait, which only falls below the max at n ≥ 21 —
+every smaller spec has p95 == max by that arithmetic. The exact latencies
+are wall-clock and non-deterministic, so the assertion is structural: p95
+strictly below max, and p95 equal to the 24th of the 25 sorted waits.
+
 Output is written to `test_results/` and KEPT, unlike every other block,
 so a run can be opened and read after the suite finishes. It is
 overwritten each run rather than timestamped, so it cannot accumulate,

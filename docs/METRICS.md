@@ -149,6 +149,16 @@ fifth, checkable by hand. This convention is fixed and pinned in one
 shared helper — it is load-bearing for reproducibility and must not be
 replaced by a library default, which would silently change the number.
 
+A consequence worth stating: at small `n`, **p95 equals max**. The rank
+`ceil(0.95 · n)` first drops below `n` only at `n = 21`
+(`ceil(0.95 · 20) = 19` is still not `20`; `ceil(0.95 · 25) = 24`), so
+any run of twenty or fewer jobs reports p95 as its largest wait. This is
+correct, not a defect — a handful of samples does not contain a 95th
+percentile distinct from the maximum, and nearest-rank is honest about
+that rather than fabricating an interpolated value no job experienced.
+p95 becomes a distinct, useful number once workloads grow; the shipped
+`contention.json` (25 jobs) is the fixture where p95 falls below max.
+
 ---
 
 ## Utilisation

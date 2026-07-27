@@ -1535,6 +1535,7 @@ def block_shipped_workloads():
         "ibm_federation.json" : 8,
         "placeholders.json"   : 5,
         "rejection.json"      : 4,
+        "contention.json"     : 25,
     }
 
     # KEPT, not deleted. block_benchmark_runner runs 19 sessions into a
@@ -1676,6 +1677,29 @@ def block_shipped_workloads():
                       f"{rr['rejected']}/{rr['submitted']}")
                 check(abs(rr["rate"] - 0.5) < 1e-12,
                       f"rejection.json rejection rate 0.5, got {rr['rate']}")
+
+            # The contention spec is the shipped fixture for p95 at a
+            # realistic job count. With nearest-rank on n jobs, p95 is the
+            # ceil(0.95n)-th sorted wait, which only falls BELOW the max
+            # once n >= 21 (ceil(0.95*20)=19 is still not 20; 25 gives the
+            # 24th of 25). Every smaller spec has p95 == max by that math,
+            # so this spec exists to exercise the distinct-p95 path. The
+            # exact latencies are wall-clock and non-deterministic, so the
+            # assertion is structural: p95 strictly below max, and p95
+            # equal to the 24th of the 25 sorted waits.
+            if filename == "contention.json":
+                from benchmark import metrics as M
+                import math as _math
+                ql = M.queue_latency(records)
+                check(ql["p95"] < ql["max"],
+                      f"at n=25 nearest-rank p95 is below max, got "
+                      f"p95={ql['p95']} max={ql['max']}")
+                waits = sorted(
+                    r["queue_latency"] for r in records[-1]["per_job"]
+                    if r["queue_latency"] is not None)
+                rank = _math.ceil(0.95 * len(waits))   # 24 for n=25
+                check(ql["p95"] == waits[rank - 1],
+                      f"p95 is the {rank}th of {len(waits)} sorted waits")
 
             # Expanded job count, PINNED per spec rather than computed
             # from the spec being checked. Deriving `expected` from the
