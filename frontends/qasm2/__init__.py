@@ -10,5 +10,6 @@ parameter, mishandled spacing inside argument lists, and treated
 measure as a bogus gate.
 
 parse(source_text, source_name) is the entry point. The built-in
-qasm2 frontend (frontends/qasm2_frontend.py) reads a file and calls it.
+qasm2 frontend (frontends/qasm2/qasm2_frontend.py) reads a file and
+calls it.
 '''

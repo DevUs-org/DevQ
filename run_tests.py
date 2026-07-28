@@ -941,7 +941,7 @@ def block_lifecycle_failed():
 
 def block_wedged_provider_timeout():
     '''A future that never resolves fails cleanly instead of hanging'''
-    from frontends.qasm2.qasm2_frontend import parse
+    from frontends.qasm2.parser import parse
 
     class NeverResolves:
         '''A future stuck in flight forever — a wedged provider or a dead
@@ -2812,7 +2812,7 @@ def block_router_scoring():
     from providers.devq.devq_simulated_provider import DevQSimulatedProvider
     from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
     from kernel.router.noise_router import NoiseRouter
-    from frontends.qasm2.qasm2_frontend import parse
+    from frontends.qasm2.parser import parse
     from kernel.process.qcb import QCB
 
     try:
@@ -3315,7 +3315,7 @@ def block_qasm2_parser():
     # index space, and the constructs DevQ cannot honour are rejected
     # with precise, line-numbered messages rather than silently mangled.
 
-    from frontends.qasm2.qasm2_frontend import parse, QASMError
+    from frontends.qasm2.parser import parse, QASMError
     import math
 
     def load(name):
