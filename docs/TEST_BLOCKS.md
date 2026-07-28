@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 51 sanity blocks in `run_tests.py`, covering
+Specification for the 53 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, and the Phase 5.3 metrics layer.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 51 blocks, one line each
+python run_tests.py              # all 53 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -905,6 +905,45 @@ index, a gate arity mismatch, an `opaque` gate with no body, a 3.0 header
 (pointing at a separate frontend), and a circuit with no quantum
 register. A closing end-to-end check runs a parameterised fixture through
 a real provider to confirm the lowered circuit executes.
+
+---
+
+### `devq_measurement`
+
+*devq.simulated distributes over the classical-register width.*
+
+`devq.simulated` does not interpret gates — it returns a uniform
+distribution, by design. What real measurement changed is the **width**
+of the bitstrings: they span the declared classical register (Option B),
+not the qubit count. The block pins that width, which is the whole of
+devq's measurement behaviour. It asserts: an unmeasured circuit falls
+back to `num_qubits` bits (a Bell pair → 2-bit strings, 4 uniform
+outcomes); a `creg c[3]` circuit with only two qubits measured still
+yields **3-bit** strings — the full register, not the measured count,
+which is what separates Option B from "width == measured bits"; a
+`creg c[1]` circuit yields 1-bit strings; and — the case that pins the
+width to the register rather than the qubits — a **three-qubit circuit
+with a two-bit creg** yields 2-bit strings (`num_clbits`, not
+`num_qubits`, which agree only when the two are equal).
+
+---
+
+### `ibm_measurement`
+
+*ibm.simulated honours the circuit's own measures and resets in order.*
+
+Unlike devq, the IBM provider interprets the circuit, so it shows real
+measurement physics. Needs qiskit; skips cleanly without it. It asserts:
+an unmeasured circuit is measured on every qubit (fallback), a Bell pair
+giving 2-bit strings correlated on `00`/`11`; a `creg c[3]` circuit with
+only `q0,q1` measured yields 3-bit strings whose unmeasured leftmost bit
+(`c[2]`) is **always 0** — proving it neither measures only the touched
+bits (which would be 2-bit) nor auto-measures all three (which would set
+the top bit sometimes); a three-qubit, two-bit-creg circuit yields 2-bit
+strings (width is the register); and — the ordering assertion — `x q[0]`
+then `reset q[0]` then measure yields **~all-zero**, since a reset
+honoured at its source position returns the qubit to 0, whereas a dropped
+or end-lumped reset would measure ~all-one.
 
 ---
 

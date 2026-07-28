@@ -401,14 +401,14 @@ with no third-party dependency, so DevQ reads `.qasm` out of the box.
 The built-in `qasm2` is a complete OpenQASM 2.0 parser
 (`frontends/qasm2/`): a tokenizer, an expression evaluator that keeps
 gate parameters, recursive custom-gate inlining, and first-class
-`measure`/`reset`. A frontend that produces measurements or resets
-records them in `CircuitRep`'s separate `measurements` and `resets`
-channels, never in the gate list — so every gate consumer (the
-allocators, `get_depth()`, both providers) sees exactly the gates and
-nothing else. `num_clbits` carries the classical-register width. These
-channels are inert data until the execution path is taught to honour
-them; a frontend should populate them anyway, so the information is
-captured once at parse time.
+`measure`/`reset`. `CircuitRep` is one ordered, op-tagged instruction
+stream — every entry carries an `op` of `"gate"`, `"measure"`, or
+`"reset"`, in source order — so a `reset` sits in its true position
+relative to the gates around it. A consumer that wants only unitary
+gates filters for `op == "gate"`; `get_depth()` and both providers do
+exactly that. `measurements` (a list of `(qubit, clbit)` pairs) and
+`resets` (qubit indices) are read-only views derived from the stream,
+and `num_clbits` carries the declared classical-register width.
 
 ## The event log
 

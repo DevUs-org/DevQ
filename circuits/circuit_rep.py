@@ -3,46 +3,47 @@ Tags: Main
 
 CircuitRep — DevQ's hardware-independent internal circuit format.
 
-A flat list of gate instructions with virtual qubit indices, gate
-names, and parameters. Frontends produce it; allocators, schedulers,
-and providers consume it. get_depth() computes circuit depth via
-per-qubit depth tracking — used by the SDF and Packing schedulers
-for depth-based ordering.
+An ORDERED list of operations, each tagged by kind, in source order.
+Frontends produce it; allocators, schedulers, and providers consume it.
 
-MEASURE AND RESET LIVE IN SEPARATE CHANNELS, not in the gate list.
-`instructions` holds unitary gates only, so every existing consumer —
-the allocators sizing on num_qubits, get_depth(), and both providers'
-gate iteration — sees exactly what it saw before richer frontends
-existed. measure and reset are captured in `measurements` and `resets`,
-which nothing iterates yet. This is deliberate isolation: a full 2.0
-frontend can record what a circuit measures without changing what any
-provider executes today. Teaching the providers to honour these
-channels (and to distribute over the measured bits rather than
-auto-measuring everything) is a later, execution-path change; until
-then the fields are inert data, and a fidelity number that later looks
-wrong stays cleanly attributable to parser-vs-provider.
+    {"op": "gate",    "gate": name, "qubits": [...], "params": [...]}
+    {"op": "measure", "qubit": q, "clbit": c}
+    {"op": "reset",   "qubit": q}
 
-`num_clbits` is the declared classical-register width. Providers ignore
-it for now; it exists so the measurement channel can name a real
-classical-bit target (measure q[i] -> c[j]) rather than only which
-qubits were measured — the maximal-information form, and what a
-conditional (parsed but rejected by the 2.0 frontend) would read.
+ONE ORDERED LIST, NOT SEPARATE CHANNELS. An earlier design kept measure
+and reset in side channels so gate consumers never saw them. That was
+the right isolation while frontends recorded measurement without anyone
+executing it — but it discards ORDER, and order is exactly what
+execution needs: `reset q[1]` means something different before versus
+after a two-qubit gate on q1. Once providers honour measure and reset,
+the flat gate-list-plus-channels shape can no longer express the circuit
+faithfully, so operations now live together in source order.
+
+The cost of one list is that consumers who want only gates must filter
+by op. get_depth() does; both providers do. That filter is the price of
+faithful ordering, paid once at each gate iterator.
+
+DERIVED VIEWS. `measurements` (list of (qubit, clbit) pairs) and
+`resets` (list of qubit indices) are read-only properties computed from
+the ordered list, so callers that only want "what was measured" keep a
+simple view while the ordered list stays the single source of truth —
+the two cannot drift apart. `num_clbits` is stored, not derived: it is
+the DECLARED classical-register width, which is not recoverable from the
+measures that happened to fire (a creg may be wider than its used bits).
 '''
 
 class CircuitRep:
     def __init__(self, num_qubits, num_clbits=0):
         self.num_qubits = num_qubits
         self.num_clbits = num_clbits
+        # The one ordered, op-tagged operation stream. Everything a
+        # circuit does — gates, measures, resets — appends here in the
+        # order the source expressed it.
         self.instructions = []
-        # (qubit, clbit) pairs — a measure maps one qubit onto one
-        # classical bit. Kept out of `instructions` so gate consumers are
-        # untouched; see the module docstring.
-        self.measurements = []
-        # qubit indices reset to |0>. Same separation rationale.
-        self.resets = []
 
     def add_gate(self, name, qubits, params = None):
         self.instructions.append({
+            "op": "gate",
             "gate": name,
             "qubits": qubits,
             "params": params or []
@@ -50,40 +51,58 @@ class CircuitRep:
 
     def add_measure(self, qubit, clbit):
         '''
-        Record a measurement of one qubit onto one classical bit.
-
-        Stored in the separate `measurements` channel, NOT the gate list,
-        so nothing that iterates gates observes it. num_clbits should be
-        wide enough to contain clbit; the frontend that produces the
-        circuit is responsible for having declared the classical register.
+        Append a measurement of one qubit onto one classical bit, in
+        source order relative to the gates around it.
         '''
-        self.measurements.append((qubit, clbit))
+        self.instructions.append({
+            "op": "measure",
+            "qubit": qubit,
+            "clbit": clbit
+        })
 
     def add_reset(self, qubit):
         '''
-        Record a reset of one qubit to |0>.
-
-        Stored in the separate `resets` channel for the same reason as
-        add_measure — reset is not a unitary gate and must not enter the
-        gate list that providers execute.
+        Append a reset of one qubit to |0>, in source order. Its position
+        in the stream is meaningful: a reset is only correct relative to
+        the operations before and after it.
         '''
-        self.resets.append(qubit)
+        self.instructions.append({
+            "op": "reset",
+            "qubit": qubit
+        })
+
+    @property
+    def measurements(self):
+        '''(qubit, clbit) pairs for every measure, in order — a read-only
+        view over the ordered stream, not a second stored copy.'''
+        return [(i["qubit"], i["clbit"])
+                for i in self.instructions if i["op"] == "measure"]
+
+    @property
+    def resets(self):
+        '''Reset qubit indices, in order — a read-only view over the
+        ordered stream.'''
+        return [i["qubit"] for i in self.instructions if i["op"] == "reset"]
 
     def get_depth(self):
-        if not self.instructions:
+        # Depth is a property of the UNITARY gates only — measure and
+        # reset are not gates and do not add circuit depth. Filter the
+        # ordered stream for gate ops.
+        gates = [i for i in self.instructions if i["op"] == "gate"]
+        if not gates:
             return 0
-        
+
         # Track the current depth level for each physical qubit
         qubit_depths = [0] * self.num_qubits
-        
-        for inst in self.instructions:
+
+        for inst in gates:
             target_qubits = inst["qubits"]
-            
+
             # Find the current max depth among qubits involved in this gate
             current_max = max(qubit_depths[q] for q in target_qubits)
-            
+
             # Increment depth for all involved qubits
             for q in target_qubits:
                 qubit_depths[q] = current_max + 1
-                
+
         return max(qubit_depths)

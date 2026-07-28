@@ -44,7 +44,7 @@ lets them run as plugins in one system on identical workloads.
 | `registry/` | Component registry and the plugin-facing `KeySpec` declarations |
 | `config/` | `ConfigLoader` — the four-level configuration cascade |
 | `shell/` | QShell and the JobSpec parser |
-| `circuits/` | `CircuitRep` (gates in `instructions`; `measure`/`reset` in the separate `measurements`/`resets` channels so gate consumers are untouched) and execution futures |
+| `circuits/` | `CircuitRep` (one ordered, op-tagged instruction stream — `gate`/`measure`/`reset` in source order; gate consumers filter `op == "gate"`) and execution futures |
 | `frontends/` | `BaseFrontend`, the `qasm2` frontend, and the full OpenQASM 2.0 parser in `frontends/qasm2/` (tokenizer, expression evaluator, custom-gate inlining); source-language readers that lower to `CircuitRep`, dispatched per job by extension |
 | `run_tests.py` | The whole test suite — 49 blocks, no pytest |
 | `benchmark/runner.py` | Run a workload spec, or the whole component matrix, into a run directory |

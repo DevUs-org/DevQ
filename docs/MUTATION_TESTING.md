@@ -43,16 +43,17 @@ cannot.
 
 ## Results
 
-**95 distinct mutants, 93 killed, 2 excluded** (M10 equivalent and P7
+**101 distinct mutants, 99 killed, 2 excluded** (M10 equivalent and P7
 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
 The total is delta-consistent, not recounted: 66/64/2 from the prior
 state plus the 14 new Metrics mutants, 3 new Shell mutants, 6 new
-Frontend mutants, and 6 new OpenQASM 2.0 parser mutants below, each
-verified by running the mutant against the affected block, not assumed.
-The pre-existing set was taken as given.
+Frontend mutants, 6 new OpenQASM 2.0 parser mutants, and 6 new
+measurement/execution mutants below, each verified by running the mutant
+against the affected block, not assumed. The pre-existing set was taken
+as given.
 
 ### Device identity — `hardware/device.py`, `providers/`, `devq.py`
 
@@ -258,6 +259,34 @@ with what the providers consume: P5 leaks a measure into the gate list
 (caught by the exact depth value). Each was run against `qasm2_parser`,
 confirmed to turn it red, then reverted; the parser files were diffed
 clean afterward.
+
+### Measurement & execution — `providers/devq/…`, `providers/ibm/…`
+
+| # | Mutation | Result |
+|---|---|---|
+| W1 | devq bitstring width uses `num_qubits` instead of `num_clbits` | killed (1) |
+| W2 | devq width fallback removed (unmeasured → width 0) | killed (1) |
+| M1 | IBM ignores the circuit's explicit `measure` ops | killed (1) |
+| M2 | IBM ignores `reset` ops | killed (1) |
+| M3 | IBM width uses `num_qubits` instead of `num_clbits` | killed (1) |
+| M4 | IBM fallback measure-all fires even when measures are present | killed (1) |
+
+These guard the execution-path change that made measure and reset real
+(Option B width: bitstrings span the declared classical register).
+W1 is the reason a `narrow_creg` fixture was added: the original
+`partial_measure` fixture had `num_clbits == num_qubits == 3`, so "width
+is the register" and "width is the qubit count" produced identical
+3-bit strings and W1 **survived**. A circuit with three qubits but a
+2-bit creg makes the two disagree, and only then did W1 (and its IBM twin
+M3) die — the same survivor lesson as P1 and LB5. W2 catches the missing
+fallback that would collapse an unmeasured circuit to a single outcome.
+M1 catches explicit measures being dropped (partial-measure would lose
+its declared width); M2 catches reset being ignored — the assertion is
+positional, `x` then `reset` must measure ~0, so a dropped reset (which
+would measure ~1) is caught; M4 catches the fallback firing on top of
+explicit measures, which double-measures and unpins the c[2] bit. Each
+was run against `devq_measurement` or `ibm_measurement`, confirmed to
+turn it red, then reverted; both provider files were diffed clean after.
 
 ### Workload spec — `benchmark/spec.py`, `providers/base_provider.py`
 

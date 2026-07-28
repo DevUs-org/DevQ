@@ -185,18 +185,25 @@ The `qasm2` frontend is a **complete 2.0 parser** (`frontends/qasm2/`): a
 real tokenizer, an expression evaluator that keeps gate parameters
 (`rx(pi/2)` now carries its angle — the bug that stopped parameterised
 QASMBench circuits from running), recursive custom-`gate` inlining with
-parameter and qubit substitution, and first-class `measure`/`reset`
-recorded in `CircuitRep`'s separate channels. `if (creg==N)` is parsed
-and rejected precisely — it needs mid-circuit measurement feedback the
-execution model does not provide, and silently dropping the condition
-would change the circuit's meaning.
+parameter and qubit substitution, and first-class `measure`/`reset`.
+`CircuitRep` is one ordered, op-tagged instruction stream, so a `reset`
+keeps its source position relative to the gates around it. `if (creg==N)`
+is parsed and rejected precisely — it needs mid-circuit measurement
+feedback the execution model does not provide, and silently dropping the
+condition would change the circuit's meaning.
+
+Measure and reset are now **executed**, not just recorded. Both providers
+honour a circuit's explicit measures (falling back to measure-all only
+when there are none) and place each measure and reset at its source
+position; `ibm.simulated` applies a real `reset` mid-circuit. Results are
+reported over the declared classical register (bitstring width is
+`num_clbits`, falling back to `num_qubits` when no `creg` is declared),
+so a measured bit sits at its own index and an unmeasured bit reads 0 —
+the convention a fidelity comparison needs.
 
 What remains for Phase 6: additional-language frontends — **OpenQASM
 3.0, Silq, Q#, Qiskit circuits** — each built against the same
-version-agnostic contract, and the execution-path work to make the
-recorded `measure`/`reset` channels *executed* (today the providers still
-auto-measure; honouring the circuit's actual measurements is a later,
-deliberate change). Frontends need no knowledge of the kernel,
+version-agnostic contract. Frontends need no knowledge of the kernel,
 allocators, or schedulers; write in the language you prefer, and DevQ
 handles routing, allocation, scheduling, and execution identically.
 

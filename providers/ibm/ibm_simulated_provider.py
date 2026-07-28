@@ -201,13 +201,41 @@ class IBMSimulatedProvider(BaseProvider):
         def _run():
             try:
                 num_virtual = circuit.num_qubits
-                qc = QuantumCircuit(num_virtual, num_virtual)
 
+                # Classical-register width (Option B): the DECLARED creg
+                # width, so a measured bit sits at its own index and the
+                # bitstring position IS the classical-bit index — no side
+                # map, matching how real hardware reports a creg. Unmeasured
+                # bits stay 0. Fallback: a circuit that declares no creg
+                # (num_clbits == 0) but is measured-all-implicitly needs
+                # somewhere to put the results, so the width falls back to
+                # the qubit count.
+                has_measures = any(i["op"] == "measure"
+                                   for i in circuit.instructions)
+                num_clbits = circuit.num_clbits
+                if num_clbits == 0:
+                    num_clbits = num_virtual
+                qc = QuantumCircuit(num_virtual, num_clbits)
+
+                # Walk the ordered stream, honouring each op in source
+                # position — so a reset lands where the circuit put it,
+                # relative to the gates around it, not lumped at the end.
                 for inst in circuit.instructions:
-                    self._add_gate(qc, inst['gate'].lower(),
-                                inst['qubits'], inst.get('params', []))
+                    op = inst["op"]
+                    if op == "gate":
+                        self._add_gate(qc, inst["gate"].lower(),
+                                       inst["qubits"], inst.get("params", []))
+                    elif op == "measure":
+                        qc.measure(inst["qubit"], inst["clbit"])
+                    elif op == "reset":
+                        qc.reset(inst["qubit"])
 
-                qc.measure(range(num_virtual), range(num_virtual))
+                # Explicit-with-implicit-fallback: honour the circuit's own
+                # measures; if it has none, measure every qubit into the
+                # matching classical bit (the historical behaviour, and what
+                # most tools do for an unmeasured circuit).
+                if not has_measures:
+                    qc.measure(range(num_virtual), range(num_virtual))
 
                 # Pin Aer's internal parallelism. Left unset, Aer sizes
                 # its thread pool from the CPU count and each thread

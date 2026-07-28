@@ -292,6 +292,14 @@ def device_of(out, job_id):
     return m.group(1)
 
 
+def counts_of(out, job_id):
+    '''Extract the measured counts dict a job finished with, as a dict.'''
+    m = re.search(
+        rf"Job {job_id} FINISHED\. Counts: (\{{[^}}]*\}})", out)
+    check(m is not None, f"job {job_id} produced counts", record=False)
+    return eval(m.group(1))
+
+
 # ── Mock components ──────────────────────────────────────────────────────────
 # Stand-ins for third-party plugins. These register through exactly the
 # public path a real plugin author uses, which is the point: testing by
@@ -3325,35 +3333,43 @@ def block_qasm2_parser():
     def approx(a, b):
         return abs(a - b) < 1e-9
 
+    def gate_ops(circ):
+        # CircuitRep is one ordered, op-tagged stream; a gate consumer
+        # filters for op == "gate". This mirrors what get_depth() and the
+        # providers do, so the block asserts against the same view they see.
+        return [i for i in circ.instructions if i["op"] == "gate"]
+
     # ── Parameters survive and evaluate (the rx(pi/2) fix) ──────────────
     c = load("parameterized.qasm")
     check(c.num_qubits == 2, "parameterized: two qubits")
-    gates = [(i["gate"], i["qubits"]) for i in c.instructions]
+    g = gate_ops(c)
+    gates = [(i["gate"], i["qubits"]) for i in g]
     check(gates == [("rx", [0]), ("ry", [1]), ("rz", [0]), ("cx", [0, 1])],
           f"parameterized: gate sequence, got {gates}")
-    check(approx(c.instructions[0]["params"][0], math.pi / 2),
+    check(approx(g[0]["params"][0], math.pi / 2),
           "parameterized: rx carries pi/2, not a dropped parameter")
-    check(approx(c.instructions[1]["params"][0], math.pi / 4),
+    check(approx(g[1]["params"][0], math.pi / 4),
           "parameterized: ry carries pi/4")
-    check(approx(c.instructions[2]["params"][0], 2 * math.pi),
+    check(approx(g[2]["params"][0], 2 * math.pi),
           "parameterized: rz carries 2*pi")
-    check(c.instructions[3]["params"] == [],
+    check(g[3]["params"] == [],
           "parameterized: cx has no parameters")
 
     # ── Expression evaluator: precedence, functions, unary minus ────────
     c = load("expressions.qasm")
-    check(approx(c.instructions[0]["params"][0], 8.0),
-          f"expressions: 2^3 == 8, got {c.instructions[0]['params'][0]}")
-    check(approx(c.instructions[1]["params"][0], 1.0),
+    g = gate_ops(c)
+    check(approx(g[0]["params"][0], 8.0),
+          f"expressions: 2^3 == 8, got {g[0]['params'][0]}")
+    check(approx(g[1]["params"][0], 1.0),
           "expressions: sin(0)+cos(0) == 1")
-    check(approx(c.instructions[2]["params"][0], -math.pi / 2),
+    check(approx(g[2]["params"][0], -math.pi / 2),
           "expressions: unary minus, -pi/2")
-    check(approx(c.instructions[3]["params"][0], 2.0),
+    check(approx(g[3]["params"][0], 2.0),
           f"expressions: binary subtraction 3-1 == 2 (distinct from unary "
-          f"minus), got {c.instructions[3]['params'][0]}")
-    check(approx(c.instructions[4]["params"][0], 11.0),
+          f"minus), got {g[3]['params'][0]}")
+    check(approx(g[4]["params"][0], 11.0),
           f"expressions: 5+2*3 == 11, multiplication binds tighter than "
-          f"addition, got {c.instructions[4]['params'][0]}")
+          f"addition, got {g[4]['params'][0]}")
 
     # ── Custom gates inline recursively, substituting params AND qubits ─
     c = load("custom_gate.qasm")
@@ -3361,30 +3377,36 @@ def block_qasm2_parser():
     # entangle(pi/2) q0,q1  ->  rz(pi/2) q0; cx q0,q1
     # double(pi/4) q1,q2    ->  entangle(pi/4) q1,q2 ; entangle(pi/4) q2,q1
     #                      ->  rz q1; cx q1,q2 ; rz q2; cx q2,q1
-    expanded = [(i["gate"], i["qubits"]) for i in c.instructions]
+    g = gate_ops(c)
+    expanded = [(i["gate"], i["qubits"]) for i in g]
     check(expanded == [("rz", [0]), ("cx", [0, 1]),
                        ("rz", [1]), ("cx", [1, 2]),
                        ("rz", [2]), ("cx", [2, 1])],
           f"custom_gate: recursive inline with qubit substitution, "
           f"got {expanded}")
-    check(approx(c.instructions[0]["params"][0], math.pi / 2),
+    check(approx(g[0]["params"][0], math.pi / 2),
           "custom_gate: first rz took the outer call's pi/2")
-    check(approx(c.instructions[2]["params"][0], math.pi / 4),
+    check(approx(g[2]["params"][0], math.pi / 4),
           "custom_gate: inlined rz took the inner call's pi/4")
     # No custom-gate name leaks into the lowered circuit — only primitives.
-    check(all(i["gate"] in ("rz", "cx") for i in c.instructions),
+    check(all(i["gate"] in ("rz", "cx") for i in g),
           "custom_gate: only primitives remain after inlining")
 
-    # ── measure/reset in separate channels; gate list stays gate-only ───
+    # ── measure/reset interleave in source order; gate view stays gates ─
     c = load("measured.qasm")
-    check([i["gate"] for i in c.instructions] == ["h", "cx"],
-          "measured: gate list holds only unitary gates")
+    check([i["gate"] for i in gate_ops(c)] == ["h", "cx"],
+          "measured: the gate view holds only unitary gates")
+    # The ordered stream carries measure and reset in source position:
+    # h, cx, reset q1, measure q0, measure q1.
+    check([i["op"] for i in c.instructions] ==
+          ["gate", "gate", "reset", "measure", "measure"],
+          f"measured: ops interleave in source order, got "
+          f"{[i['op'] for i in c.instructions]}")
     check(c.measurements == [(0, 0), (1, 1)],
           f"measured: measurements record (qubit, clbit), got {c.measurements}")
     check(c.resets == [1], f"measured: reset recorded, got {c.resets}")
     check(c.num_clbits == 2, "measured: classical register width captured")
-    # The separation is the point: nothing that iterates gates can see a
-    # measure. get_depth (gates only) must ignore measure/reset entirely.
+    # Depth is a property of gates only — measure and reset add no depth.
     check(c.get_depth() == 2, f"measured: depth counts gates only (h,cx), "
                               f"got {c.get_depth()}")
 
@@ -3392,7 +3414,7 @@ def block_qasm2_parser():
     c = load("multi_register.qasm")
     check(c.num_qubits == 5, "multi_register: a[2]+b[3] == 5 qubits")
     check(c.num_clbits == 5, "multi_register: c[5] == 5 clbits")
-    flat = [(i["gate"], i["qubits"]) for i in c.instructions]
+    flat = [(i["gate"], i["qubits"]) for i in gate_ops(c)]
     # a[0]=0; a[1]=1; b[0]=2,b[1]=3,b[2]=4.
     check(flat == [("h", [0]), ("cx", [1, 2])],
           f"multi_register: b[0] flattens to global index 2, got {flat}")
@@ -3443,6 +3465,126 @@ def block_qasm2_parser():
     expect(out, "FINISHED")
     check("Error" not in out,
           "a parameterised circuit runs end to end without error")
+
+
+def block_devq_measurement():
+    '''devq.simulated distributes over the classical-register width'''
+    # devq.simulated does not interpret gates — it returns a uniform
+    # distribution, by design. What real measurement changed is the WIDTH
+    # of the bitstrings: they span the DECLARED classical register
+    # (Option B), not the qubit count. So a measured circuit's results
+    # cover its creg width and a measured bit sits at its own index; an
+    # unmeasured circuit falls back to num_qubits. This block pins that
+    # width, which is the whole of devq's measurement behaviour.
+
+    sh = (DevQ(config_path=CONFIG + "router_only.config.json")
+          .add_device(DevQSimulatedProvider(seed=SEED).get_device("random", 8))
+          .build())
+
+    # No creg, no measures: fallback width == num_qubits (2), uniform.
+    out = run(sh, [f"qrun {BELL}"])
+    counts = counts_of(out, 1)
+    check(all(len(k) == 2 for k in counts),
+          f"devq fallback: no creg -> 2-bit strings (num_qubits), "
+          f"got widths {set(len(k) for k in counts)}")
+    check(len(counts) == 4, f"devq fallback: 2^2 == 4 outcomes, got {len(counts)}")
+    check(len(set(counts.values())) == 1,
+          "devq: distribution is uniform")
+
+    # creg c[3], only two qubits measured: Option B width is the FULL
+    # register (3 bits), not the number of measured bits (2). This is the
+    # assertion that separates Option B from "width == measured count".
+    out = run(sh, [f"qrun {QASM2}partial_measure.qasm"])
+    counts = counts_of(out, 2)
+    check(all(len(k) == 3 for k in counts),
+          f"devq Option B: creg c[3] -> 3-bit strings even with two "
+          f"measures, got widths {set(len(k) for k in counts)}")
+    check(len(counts) == 8, f"devq: 2^3 == 8 outcomes, got {len(counts)}")
+
+    # creg c[1]: single-bit register -> single-bit strings.
+    out = run(sh, [f"qrun {QASM2}reset_mid.qasm"])
+    counts = counts_of(out, 3)
+    check(all(len(k) == 1 for k in counts),
+          f"devq: creg c[1] -> 1-bit strings, got "
+          f"{set(len(k) for k in counts)}")
+
+    # 3 qubits but creg c[2]: width is num_clbits (2), NOT num_qubits (3).
+    # This is the case that distinguishes Option B from measuring all
+    # qubits — the two agree whenever num_clbits == num_qubits, so a
+    # narrower creg is needed to pin the width to the register.
+    out = run(sh, [f"qrun {QASM2}narrow_creg.qasm"])
+    counts = counts_of(out, 4)
+    check(all(len(k) == 2 for k in counts),
+          f"devq Option B: 3 qubits + creg c[2] -> 2-bit strings "
+          f"(num_clbits, not num_qubits), got "
+          f"{set(len(k) for k in counts)}")
+
+
+def block_ibm_measurement():
+    '''ibm.simulated honours the circuit's own measures and resets in order'''
+    # Unlike devq, the IBM provider interprets the circuit, so it shows
+    # real measurement physics: it honours the circuit's explicit measures
+    # (falling back to measure-all only when there are none), places each
+    # measure and reset at its source position, and reports over the
+    # declared classical register (Option B) so an unmeasured bit is pinned
+    # to 0 at its own index. Needs qiskit; skips cleanly without it.
+    try:
+        p = IBMSimulatedProvider(seed=SEED)
+        _probe = p.get_device(backend_name="FakeNairobiV2")
+    except Exception:
+        check(True, "qiskit not installed - IBM measurement block skipped")
+        return
+
+    def ibm_shell():
+        dq = devq_with_ibm()
+        dq.add_device(IBMSimulatedProvider(seed=SEED)
+                      .get_device("FakeNairobiV2"), name="nairobi")
+        with contextlib.redirect_stdout(io.StringIO()):
+            return dq.build()
+
+    # Fallback: a circuit with no measures is measured on every qubit, so
+    # a Bell pair yields 2-bit strings correlated on 00/11 (the historical
+    # behaviour, unchanged).
+    out = run(ibm_shell(), [f"qrun {BELL}"])
+    counts = counts_of(out, 1)
+    check(all(len(k) == 2 for k in counts),
+          f"IBM fallback: no measures -> measure-all, 2-bit strings, "
+          f"got {set(len(k) for k in counts)}")
+    corr = counts.get("00", 0) + counts.get("11", 0)
+    check(corr > 0.85 * sum(counts.values()),
+          f"IBM fallback: Bell correlation on 00/11 dominates, got {counts}")
+
+    # Option B width + explicit measures: creg c[3] with only q0,q1
+    # measured yields 3-bit strings whose leftmost bit (c[2], unmeasured)
+    # is ALWAYS 0. If the provider measured only the two touched bits the
+    # strings would be 2-bit; if it auto-measured all three the top bit
+    # would sometimes be 1. Neither happens.
+    out = run(ibm_shell(), [f"qrun {QASM2}partial_measure.qasm"])
+    counts = counts_of(out, 1)
+    check(all(len(k) == 3 for k in counts),
+          f"IBM Option B: creg c[3] -> 3-bit strings, got "
+          f"{set(len(k) for k in counts)}")
+    check(all(k[0] == "0" for k in counts),
+          f"IBM Option B: the unmeasured bit c[2] is pinned to 0, got {counts}")
+
+    # 3 qubits but creg c[2]: width is the register (2), not the qubit
+    # count (3). Distinguishes Option B from measuring all qubits, which
+    # agree only when num_clbits == num_qubits.
+    out = run(ibm_shell(), [f"qrun {QASM2}narrow_creg.qasm"])
+    counts = counts_of(out, 1)
+    check(all(len(k) == 2 for k in counts),
+          f"IBM Option B: 3 qubits + creg c[2] -> 2-bit strings "
+          f"(num_clbits, not num_qubits), got {set(len(k) for k in counts)}")
+
+    # Reset honoured in position: x flips q0 to 1, reset returns it to 0,
+    # then measure. A reset at its true source position yields ~all-zero;
+    # a dropped reset (or one lumped at the end) would yield ~all-one. This
+    # is the assertion that proves ordering, not just presence, of reset.
+    out = run(ibm_shell(), [f"qrun {QASM2}reset_mid.qasm"])
+    counts = counts_of(out, 1)
+    zero = counts.get("0", 0)
+    check(zero > 0.85 * sum(counts.values()),
+          f"IBM reset in position: x then reset -> measures ~0, got {counts}")
 
 
 # ── Shell robustness ─────────────────────────────────────────────────────────
@@ -3546,6 +3688,8 @@ BLOCKS = [
     ("qregistry",                block_qregistry),
     ("frontend_dispatch",        block_frontend_dispatch),
     ("qasm2_parser",             block_qasm2_parser),
+    ("devq_measurement",         block_devq_measurement),
+    ("ibm_measurement",          block_ibm_measurement),
     ("shipped_workloads",        block_shipped_workloads),
     ("repo_hygiene",             block_repo_hygiene),
     ("benchmark_runner",         block_benchmark_runner),
