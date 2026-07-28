@@ -43,15 +43,16 @@ cannot.
 
 ## Results
 
-**89 distinct mutants, 87 killed, 2 excluded** (M10 equivalent and P7
+**95 distinct mutants, 93 killed, 2 excluded** (M10 equivalent and P7
 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
 The total is delta-consistent, not recounted: 66/64/2 from the prior
-state plus the 14 new Metrics mutants, 3 new Shell mutants, and 6 new
-Frontend mutants below, each verified by running the mutant against the
-affected block, not assumed. The pre-existing set was taken as given.
+state plus the 14 new Metrics mutants, 3 new Shell mutants, 6 new
+Frontend mutants, and 6 new OpenQASM 2.0 parser mutants below, each
+verified by running the mutant against the affected block, not assumed.
+The pre-existing set was taken as given.
 
 ### Device identity — `hardware/device.py`, `providers/`, `devq.py`
 
@@ -226,6 +227,37 @@ vanishing from `qregistry f`, caught by the expect on the `Frontends`
 heading. Each was run against `frontend_dispatch` and confirmed to turn it
 red, then reverted; the files were diffed clean afterward to confirm no
 mutation residue.
+
+### OpenQASM 2.0 parser — `frontends/qasm2/`, `circuits/circuit_rep.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| P1 | binary subtraction becomes addition in the expression evaluator | killed (1) |
+| P2 | `^` power ignored, base returned unchanged | killed (1) |
+| P3 | custom-gate qubit substitution binds every formal to qubit 0 | killed (1) |
+| P4 | `qreg` base offset dropped, so registers stop flattening | killed (1) |
+| P5 | `measure` recorded into the gate list instead of its channel | killed (1) |
+| P6 | `get_depth()` counts measurements as well as gates | killed (1) |
+
+These guard the ways a parser silently corrupts a circuit rather than
+failing loudly. P1 is the reason the `expressions` fixture and block were
+strengthened: the mutant **survived** the first version, because every
+subtraction in the fixtures was a *unary* minus (`-pi/2`), which takes a
+different code path than binary `a - b`. A `3 - 1` case and a
+`5 + 2*3` precedence case were added, and only then did P1 die — a green
+suite around the original fixture was not evidence the subtraction path
+was tested, the same lesson as the LB5/R10 survivors. P2 confirms the
+power operator is real, not decorative. P3 catches corrupted qubit
+substitution during custom-gate inlining — the mutant maps every inlined
+gate onto qubit 0, which the recursive-inline assertion catches by exact
+qubit list. P4 catches registers that stop flattening into one index
+space (`b[0]` resolves to 0, not 2). P5 and P6 both guard the
+measure/reset channel separation that keeps the gate list byte-compatible
+with what the providers consume: P5 leaks a measure into the gate list
+(caught by the gate-only assertion), P6 leaks it into scheduling depth
+(caught by the exact depth value). Each was run against `qasm2_parser`,
+confirmed to turn it red, then reverted; the parser files were diffed
+clean afterward.
 
 ### Workload spec — `benchmark/spec.py`, `providers/base_provider.py`
 

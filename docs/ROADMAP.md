@@ -152,11 +152,10 @@ above once Phase 5 ships:
   comparison modes remain to close 5.3 out; fidelity is gated on 5.4's
   real measurement.
 - **5.4 — workload suite** 🔭 QASMBench and a noiseless reference run for
-  the circuits without a closed-form ideal. **Gated on the frontend**: the
-  original QASM reader dropped gate parameters, so parameterised QASMBench
-  circuits could not run. The frontend contract (below) is the foundation
-  being built first to unblock it — a registrable `frontend` kind now
-  exists, with the built-in `qasm2` reader as its first implementation.
+  the circuits without a closed-form ideal. The frontend blocker is
+  **resolved**: the `qasm2` parser now keeps gate parameters, so
+  parameterised QASMBench circuits parse and run. What remains is the
+  suite itself and the reference-run machinery.
 - **5.5 — comparison matrix and α/β sweep** 🔭 answerable from one
   recorded run via the per-candidate route scores.
 - **5.6 — baseline plugins** 🔭 published baselines to compare against;
@@ -170,25 +169,34 @@ source representation into `CircuitRep`, DevQ's hardware-independent
 internal format. Phase 6 opens the top of the stack the same way
 `BaseProvider` opens the bottom.
 
-The **contract now exists** and was brought forward to unblock 5.4.
-`frontend` is a registrable component kind alongside providers, routers,
-schedulers and allocators: subclass `BaseFrontend`, implement
-`parse(source) → CircuitRep`, declare `EXTENSIONS`, register it, and its
-sources are dispatchable — no core edit. Unlike the other kinds a
-frontend is *dispatched per job* by the source's extension rather than
-selected by config, so one session can read several source languages at
-once; an ambiguous extension is disambiguated with `--frontend` (shell)
-or a `"frontend"` spec key. The built-in `qasm2` ships registered with no
-third-party dependency, so DevQ reads `.qasm` out of the box. See
-[`REGISTRY.md`](REGISTRY.md).
+The **contract and a full OpenQASM 2.0 reader now exist**, brought
+forward to unblock 5.4. `frontend` is a registrable component kind
+alongside providers, routers, schedulers and allocators: subclass
+`BaseFrontend`, implement `parse(source) → CircuitRep`, declare
+`EXTENSIONS`, register it, and its sources are dispatchable — no core
+edit. Unlike the other kinds a frontend is *dispatched per job* by the
+source's extension rather than selected by config, so one session can
+read several source languages at once; an ambiguous extension is
+disambiguated with `--frontend` (shell) or a `"frontend"` spec key. The
+built-in `qasm2` ships registered with no third-party dependency, so DevQ
+reads `.qasm` out of the box. See [`REGISTRY.md`](REGISTRY.md).
 
-What remains for Phase 6: a **fully OpenQASM 2.0-compliant** `qasm2`
-implementation (the current one still delegates to the original
-whitespace-splitting reader — it must gain a real tokenizer, an
-expression evaluator for parameters, custom-gate inlining, and
-first-class `measure`/`reset`), and then additional-language frontends —
-**OpenQASM 3.0, Silq, Q#, Qiskit circuits** — each built against the same
-version-agnostic contract. Frontends need no knowledge of the kernel,
+The `qasm2` frontend is a **complete 2.0 parser** (`frontends/qasm2/`): a
+real tokenizer, an expression evaluator that keeps gate parameters
+(`rx(pi/2)` now carries its angle — the bug that stopped parameterised
+QASMBench circuits from running), recursive custom-`gate` inlining with
+parameter and qubit substitution, and first-class `measure`/`reset`
+recorded in `CircuitRep`'s separate channels. `if (creg==N)` is parsed
+and rejected precisely — it needs mid-circuit measurement feedback the
+execution model does not provide, and silently dropping the condition
+would change the circuit's meaning.
+
+What remains for Phase 6: additional-language frontends — **OpenQASM
+3.0, Silq, Q#, Qiskit circuits** — each built against the same
+version-agnostic contract, and the execution-path work to make the
+recorded `measure`/`reset` channels *executed* (today the providers still
+auto-measure; honouring the circuit's actual measurements is a later,
+deliberate change). Frontends need no knowledge of the kernel,
 allocators, or schedulers; write in the language you prefer, and DevQ
 handles routing, allocation, scheduling, and execution identically.
 

@@ -57,6 +57,7 @@ CONFIG = "./config/config_examples/"
 WORKLOADS = "./benchmark/workloads/"
 BELL   = "test_circuits/bell.qasm"
 GHZ    = "test_circuits/ghz.qasm"
+QASM2  = "test_circuits/qasm2/"   # fixtures exercising the full 2.0 parser
 
 SEED = 42   # fixed everywhere so mock-device topologies never flap
 
@@ -940,7 +941,7 @@ def block_lifecycle_failed():
 
 def block_wedged_provider_timeout():
     '''A future that never resolves fails cleanly instead of hanging'''
-    from circuits.qasm_loader import load_qasm
+    from frontends.qasm2.qasm2_frontend import parse
 
     class NeverResolves:
         '''A future stuck in flight forever — a wedged provider or a dead
@@ -957,7 +958,7 @@ def block_wedged_provider_timeout():
     # than the 300s production deadline.
     buf = BoundedBuffer()
     with _capture(buf):
-        qcb = sh.kernel.submit_job(load_qasm(BELL))
+        qcb = sh.kernel.submit_job(parse(open(BELL).read(), BELL))
         ctx_routed, _ = sh.kernel._route(qcb)
         qcb.v2p_map = ctx_routed.memory_manager.allocate(qcb.circuit)
         sh.kernel._execute(qcb, ctx_routed)
@@ -2811,7 +2812,7 @@ def block_router_scoring():
     from providers.devq.devq_simulated_provider import DevQSimulatedProvider
     from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
     from kernel.router.noise_router import NoiseRouter
-    from circuits.qasm_loader import load_qasm
+    from frontends.qasm2.qasm2_frontend import parse
     from kernel.process.qcb import QCB
 
     try:
@@ -2827,7 +2828,7 @@ def block_router_scoring():
         shell = devq_with_ibm().add_devices(devices).build()
     contexts = shell.kernel.contexts
 
-    circuit = load_qasm(GHZ)
+    circuit = parse(open(GHZ).read(), GHZ)
     qcb = QCB(job_id=1, circuit=circuit)
 
     def scores_at(wq, wn):
@@ -3301,6 +3302,149 @@ def block_frontend_dispatch():
               "frontend __init__ taking arguments is rejected")
 
 
+def block_qasm2_parser():
+    '''The OpenQASM 2.0 parser keeps parameters, inlines gates, records measures'''
+    # The original reader split on whitespace and dropped every gate
+    # parameter, so rx(pi/2) executed as a mangled no-op and no
+    # parameterised circuit ran correctly. This block asserts the real
+    # parser against HAND-COMPUTED values (parsing is deterministic, so
+    # exact numbers are fair game — no wall-clock anywhere): parameters
+    # survive and evaluate, expressions respect precedence, custom gates
+    # inline recursively, measure/reset land in their own channels while
+    # the gate list stays gate-only, several registers flatten into one
+    # index space, and the constructs DevQ cannot honour are rejected
+    # with precise, line-numbered messages rather than silently mangled.
+
+    from frontends.qasm2.qasm2_frontend import parse, QASMError
+    import math
+
+    def load(name):
+        with open(QASM2 + name) as fh:
+            return parse(fh.read(), name)
+
+    def approx(a, b):
+        return abs(a - b) < 1e-9
+
+    # ── Parameters survive and evaluate (the rx(pi/2) fix) ──────────────
+    c = load("parameterized.qasm")
+    check(c.num_qubits == 2, "parameterized: two qubits")
+    gates = [(i["gate"], i["qubits"]) for i in c.instructions]
+    check(gates == [("rx", [0]), ("ry", [1]), ("rz", [0]), ("cx", [0, 1])],
+          f"parameterized: gate sequence, got {gates}")
+    check(approx(c.instructions[0]["params"][0], math.pi / 2),
+          "parameterized: rx carries pi/2, not a dropped parameter")
+    check(approx(c.instructions[1]["params"][0], math.pi / 4),
+          "parameterized: ry carries pi/4")
+    check(approx(c.instructions[2]["params"][0], 2 * math.pi),
+          "parameterized: rz carries 2*pi")
+    check(c.instructions[3]["params"] == [],
+          "parameterized: cx has no parameters")
+
+    # ── Expression evaluator: precedence, functions, unary minus ────────
+    c = load("expressions.qasm")
+    check(approx(c.instructions[0]["params"][0], 8.0),
+          f"expressions: 2^3 == 8, got {c.instructions[0]['params'][0]}")
+    check(approx(c.instructions[1]["params"][0], 1.0),
+          "expressions: sin(0)+cos(0) == 1")
+    check(approx(c.instructions[2]["params"][0], -math.pi / 2),
+          "expressions: unary minus, -pi/2")
+    check(approx(c.instructions[3]["params"][0], 2.0),
+          f"expressions: binary subtraction 3-1 == 2 (distinct from unary "
+          f"minus), got {c.instructions[3]['params'][0]}")
+    check(approx(c.instructions[4]["params"][0], 11.0),
+          f"expressions: 5+2*3 == 11, multiplication binds tighter than "
+          f"addition, got {c.instructions[4]['params'][0]}")
+
+    # ── Custom gates inline recursively, substituting params AND qubits ─
+    c = load("custom_gate.qasm")
+    check(c.num_qubits == 3, "custom_gate: three qubits")
+    # entangle(pi/2) q0,q1  ->  rz(pi/2) q0; cx q0,q1
+    # double(pi/4) q1,q2    ->  entangle(pi/4) q1,q2 ; entangle(pi/4) q2,q1
+    #                      ->  rz q1; cx q1,q2 ; rz q2; cx q2,q1
+    expanded = [(i["gate"], i["qubits"]) for i in c.instructions]
+    check(expanded == [("rz", [0]), ("cx", [0, 1]),
+                       ("rz", [1]), ("cx", [1, 2]),
+                       ("rz", [2]), ("cx", [2, 1])],
+          f"custom_gate: recursive inline with qubit substitution, "
+          f"got {expanded}")
+    check(approx(c.instructions[0]["params"][0], math.pi / 2),
+          "custom_gate: first rz took the outer call's pi/2")
+    check(approx(c.instructions[2]["params"][0], math.pi / 4),
+          "custom_gate: inlined rz took the inner call's pi/4")
+    # No custom-gate name leaks into the lowered circuit — only primitives.
+    check(all(i["gate"] in ("rz", "cx") for i in c.instructions),
+          "custom_gate: only primitives remain after inlining")
+
+    # ── measure/reset in separate channels; gate list stays gate-only ───
+    c = load("measured.qasm")
+    check([i["gate"] for i in c.instructions] == ["h", "cx"],
+          "measured: gate list holds only unitary gates")
+    check(c.measurements == [(0, 0), (1, 1)],
+          f"measured: measurements record (qubit, clbit), got {c.measurements}")
+    check(c.resets == [1], f"measured: reset recorded, got {c.resets}")
+    check(c.num_clbits == 2, "measured: classical register width captured")
+    # The separation is the point: nothing that iterates gates can see a
+    # measure. get_depth (gates only) must ignore measure/reset entirely.
+    check(c.get_depth() == 2, f"measured: depth counts gates only (h,cx), "
+                              f"got {c.get_depth()}")
+
+    # ── Several registers flatten into one global index space ───────────
+    c = load("multi_register.qasm")
+    check(c.num_qubits == 5, "multi_register: a[2]+b[3] == 5 qubits")
+    check(c.num_clbits == 5, "multi_register: c[5] == 5 clbits")
+    flat = [(i["gate"], i["qubits"]) for i in c.instructions]
+    # a[0]=0; a[1]=1; b[0]=2,b[1]=3,b[2]=4.
+    check(flat == [("h", [0]), ("cx", [1, 2])],
+          f"multi_register: b[0] flattens to global index 2, got {flat}")
+    check(c.measurements == [(4, 4)],
+          f"multi_register: b[2] is global qubit 4, got {c.measurements}")
+
+    # ── Rejections are precise and line-numbered ────────────────────────
+    def rejected(name, phrase):
+        try:
+            load(name)
+            return False, "did not reject"
+        except QASMError as e:
+            return (phrase in str(e).lower()), str(e)
+
+    ok, msg = rejected("conditional.qasm", "feedback")
+    check(ok, f"conditional (if): rejected for lack of feedback, got {msg!r}")
+    check("line 7" in msg, f"conditional: error points at the if line, got {msg!r}")
+
+    # Inline-source rejects for constructs without a fixture — each a
+    # DIFFERENT failure mode, proving the parser distinguishes them rather
+    # than lumping everything into one "unsupported".
+    def rej_src(src, phrase):
+        try:
+            parse(src)
+            return False
+        except QASMError as e:
+            return phrase in str(e).lower()
+
+    check(rej_src("OPENQASM 2.0; qreg q[2]; x q[9];", "out of range"),
+          "reject: qubit index past the register")
+    check(rej_src("OPENQASM 2.0; qreg q[1]; rx q[0];", "param"),
+          "reject: gate arity (rx needs a parameter)")
+    check(rej_src("OPENQASM 2.0; qreg q[1]; opaque foo q;", "opaque"),
+          "reject: opaque gate has no body to lower")
+    check(rej_src("OPENQASM 3.0; qreg q[1]; x q[0];", "2.0"),
+          "reject: a 3.0 header, with a message pointing to a separate frontend")
+    check(rej_src("OPENQASM 2.0;", "no qreg"),
+          "reject: a circuit with no quantum register")
+
+    # ── End to end: a parameterised circuit runs on a real provider ─────
+    # The strongest check that parameters survive is that a provider which
+    # CONSUMES them executes without error. devq.simulated ignores gates,
+    # so this exercises the full submit path on the parser's output.
+    sh = (DevQ(config_path=CONFIG + "router_only.config.json")
+          .add_device(DevQSimulatedProvider(seed=SEED).get_device("random", 8))
+          .build())
+    out = run(sh, [f"qrun {QASM2}parameterized.qasm"])
+    expect(out, "FINISHED")
+    check("Error" not in out,
+          "a parameterised circuit runs end to end without error")
+
+
 # ── Shell robustness ─────────────────────────────────────────────────────────
 
 def block_shell_input_handling():
@@ -3401,6 +3545,7 @@ BLOCKS = [
     ("component_labels",         block_component_labels),
     ("qregistry",                block_qregistry),
     ("frontend_dispatch",        block_frontend_dispatch),
+    ("qasm2_parser",             block_qasm2_parser),
     ("shipped_workloads",        block_shipped_workloads),
     ("repo_hygiene",             block_repo_hygiene),
     ("benchmark_runner",         block_benchmark_runner),

@@ -398,6 +398,18 @@ a precise error otherwise. An extension no frontend claims is likewise
 rejected, before the file is read. The built-in `qasm2` ships registered
 with no third-party dependency, so DevQ reads `.qasm` out of the box.
 
+The built-in `qasm2` is a complete OpenQASM 2.0 parser
+(`frontends/qasm2/`): a tokenizer, an expression evaluator that keeps
+gate parameters, recursive custom-gate inlining, and first-class
+`measure`/`reset`. A frontend that produces measurements or resets
+records them in `CircuitRep`'s separate `measurements` and `resets`
+channels, never in the gate list — so every gate consumer (the
+allocators, `get_depth()`, both providers) sees exactly the gates and
+nothing else. `num_clbits` carries the classical-register width. These
+channels are inert data until the execution path is taught to honour
+them; a frontend should populate them anyway, so the information is
+captured once at parse time.
+
 ## The event log
 
 The kernel emits structured records; **sinks** decide what to do with

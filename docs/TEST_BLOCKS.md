@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 50 sanity blocks in `run_tests.py`, covering
+Specification for the 51 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, and the Phase 5.3 metrics layer.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 50 blocks, one line each
+python run_tests.py              # all 51 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -872,6 +872,39 @@ extension no frontend claims is rejected *before* the file is read
 (proving resolution precedes I/O); and the registry refuses a frontend
 registered as an instance or with a constructor DevQ cannot satisfy,
 so the kind is not silently exempt from the class-only rule.
+
+---
+
+### `qasm2_parser`
+
+*The OpenQASM 2.0 parser keeps parameters, inlines gates, records measures.*
+
+The original reader split source on whitespace and dropped every gate
+parameter, so `rx(pi/2)` executed as a mangled no-op and no parameterised
+circuit — all of QASMBench — ran correctly. The real parser
+(`frontends/qasm2/`: tokenizer, expression evaluator, recursive
+custom-gate inliner) replaces it. Because QASM parsing is deterministic
+with no wall-clock anywhere, this block asserts against **hand-computed
+values**, not the parser's own output.
+
+It asserts, against fixtures in `test_circuits/qasm2/`: parameters
+survive and evaluate — `rx` carries `pi/2`, not a dropped argument;
+the expression evaluator respects precedence, functions and unary minus
+(`2^3` is 8, `sin(0)+cos(0)` is 1, `-pi/2` is negative); custom gates
+inline **recursively**, substituting both parameters and qubit arguments,
+leaving only primitives in the lowered circuit; `measure` and `reset`
+land in `CircuitRep`'s separate channels — recording `(qubit, clbit)`
+pairs and reset qubits — while the gate list stays gate-only, so
+`get_depth()` (which iterates gates) counts only the unitary gates;
+several `qreg`/`creg` declarations flatten into one global index space,
+so `b[0]` after `qreg a[2]` is global qubit 2. And the constructs DevQ
+cannot honour are rejected with precise, line-numbered messages, each a
+**different** failure mode rather than one lumped "unsupported":
+`if (creg==N)` for lack of mid-circuit feedback, an out-of-range qubit
+index, a gate arity mismatch, an `opaque` gate with no body, a 3.0 header
+(pointing at a separate frontend), and a circuit with no quantum
+register. A closing end-to-end check runs a parameterised fixture through
+a real provider to confirm the lowered circuit executes.
 
 ---
 
