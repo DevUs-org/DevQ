@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 48 sanity blocks in `run_tests.py`, covering
+Specification for the 49 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, and the Phase 5.3 metrics layer.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 48 blocks, one line each
+python run_tests.py              # all 49 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -815,6 +815,26 @@ the attribute was added to the components but not committed. Every one
 of the then-31 blocks still passed — nothing asserted on label text —
 and `qconfig` silently degraded to class names on `main`. The block is
 cheap and would have caught it immediately.
+
+---
+
+### `qregistry`
+
+*`qregistry` lists registered components by kind, honouring flags.*
+
+The `qregistry` command shows every registered component — built-in and
+externally registered — grouped into providers, routers, schedulers and
+allocators, each with its human label. It renders the same labels map
+`qconfig` uses, resolved once at build time, so it reads that data and
+never reaches the registry live (the shell renders, it does not resolve).
+
+The block asserts: with no flag, all four kinds appear, including both a
+built-in (`devq.simulated`) and an externally registered provider
+(`ibm.simulated`), with labels not just names; each of `p`/`r`/`s`/`a`
+filters to exactly its kind; multiple flags show exactly those kinds and
+in the canonical order regardless of the order typed (`s p` still lists
+providers first); duplicate flags collapse; and an unknown flag produces
+a clear error with no partial listing, even when mixed with a valid flag.
 
 ---
 

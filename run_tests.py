@@ -3115,6 +3115,58 @@ def block_component_labels():
           "a component without a LABEL falls back to its class name")
 
 
+def block_qregistry():
+    '''qregistry lists registered components by kind, honouring flags'''
+    # qregistry renders the same labels map qconfig does, so it shows both
+    # built-in and externally registered components. It reads only that
+    # map — never the registry live — so this asserts the rendering and
+    # the flag parsing, not the registry itself (covered elsewhere).
+    sh = three_device()   # registers ibm.simulated on top of the built-ins
+
+    # No flag: every kind, with built-in AND external components.
+    out = run(sh, ["qregistry"])
+    expect(out, "Providers", "Routers", "Schedulers", "Allocators")
+    expect(out, "devq.simulated", "ibm.simulated",       # provider: built-in + external
+                "noise", "round_robin",                  # routers
+                "fcfs", "packing",                       # schedulers
+                "noise_graph")                           # allocator
+    # Labels render, not just names.
+    expect(out, "Noise Aware Router", "Circuit Packing Scheduler")
+
+    # Single flag: only that kind. Providers shown, others absent.
+    out = run(sh, ["qregistry p"])
+    expect(out, "Providers", "devq.simulated", "ibm.simulated")
+    expect_absent(out, "Routers", "Schedulers", "Allocators")
+
+    # Each letter maps to its own kind.
+    expect(run(sh, ["qregistry r"]), "Routers", "round_robin")
+    expect_absent(run(sh, ["qregistry r"]), "Providers", "Schedulers")
+    expect(run(sh, ["qregistry s"]), "Schedulers", "packing")
+    expect(run(sh, ["qregistry a"]), "Allocators", "noise_graph")
+
+    # Multiple flags: exactly those kinds, and in canonical order
+    # regardless of how they were typed — `s p` still shows providers
+    # first, so the display order is stable.
+    out = run(sh, ["qregistry s p"])
+    expect(out, "Providers", "Schedulers")
+    expect_absent(out, "Routers", "Allocators")
+    check(out.index("Providers") < out.index("Schedulers"),
+          "qregistry shows kinds in canonical order, not typed order")
+
+    # Duplicate flags collapse: `p p` lists providers once.
+    out = run(sh, ["qregistry p p"])
+    check(out.count("Providers") == 1, "duplicate flags show a kind once")
+
+    # Unknown flag: a clear error and NO listing (not a partial render).
+    out = run(sh, ["qregistry x"])
+    expect(out, "unknown flag")
+    expect_absent(out, "Providers", "devq.simulated")
+    # A valid flag mixed with an invalid one still errors, shows nothing.
+    out = run(sh, ["qregistry p x"])
+    expect(out, "unknown flag")
+    expect_absent(out, "devq.simulated")
+
+
 # ── Shell robustness ─────────────────────────────────────────────────────────
 
 def block_shell_input_handling():
@@ -3213,6 +3265,7 @@ BLOCKS = [
     ("plugin_config_keys",       block_plugin_config_keys),
     ("plugin_normalise_group",   block_plugin_normalise_group),
     ("component_labels",         block_component_labels),
+    ("qregistry",                block_qregistry),
     ("shipped_workloads",        block_shipped_workloads),
     ("repo_hygiene",             block_repo_hygiene),
     ("benchmark_runner",         block_benchmark_runner),

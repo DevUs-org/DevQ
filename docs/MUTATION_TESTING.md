@@ -43,15 +43,15 @@ cannot.
 
 ## Results
 
-**80 distinct mutants, 78 killed, 2 excluded** (M10 equivalent and P7
+**83 distinct mutants, 81 killed, 2 excluded** (M10 equivalent and P7
 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
 The total is delta-consistent, not recounted: 66/64/2 from the prior
-state plus the 14 new Metrics mutants below, each verified by running the
-mutant against the affected block, not assumed. The pre-existing set was
-taken as given.
+state plus the 14 new Metrics mutants and 3 new Shell mutants below, each
+verified by running the mutant against the affected block, not assumed.
+The pre-existing set was taken as given.
 
 ### Device identity — `hardware/device.py`, `providers/`, `devq.py`
 
@@ -180,6 +180,23 @@ UT1 guards the device-id labelling shared by utilisation and load
 imbalance: reverting utilisation's per-device keys to bare indices fails
 the fixture assertion that the keys are ids (`alpha`, `bravo`), so the
 readable-output property cannot silently regress.
+
+### Shell — `shell/qshell.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| QR1 | `qregistry` ignores flags, always lists all kinds | killed (1) |
+| QR2 | unknown-flag guard disabled, bad flag silently accepted | killed (1) |
+| QR3 | kinds shown in typed order, not canonical order | killed (1) |
+
+`qregistry` renders the labels map, so these guard the command's own logic
+rather than the registry. QR1 catches a flag that stops filtering — the
+single-flag test asserts the other kinds are *absent*, so listing them all
+fails. QR2 catches a dropped input guard: an unknown flag must error with
+no listing, so proceeding to render is caught by the expect-absent on the
+provider name. QR3 catches typed-order output — the `s p` test asserts
+providers appear before schedulers regardless of typed order, so canonical
+ordering cannot regress to input order.
 
 ### Workload spec — `benchmark/spec.py`, `providers/base_provider.py`
 

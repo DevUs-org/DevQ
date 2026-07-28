@@ -32,6 +32,7 @@ session simply shows one `d0` section — the format is uniform).
 | `qtopology [dN] [q …]` | — | Show device coupling map(s) (qubit filtering requires a device) |
 | `qerrors [q\|e\|b] [dN]` | `iostat` | Show qubit errors, edge errors, or both (default `b`) |
 | `qconfig [dN]` | — | Show global router policy and each device's scheduler/allocator/shots with the source of every value |
+| `qregistry [p r s a]` | — | List registered components — providers, routers, schedulers, allocators (built-in and externally registered); flags filter by kind, no flag shows all |
 | `!!` | `!!` | Repeat the last command |
 | `exit` / Ctrl-D | — | Exit DevQ |
 

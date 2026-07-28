@@ -373,6 +373,52 @@ class QShell(cmd.Cmd):
 
     # ── Inspection commands ───────────────────────────────────────────────────
 
+    # Flag letter -> component kind, and the order kinds are shown in when
+    # more than one is requested. Distinct first letters, no collision.
+    _REGISTRY_KINDS = [("p", "provider"), ("r", "router"),
+                       ("s", "scheduler"), ("a", "allocator")]
+
+    def do_qregistry(self, arg):
+        '''List registered components (built-in and externally registered).
+
+        qregistry            all kinds
+        qregistry p          providers only
+        qregistry p s        providers and schedulers
+                             (p=providers, r=routers, s=schedulers, a=allocators)
+        '''
+        flag_to_kind = dict(self._REGISTRY_KINDS)
+        order = [kind for _, kind in self._REGISTRY_KINDS]
+
+        tokens = arg.split()
+        if tokens:
+            unknown = [t for t in tokens if t not in flag_to_kind]
+            if unknown:
+                print(f"[DevQ Error] unknown flag(s) {' '.join(unknown)}. "
+                      f"Use p (providers), r (routers), s (schedulers), "
+                      f"a (allocators), or no flag for all.")
+                return
+            # Preserve the canonical kind order regardless of the order
+            # typed, and drop duplicates so `qregistry p p` shows once.
+            wanted = {flag_to_kind[t] for t in tokens}
+            requested = [kind for kind in order if kind in wanted]
+        else:
+            requested = order
+
+        headings = {"provider": "Providers", "router": "Routers",
+                    "scheduler": "Schedulers", "allocator": "Allocators"}
+
+        print()
+        for kind in requested:
+            entries = self._labels.get(kind, {})
+            print(f"  {headings[kind]} ({len(entries)})")
+            if entries:
+                width = max(len(name) for name in entries)
+                for name, label in entries.items():
+                    print(f"    {name:<{width}}   {label}")
+            else:
+                print("    (none registered)")
+            print()
+
     def do_qdevices(self, arg):
         '''List attached devices: index, name, backend, provider, size, load.'''
         contexts = self._contexts()
