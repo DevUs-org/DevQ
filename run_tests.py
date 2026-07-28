@@ -3167,6 +3167,140 @@ def block_qregistry():
     expect_absent(out, "devq.simulated")
 
 
+def block_frontend_dispatch():
+    '''Frontend is the 5th registrable kind; jobs dispatch to one by source'''
+    # Frontend differs from every other kind: it is NOT selected by config
+    # (no "frontend" key names a single winner), it is DISPATCHED per job
+    # by the source's extension. This block proves the kind registers and
+    # shows under qregistry's `f` flag, that a job reaches the right
+    # frontend, that --frontend overrides and disambiguates, and that an
+    # ambiguous or unhandled extension is rejected — all against a mock
+    # frontend whose output is OBSERVABLY different from qasm2's, so a
+    # passing dispatch assertion proves the mock actually ran.
+
+    from frontends.base_frontend import BaseFrontend
+    from circuits.circuit_rep import CircuitRep
+
+    # OBSERVABLY distinct from qasm2. On bell.qasm, qasm2 yields a
+    # 2-qubit circuit; this yields a 9-qubit one regardless of the file.
+    # 9 appears nowhere a 2-qubit Bell run would produce it, so "9 qubits
+    # in the mapping" is proof this frontend — not qasm2 — read the job.
+    # It also claims a DISTINCT extension (.mock) so it can be dispatched
+    # by extension without colliding with qasm2, and be given .qasm in a
+    # separate case to force the ambiguity path.
+    class MockFrontend(BaseFrontend):
+        LABEL = "Mock Frontend"
+        EXTENSIONS = (".mock",)
+
+        def parse(self, source):
+            c = CircuitRep(9)
+            c.add_gate("h", [0])
+            return c
+
+    class MockQASMDialect(BaseFrontend):
+        # Claims .qasm, exactly like qasm2 — the qasm2/qasm3 collision in
+        # miniature. Registering it is legal; the ambiguity is resolved
+        # per job, not refused at registration.
+        LABEL = "Mock QASM Dialect"
+        EXTENSIONS = (".qasm",)
+
+        def parse(self, source):
+            c = CircuitRep(8)
+            c.add_gate("h", [0])
+            return c
+
+    # ── The kind registers and shows under qregistry f ──────────────────
+    sh = (DevQ(config_path=CONFIG + "router_only.config.json")
+          .add_device(DevQSimulatedProvider(seed=SEED).get_device("random", 12))
+          .register_frontend("mock", MockFrontend)
+          .build())
+
+    out = run(sh, ["qregistry f"])
+    expect(out, "Frontends", "qasm2", "OpenQASM 2.0", "mock", "Mock Frontend")
+    expect_absent(out, "Providers", "Schedulers")
+    # It appears in the all-kinds listing too, alongside the other four.
+    out = run(sh, ["qregistry"])
+    expect(out, "Frontends", "Providers", "Routers", "Schedulers", "Allocators")
+
+    # ── Dispatch by extension: .qasm -> qasm2 (unambiguous) ─────────────
+    out = run(sh, [f"qrun {BELL}"])
+    check(mapping_of(out, 1) == "{0: 0, 1: 1}" or
+          len(eval(mapping_of(out, 1))) == 2,
+          f"unambiguous .qasm dispatched to qasm2 (2 qubits), "
+          f"got {mapping_of(out, 1)}")
+
+    # ── --frontend override sends the SAME .qasm file to the mock ───────
+    # Same input file, different frontend: a 9-qubit mapping is only
+    # possible if MockFrontend read it, so this proves the override
+    # dispatched, not qasm2.
+    out = run(sh, [f"qrun {BELL} --frontend=mock"])
+    check(len(eval(mapping_of(out, 2))) == 9,
+          f"--frontend=mock overrode extension dispatch (9 qubits), "
+          f"got {mapping_of(out, 2)}")
+
+    # ── Unknown frontend name errors, creates no job ────────────────────
+    out = run(sh, [f"qrun {BELL} --frontend=nope"])
+    expect(out, "unknown frontend 'nope'")
+    expect(out, "qasm2")   # the error lists what IS registered
+    check("Job 3" not in out and "FINISHED" not in out,
+          "an unknown --frontend name runs nothing")
+
+    # ── Ambiguous extension: two frontends claim .qasm -> reject ────────
+    # A fresh session, because the ambiguity is a property of what is
+    # registered. Both qasm2 (built-in) and the mock dialect claim .qasm.
+    sh2 = (DevQ(config_path=CONFIG + "router_only.config.json")
+           .add_device(DevQSimulatedProvider(seed=SEED).get_device("random", 12))
+           .register_frontend("qasm_mock", MockQASMDialect)
+           .build())
+
+    out = run(sh2, [f"qrun {BELL}"])
+    expect(out, "more than one frontend")
+    expect(out, "qasm2", "qasm_mock")   # names both claimants
+    check("FINISHED" not in out,
+          "an ambiguous extension runs nothing until disambiguated")
+
+    # ...and --frontend resolves the very same ambiguous file.
+    out = run(sh2, [f"qrun {BELL} --frontend=qasm_mock"])
+    check(len(eval(mapping_of(out, 1))) == 8,
+          f"--frontend disambiguated to the named dialect (8 qubits), "
+          f"got {mapping_of(out, 1)}")
+
+    # ── Unhandled extension: no frontend claims it -> reject ────────────
+    # bell.txt does not exist, but resolution happens BEFORE the read:
+    # the extension is unhandled, so the job is rejected for that reason,
+    # not for a missing file. Asserting the message proves resolution
+    # precedes I/O.
+    out = run(sh2, ["qrun test_circuits/bell.txt"])
+    expect(out, "no registered frontend handles '.txt'")
+
+    # ── The registry rejects a malformed frontend at registration ──────
+    # An instance, not a class — the same class-only rule every kind
+    # obeys. Proven here so the frontend kind is not silently exempt.
+    try:
+        DevQ().register_frontend("inst", MockFrontend())
+        check(False, "frontend instance: rejected at registration")
+    except DevQError as e:
+        check("must be registered as a CLASS" in str(e),
+              "frontend instance: rejected, every kind is class-only")
+
+    # A frontend whose __init__ demands arguments DevQ never passes:
+    # frontends are constructed with no arguments, so this cannot be
+    # built and is refused up front rather than at dispatch.
+    class BadInitFrontend(BaseFrontend):
+        def __init__(self, weight):
+            pass
+
+        def parse(self, source):
+            return None
+
+    try:
+        DevQ().register_frontend("badinit", BadInitFrontend)
+        check(False, "frontend with args: rejected at registration")
+    except DevQError as e:
+        check("cannot be constructed" in str(e),
+              "frontend __init__ taking arguments is rejected")
+
+
 # ── Shell robustness ─────────────────────────────────────────────────────────
 
 def block_shell_input_handling():
@@ -3266,6 +3400,7 @@ BLOCKS = [
     ("plugin_normalise_group",   block_plugin_normalise_group),
     ("component_labels",         block_component_labels),
     ("qregistry",                block_qregistry),
+    ("frontend_dispatch",        block_frontend_dispatch),
     ("shipped_workloads",        block_shipped_workloads),
     ("repo_hygiene",             block_repo_hygiene),
     ("benchmark_runner",         block_benchmark_runner),

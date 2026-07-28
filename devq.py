@@ -76,6 +76,7 @@ from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
 from kernel.router.noise_router import NoiseRouter
 from kernel.router.round_robin_router import RoundRobinRouter
 from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+from frontends.qasm2_frontend import QASM2Frontend
 
 # DevQ's own components, seeded into every new DevQ instance's registry
 # through the SAME public register_*() path a third party uses. Nothing
@@ -116,6 +117,14 @@ _BUILTINS = {
     },
     "provider": {
         "devq.simulated": DevQSimulatedProvider,
+    },
+    # The built-in frontend. Ships registered and with no third-party
+    # dependency, so DevQ reads a .qasm out of the box: qregistry shows
+    # one `frontend` entry and .qasm sources are dispatchable
+    # immediately. A .qasm3 or .silq frontend is one register_frontend()
+    # line and becomes dispatchable with no core edit.
+    "frontend": {
+        "qasm2": QASM2Frontend,
     },
 }
 
@@ -273,6 +282,27 @@ class DevQ:
         class was never registered.
         '''
         return self._register("provider", name, provider)
+
+    def register_frontend(self, name, frontend):
+        '''
+        Register a frontend class under a name, so DevQ can read that
+        source language. Returns self for chaining.
+
+        Register the CLASS, never an instance — a frontend is a
+        stateless source -> CircuitRep reader that DevQ constructs once
+        and holds as data for per-job dispatch.
+
+        A frontend is NOT selected by config the way a router or
+        scheduler is. Every registered frontend is available at once,
+        and DevQ dispatches each job to a frontend by its source
+        extension (declared in the frontend's EXTENSIONS). Two frontends
+        may legally claim the same extension (qasm2 and qasm3 both read
+        .qasm); a job whose extension is ambiguous must name its
+        frontend explicitly — with --frontend=<name> in the shell or a
+        "frontend" key in a workload spec — and is rejected with a
+        precise error otherwise.
+        '''
+        return self._register("frontend", name, frontend)
 
     def _register(self, kind, name, component):
         '''
@@ -493,8 +523,25 @@ class DevQ:
             global_config     = global_config,
             global_provenance = global_provenance,
             labels            = self._config.labels(),
+            frontends         = self._build_frontends(),
             interactive       = interactive
         )
+
+    def _build_frontends(self):
+        '''
+        Construct every registered frontend and return {name: instance}.
+
+        Handed to QShell as DATA at build time, exactly like labels():
+        the shell dispatches jobs to frontends but must not hold the
+        registry — "the shell renders, it does not resolve". Frontends
+        are stateless and parameterless, so one instance per name built
+        here is safe to share for the whole session. The resolver
+        (frontends/resolver.py) turns this map into per-job dispatch.
+        '''
+        return {
+            name: self._registry.get("frontend", name)()
+            for name in self._registry.names("frontend")
+        }
 
     def _build_router(self, global_config):
         '''

@@ -45,6 +45,7 @@ lets them run as plugins in one system on identical workloads.
 | `config/` | `ConfigLoader` — the four-level configuration cascade |
 | `shell/` | QShell and the JobSpec parser |
 | `circuits/` | Circuit representation, QASM loading, execution futures |
+| `frontends/` | `BaseFrontend` and the built-in `qasm2` reader; source-language readers that lower to `CircuitRep`, dispatched per job by extension |
 | `run_tests.py` | The whole test suite — 49 blocks, no pytest |
 | `benchmark/runner.py` | Run a workload spec, or the whole component matrix, into a run directory |
 | `benchmark/metrics.py` | Offline metrics from a finished run — throughput, queue latency, utilisation — see `docs/METRICS.md` |
@@ -229,16 +230,17 @@ Rules the registry enforces at registration time, before anything is
 constructed:
 
 - **Every component is registered as a CLASS**, never an instance —
-  schedulers, allocators, routers and providers alike. One rule, no
-  exceptions: register the type, construct what you attach. The reasons
-  differ by kind and all reduce to *an instance escapes the resolution
-  machinery and wins silently*: schedulers and allocators are built one
-  per device and a shared object would merge per-device state; a router
-  is built from the config cascade and an instance would keep its own
-  weights while `qconfig` reported the cascade's; a provider is
+  schedulers, allocators, routers, providers and frontends alike. One
+  rule, no exceptions: register the type, construct what you attach. The
+  reasons differ by kind and all reduce to *an instance escapes the
+  resolution machinery and wins silently*: schedulers and allocators are
+  built one per device and a shared object would merge per-device state; a
+  router is built from the config cascade and an instance would keep its
+  own weights while `qconfig` reported the cascade's; a provider is
   constructed by you, with any seed or credentials it needs, and the
-  device it builds is what you attach. Extra knobs go in namespaced
-  config keys, which cascade and show up in `qconfig`.
+  device it builds is what you attach; a frontend is constructed by DevQ
+  with no arguments and held as data for per-job dispatch. Extra knobs go
+  in namespaced config keys, which cascade and show up in `qconfig`.
 - **A provider must be registered before a device it built is attached.**
   `add_device()` refuses a device whose provider class is unregistered.
   `DevQSimulatedProvider` is a built-in; everything else, including
@@ -247,16 +249,19 @@ constructed:
 - **Plugin config keys must be namespaced** — `mine.window`, not
   `window`. Un-namespaced keys are reserved for DevQ core.
 - **Scope is restricted by kind.** Schedulers and allocators may declare
-  `device` or `common` keys; routers and providers may declare `global`
-  or `common`.
+  `device` or `common` keys; routers, providers and frontends may declare
+  `global` or `common`. A frontend rarely needs a config key at all — it
+  is dispatched per job, not selected by config — but the scope governs
+  any it does declare.
 - **A key's default must satisfy its own validator.**
 - **Validators return `None` when the value is acceptable**, or a string
   saying what was expected. Not a boolean.
 - **Register before `build()` or `start()`.** Afterwards the registry is
   frozen and registration raises.
 
-**Implement the hook, not the template method.** Three of the four kinds
-have a concrete method that delegates to the one a plugin overrides:
+**Implement the hook, not the template method.** Of the five kinds,
+three have a concrete method that delegates to the one a plugin
+overrides:
 
 | Kind | DevQ calls | You implement |
 |---|---|---|
@@ -268,6 +273,18 @@ have a concrete method that delegates to the one a plugin overrides:
 it sets the mapping and `RUNNING` on success and classifies failure as
 `WAITING` or `REJECTED`. A scheduler that reimplements it instead of
 calling it will silently skip lifecycle transitions.
+
+A **provider** implements `get_device()` and `execute()` directly; a
+**frontend** implements `parse(source) → CircuitRep` directly and
+declares `EXTENSIONS`. Neither has a template method. A frontend is
+special in one further way: it is the only kind **not selected by
+config**. There is no `frontend` config key naming one winner — every
+registered frontend is available and DevQ dispatches each job to one by
+its source extension, so a single session reads several source languages
+at once. Register it (`register_frontend("qasm3", QASM3Frontend)`) and
+its extensions are dispatchable immediately; an extension two frontends
+claim is disambiguated per job with `--frontend` (shell) or a `"frontend"`
+spec key, never refused at registration.
 
 ---
 

@@ -43,15 +43,15 @@ cannot.
 
 ## Results
 
-**83 distinct mutants, 81 killed, 2 excluded** (M10 equivalent and P7
+**89 distinct mutants, 87 killed, 2 excluded** (M10 equivalent and P7
 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
 The total is delta-consistent, not recounted: 66/64/2 from the prior
-state plus the 14 new Metrics mutants and 3 new Shell mutants below, each
-verified by running the mutant against the affected block, not assumed.
-The pre-existing set was taken as given.
+state plus the 14 new Metrics mutants, 3 new Shell mutants, and 6 new
+Frontend mutants below, each verified by running the mutant against the
+affected block, not assumed. The pre-existing set was taken as given.
 
 ### Device identity — `hardware/device.py`, `providers/`, `devq.py`
 
@@ -197,6 +197,35 @@ no listing, so proceeding to render is caught by the expect-absent on the
 provider name. QR3 catches typed-order output — the `s p` test asserts
 providers appear before schedulers regardless of typed order, so canonical
 ordering cannot regress to input order.
+
+### Frontend dispatch — `frontends/resolver.py`, `shell/parser.py`, `devq.py`, `shell/qshell.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| F1 | ambiguous-extension branch defeated, first claimant taken silently | killed (1) |
+| F2 | explicit `--frontend` override ignored, always extension dispatch | killed (1) |
+| F3 | unhandled-extension reject removed, some frontend returned instead | killed (1) |
+| F4 | parser drops the `--frontend` flag value | killed (1) |
+| F5 | `_build_frontends()` returns an empty map | killed (1) |
+| F6 | `frontend` removed from `qregistry`'s kind table | killed (1) |
+
+These guard the per-job dispatch seam, which is what makes several
+frontends usable at once. F1 catches an ambiguity that silently resolves:
+the block registers two frontends claiming `.qasm` and asserts the job is
+rejected naming both, so picking one instead fails. F2 catches a dropped
+override — `--frontend=mock` on a `.qasm` file must yield the mock's
+nine-qubit circuit, a size `qasm2` can never produce, so falling through
+to extension dispatch is caught by the qubit count. F3 catches a reject
+that stopped firing: an unhandled `.txt` must be refused *before* the file
+is read, so returning a frontend is caught by the expected message. F4
+proves the flag survives parsing — dropping its value collapses the
+override to extension dispatch, again caught by the qubit count. F5
+catches the map that feeds the shell going empty — with nothing to
+resolve, the first `qrun` fails to dispatch at all. F6 catches the kind
+vanishing from `qregistry f`, caught by the expect on the `Frontends`
+heading. Each was run against `frontend_dispatch` and confirmed to turn it
+red, then reverted; the files were diffed clean afterward to confirm no
+mutation residue.
 
 ### Workload spec — `benchmark/spec.py`, `providers/base_provider.py`
 

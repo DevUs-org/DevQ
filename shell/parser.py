@@ -17,6 +17,11 @@ Syntax:
                                           if infeasible on all of them the
                                           job is REJECTED — never re-routed
         job.qasm --no-exec=d1             deny-list: never routed to d1
+        job.qasm --frontend=qasm3         read this file with the named
+                                          frontend; needed only when the
+                                          extension is ambiguous (two
+                                          frontends claim it), otherwise
+                                          the extension dispatches
 
     Bracket group (flags apply to all jobs in group):
         [job1.qasm job2.qasm --max-qubit-error=0.05 --no-exec=d1]
@@ -53,16 +58,24 @@ class JobSpec:
     # attached); the shell resolves them to indices at submit time.
     exec_on:         list[str] | None = None  # allow-list of device refs
     no_exec_on:      list[str] | None = None  # deny-list of device refs
+    # Explicit frontend name from --frontend=NAME. None = dispatch by
+    # the source's extension. Required only when the extension is claimed
+    # by more than one registered frontend (e.g. .qasm by qasm2+qasm3);
+    # the shell resolves and validates it at submit time, since the
+    # parser has no view of what is registered.
+    frontend:        str | None = None
 
     def __repr__(self):
         return (f"JobSpec(file={self.file_path}, "
                 f"qe={self.max_qubit_error}, ee={self.max_edge_error}, "
-                f"exec={self.exec_on}, no_exec={self.no_exec_on})")
+                f"exec={self.exec_on}, no_exec={self.no_exec_on}, "
+                f"frontend={self.frontend})")
 
 
 _THRESHOLD_FLAGS = ('max-qubit-error', 'max-edge-error')
 _DEVICE_FLAGS    = ('exec', 'no-exec')
-_KNOWN_FLAGS     = _THRESHOLD_FLAGS + _DEVICE_FLAGS
+_STRING_FLAGS    = ('frontend',)
+_KNOWN_FLAGS     = _THRESHOLD_FLAGS + _DEVICE_FLAGS + _STRING_FLAGS
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -164,7 +177,8 @@ def _extract_files_and_flags(tokens: list) -> tuple:
         "max_qubit_error": None,
         "max_edge_error":  None,
         "exec_on":         None,
-        "no_exec_on":      None
+        "no_exec_on":      None,
+        "frontend":        None
     }
 
     for token in tokens:
@@ -178,6 +192,8 @@ def _extract_files_and_flags(tokens: list) -> tuple:
                 flags["exec_on"] = val
             elif key == 'no-exec':
                 flags["no_exec_on"] = val
+            elif key == 'frontend':
+                flags["frontend"] = val
         else:
             files.append(token)
 
@@ -217,15 +233,28 @@ def _parse_flag(flag: str) -> tuple:
     if key not in _KNOWN_FLAGS:
         raise ValueError(
             f"Unknown flag '--{key}'. Supported flags: "
-            f"--max-qubit-error, --max-edge-error, --exec, --no-exec"
+            f"--max-qubit-error, --max-edge-error, --exec, --no-exec, "
+            f"--frontend"
         )
 
     if not raw_val:
+        if key in _STRING_FLAGS:
+            example = 'qasm2'
+        elif key in _THRESHOLD_FLAGS:
+            example = '0.05'
+        else:
+            example = 'd0,d1'
         raise ValueError(
-            f"Missing value for '--{key}'. "
-            f"Expected format: --{key}="
-            f"{'0.05' if key in _THRESHOLD_FLAGS else 'd0,d1'}"
+            f"Missing value for '--{key}'. Expected format: --{key}={example}"
         )
+
+    if key in _STRING_FLAGS:
+        # A frontend name is an opaque registered string. The parser
+        # validates only that a value is present; whether it names a
+        # registered frontend is the shell's job at submit time, since
+        # the parser has no view of the registry — the same division of
+        # labour as device references.
+        return key, raw_val
 
     if key in _DEVICE_FLAGS:
         return key, _parse_device_list(key, raw_val)

@@ -32,7 +32,7 @@ session simply shows one `d0` section — the format is uniform).
 | `qtopology [dN] [q …]` | — | Show device coupling map(s) (qubit filtering requires a device) |
 | `qerrors [q\|e\|b] [dN]` | `iostat` | Show qubit errors, edge errors, or both (default `b`) |
 | `qconfig [dN]` | — | Show global router policy and each device's scheduler/allocator/shots with the source of every value |
-| `qregistry [p r s a]` | — | List registered components — providers, routers, schedulers, allocators (built-in and externally registered); flags filter by kind, no flag shows all |
+| `qregistry [p r s a f]` | — | List registered components — providers, routers, schedulers, allocators, frontends (built-in and externally registered); flags filter by kind, no flag shows all |
 | `!!` | `!!` | Repeat the last command |
 | `exit` / Ctrl-D | — | Exit DevQ |
 
@@ -131,6 +131,19 @@ concept, so the edge threshold is ignored there by design.)
 - Device lists are comma-separated without brackets (brackets are reserved
   for job grouping). Device *existence* is validated at submission —
   referencing a device that is not attached rejects the whole batch.
+
+**Frontend selection** picks which source-language reader parses a job:
+- `--frontend=<name>` — read this job's file with the named registered
+  frontend (`qregistry f` lists them). Needed **only** when the file's
+  extension is claimed by more than one frontend — for example, both a
+  2.0 and a future 3.0 reader claim `.qasm`, and DevQ cannot tell which
+  dialect the file is. When exactly one frontend claims the extension it
+  is used automatically, so the flag is unnecessary in the common case.
+- Without the flag, a job whose extension is ambiguous is rejected with an
+  error naming the competing frontends; a job whose extension no frontend
+  claims is rejected too. An unknown frontend name is rejected, listing
+  what is registered. Binds per job and per group exactly like the other
+  flags.
 
 If constraints or filtering make allocation *temporarily* impossible on the
 routed device (resources busy), the job is set WAITING and retried. If they

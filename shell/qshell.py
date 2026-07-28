@@ -22,7 +22,7 @@ import re
 import time
 import readline
 import atexit
-from circuits.qasm_loader import load_qasm
+from frontends.resolver import resolve_frontend
 from shell.parser import parse_job_args
 
 _DEVICE_RE = re.compile(r"^d(\d+)$")
@@ -46,7 +46,7 @@ class QShell(cmd.Cmd):
     prompt = "devq> "
 
     def __init__(self, kernel, global_config=None, global_provenance=None,
-                 labels=None, interactive=True):
+                 labels=None, frontends=None, interactive=True):
         '''
         Args:
             labels:      display names for registered components, as
@@ -56,6 +56,12 @@ class QShell(cmd.Cmd):
                          configuration, it does not resolve it, and
                          holding the loader would let it re-read config
                          or reach the registry mid-session.
+            frontends:   {name: BaseFrontend instance} for every
+                         registered frontend, built once at build time.
+                         Passed as DATA for the same reason as labels:
+                         the shell dispatches a job to its frontend but
+                         must not hold the registry. resolve_frontend()
+                         turns this map into per-job dispatch.
             interactive: whether this shell is driven by a human at a
                          terminal. False disables readline history —
                          command history is meaningless for a shell
@@ -73,6 +79,7 @@ class QShell(cmd.Cmd):
         self._global_config     = global_config     or {}
         self._global_provenance = global_provenance or {}
         self._labels            = labels            or {}
+        self._frontends         = frontends         or {}
         self._last_command = None
         self._history_file = None
 
@@ -268,7 +275,10 @@ class QShell(cmd.Cmd):
             self._validate_spec_devices(specs)
 
             spec    = specs[0]
-            circuit = load_qasm(spec.file_path)
+            frontend = resolve_frontend(
+                spec.file_path, self._frontends, explicit=spec.frontend
+            )
+            circuit = frontend.parse(spec.file_path)
             qcb     = self.kernel.submit_job(
                 circuit,
                 max_qubit_error=spec.max_qubit_error,
@@ -308,7 +318,12 @@ class QShell(cmd.Cmd):
             # submitting any — a bad device or file path rejects the
             # whole batch, consistent with parser atomicity.
             self._validate_spec_devices(specs)
-            circuits = [load_qasm(spec.file_path) for spec in specs]
+            circuits = [
+                resolve_frontend(
+                    spec.file_path, self._frontends, explicit=spec.frontend
+                ).parse(spec.file_path)
+                for spec in specs
+            ]
 
             for spec, circuit in zip(specs, circuits):
                 qcb = self.kernel.submit_job(
@@ -376,7 +391,8 @@ class QShell(cmd.Cmd):
     # Flag letter -> component kind, and the order kinds are shown in when
     # more than one is requested. Distinct first letters, no collision.
     _REGISTRY_KINDS = [("p", "provider"), ("r", "router"),
-                       ("s", "scheduler"), ("a", "allocator")]
+                       ("s", "scheduler"), ("a", "allocator"),
+                       ("f", "frontend")]
 
     def do_qregistry(self, arg):
         '''List registered components (built-in and externally registered).
@@ -384,7 +400,8 @@ class QShell(cmd.Cmd):
         qregistry            all kinds
         qregistry p          providers only
         qregistry p s        providers and schedulers
-                             (p=providers, r=routers, s=schedulers, a=allocators)
+                             (p=providers, r=routers, s=schedulers,
+                              a=allocators, f=frontends)
         '''
         flag_to_kind = dict(self._REGISTRY_KINDS)
         order = [kind for _, kind in self._REGISTRY_KINDS]
@@ -395,7 +412,7 @@ class QShell(cmd.Cmd):
             if unknown:
                 print(f"[DevQ Error] unknown flag(s) {' '.join(unknown)}. "
                       f"Use p (providers), r (routers), s (schedulers), "
-                      f"a (allocators), or no flag for all.")
+                      f"a (allocators), f (frontends), or no flag for all.")
                 return
             # Preserve the canonical kind order regardless of the order
             # typed, and drop duplicates so `qregistry p p` shows once.
@@ -405,7 +422,8 @@ class QShell(cmd.Cmd):
             requested = order
 
         headings = {"provider": "Providers", "router": "Routers",
-                    "scheduler": "Schedulers", "allocator": "Allocators"}
+                    "scheduler": "Schedulers", "allocator": "Allocators",
+                    "frontend": "Frontends"}
 
         print()
         for kind in requested:

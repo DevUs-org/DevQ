@@ -146,11 +146,17 @@ above once Phase 5 ships:
   two-clock timestamps.
 - **5.2 — spec and runner** ✅ workload specs, the run directory, and
   `${}` spec placeholders that keep credentials out of logged artifacts.
-- **5.3 — metrics layer** ✅ throughput, queue latency and utilisation,
-  computed offline from a finished run (see [`METRICS.md`](METRICS.md)).
-  Rejection rate, load balance and fidelity remain to be added.
+- **5.3 — metrics layer** ✅ throughput, queue latency, utilisation,
+  rejection rate and load imbalance, computed offline from a finished run
+  (see [`METRICS.md`](METRICS.md)). Fidelity — the last metric — and the
+  comparison modes remain to close 5.3 out; fidelity is gated on 5.4's
+  real measurement.
 - **5.4 — workload suite** 🔭 QASMBench and a noiseless reference run for
-  the circuits without a closed-form ideal.
+  the circuits without a closed-form ideal. **Gated on the frontend**: the
+  original QASM reader dropped gate parameters, so parameterised QASMBench
+  circuits could not run. The frontend contract (below) is the foundation
+  being built first to unblock it — a registrable `frontend` kind now
+  exists, with the built-in `qasm2` reader as its first implementation.
 - **5.5 — comparison matrix and α/β sweep** 🔭 answerable from one
   recorded run via the per-candidate route scores.
 - **5.6 — baseline plugins** 🔭 published baselines to compare against;
@@ -158,15 +164,33 @@ above once Phase 5 ships:
 - **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer.
 - **5.8 — real hardware** 🔭 gated on credits and access.
 
-### 🔭 Phase 6 — Interchangeable Frontends (planned)
-Today circuits enter DevQ as OpenQASM files. Phase 6 opens the top of the
-stack the same way `BaseProvider` opens the bottom: a frontend adapter
-contract that converts any source representation — **Silq, Q#, Qiskit
-circuits**, and other quantum languages — into `CircuitRep`, DevQ's
-hardware-independent internal format. Frontends need no knowledge of the
-kernel, allocators, or schedulers; the existing QASM loader becomes the
-reference frontend. Write in the language you prefer, and DevQ handles
-routing, allocation, scheduling, and execution identically.
+### 🚧 Phase 6 — Interchangeable Frontends (foundation landed)
+Circuits enter DevQ through a **frontend**: a reader that lowers some
+source representation into `CircuitRep`, DevQ's hardware-independent
+internal format. Phase 6 opens the top of the stack the same way
+`BaseProvider` opens the bottom.
+
+The **contract now exists** and was brought forward to unblock 5.4.
+`frontend` is a registrable component kind alongside providers, routers,
+schedulers and allocators: subclass `BaseFrontend`, implement
+`parse(source) → CircuitRep`, declare `EXTENSIONS`, register it, and its
+sources are dispatchable — no core edit. Unlike the other kinds a
+frontend is *dispatched per job* by the source's extension rather than
+selected by config, so one session can read several source languages at
+once; an ambiguous extension is disambiguated with `--frontend` (shell)
+or a `"frontend"` spec key. The built-in `qasm2` ships registered with no
+third-party dependency, so DevQ reads `.qasm` out of the box. See
+[`REGISTRY.md`](REGISTRY.md).
+
+What remains for Phase 6: a **fully OpenQASM 2.0-compliant** `qasm2`
+implementation (the current one still delegates to the original
+whitespace-splitting reader — it must gain a real tokenizer, an
+expression evaluator for parameters, custom-gate inlining, and
+first-class `measure`/`reset`), and then additional-language frontends —
+**OpenQASM 3.0, Silq, Q#, Qiskit circuits** — each built against the same
+version-agnostic contract. Frontends need no knowledge of the kernel,
+allocators, or schedulers; write in the language you prefer, and DevQ
+handles routing, allocation, scheduling, and execution identically.
 
 ### 🔭 Phase 7 — Expanded Provider Ecosystem (planned)
 More hardware providers behind the same two-method `BaseProvider` contract:

@@ -191,6 +191,10 @@ _INSTANCE_REASONS = {
                   "the provider with whatever seed or credentials it needs "
                   "and attach the device it makes: "
                   "devq.add_device(MyProvider(key=...).get_device(...))."),
+    "frontend":  ("DevQ constructs one frontend per registered name and holds "
+                  "it as data for per-job dispatch. A frontend is a stateless "
+                  "source -> CircuitRep reader and takes no constructor "
+                  "arguments; register the class, not an instance."),
 }
 
 
@@ -208,6 +212,7 @@ def _build_kinds():
     from kernel.memory.allocators.base_allocator import BaseAllocator
     from kernel.router.base_router import BaseRouter
     from providers.base_provider import BaseProvider
+    from frontends.base_frontend import BaseFrontend
 
     return {
         "scheduler": ComponentKind(
@@ -247,6 +252,22 @@ def _build_kinds():
                 "preferred_config":     (),
             },
             label            = "provider",
+        ),
+        # A frontend takes NO constructor arguments — it is a stateless
+        # source -> CircuitRep reader, so init_params is empty and the
+        # bind check confirms __init__ accepts (self) alone. The scopes
+        # field governs only what scopes a frontend's OWN CONFIG_SCHEMA
+        # keys may use if it declares any; there is no core "frontend"
+        # config key, because a frontend is dispatched per job by its
+        # source, never selected by config. global/common matches the
+        # router/provider shape: a frontend knob would be system-wide,
+        # never per-device.
+        "frontend": ComponentKind(
+            base             = BaseFrontend,
+            init_params      = (),
+            scopes           = frozenset({"global", "common"}),
+            methods          = {"parse": ("source",)},
+            label            = "frontend",
         ),
     }
 

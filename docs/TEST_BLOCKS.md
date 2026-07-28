@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 49 sanity blocks in `run_tests.py`, covering
+Specification for the 50 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, and the Phase 5.3 metrics layer.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 49 blocks, one line each
+python run_tests.py              # all 50 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -835,6 +835,43 @@ filters to exactly its kind; multiple flags show exactly those kinds and
 in the canonical order regardless of the order typed (`s p` still lists
 providers first); duplicate flags collapse; and an unknown flag produces
 a clear error with no partial listing, even when mixed with a valid flag.
+
+---
+
+### `frontend_dispatch`
+
+*Frontend is the 5th registrable kind; jobs dispatch to one by source.*
+
+A frontend lowers a source file into `CircuitRep`. It is a registrable
+component kind alongside providers, routers, schedulers and allocators,
+but it differs from all of them in how it is chosen. The other four are
+*selected*: a config key names the one router, or the one scheduler per
+device, that runs. A frontend is *dispatched* — every registered
+frontend is available at once, and each job is matched to one by its
+source file's extension (declared in the frontend's `EXTENSIONS`). This
+is what lets a single session read several source languages in one
+queue, so there is deliberately no `frontend` config key naming a single
+winner.
+
+The block registers a mock frontend whose output is **observably
+different** from the built-in `qasm2` — it produces a nine-qubit circuit
+regardless of input, a size a two-qubit Bell run can never yield — so a
+passing dispatch assertion proves the mock, not `qasm2`, read the job. A
+second mock claims `.qasm`, reproducing the qasm2/qasm3 collision in
+miniature.
+
+It asserts: the kind appears under `qregistry`'s `f` flag with its label
+and in the all-kinds listing; an unambiguous `.qasm` job dispatches to
+`qasm2` (a two-qubit mapping); `--frontend=mock` on the *same* file
+overrides extension dispatch (a nine-qubit mapping, only possible if the
+mock ran); an unknown `--frontend` name errors and runs nothing; an
+extension claimed by two frontends is **rejected per job** — not at
+registration, where registering both is legal — with an error naming
+both claimants, and `--frontend` then resolves that same file; an
+extension no frontend claims is rejected *before* the file is read
+(proving resolution precedes I/O); and the registry refuses a frontend
+registered as an instance or with a constructor DevQ cannot satisfy,
+so the kind is not silently exempt from the class-only rule.
 
 ---
 

@@ -62,7 +62,8 @@ from devq import DevQError
 _TOP_KEYS    = frozenset({"name", "seed", "config", "devices", "arrival", "jobs"})
 _DEVICE_KEYS = frozenset({"id", "provider", "backend", "config"})
 _JOB_KEYS    = frozenset({"circuit", "repeat", "max_qubit_error",
-                          "max_edge_error", "exec_on", "no_exec_on"})
+                          "max_edge_error", "exec_on", "no_exec_on",
+                          "frontend"})
 _ARRIVAL_KEYS = frozenset({"pattern"})
 
 # Phase 5.2 supports batch arrival only. Poisson needs virtual time —
@@ -304,6 +305,19 @@ def validate_spec(spec, source="<spec>"):
                         f"{sorted(seen_ids)}."
                     )
 
+        if "frontend" in job:
+            # The spec-level analogue of --frontend: an explicit frontend
+            # name for jobs whose extension is ambiguous. Validity as a
+            # REGISTERED name is checked at submit time by the resolver,
+            # which is where the frontend map lives; here we validate only
+            # that it is a non-empty string, mirroring how device
+            # references are form-checked here and resolved later.
+            if not isinstance(job["frontend"], str) or not job["frontend"].strip():
+                raise SpecError(
+                    f"{where}: 'frontend' must be a non-empty string naming "
+                    f"a registered frontend."
+                )
+
     return spec
 
 
@@ -446,16 +460,22 @@ def submit_jobs(shell, spec, source="<spec>"):
 
     Returns the list of submitted QCBs.
     '''
-    from circuits.qasm_loader import load_qasm
+    from frontends.resolver import resolve_frontend, FrontendResolutionError
 
     name_to_index = {ctx.name: ctx.index for ctx in shell.kernel.contexts
                      if ctx.name}
+    frontends = getattr(shell, "_frontends", {})
     submitted = []
 
     for i, job in enumerate(spec["jobs"]):
         where = f"{source}: jobs[{i}]"
         try:
-            circuit = load_qasm(job["circuit"])
+            frontend = resolve_frontend(
+                job["circuit"], frontends, explicit=job.get("frontend")
+            )
+            circuit = frontend.parse(job["circuit"])
+        except FrontendResolutionError as exc:
+            raise SpecError(f"{where}: {exc}") from None
         except FileNotFoundError:
             raise SpecError(f"{where}: circuit not found: {job['circuit']}") from None
         except Exception as exc:

@@ -1,7 +1,7 @@
 # DevQ Component Registry
 
-How to extend DevQ with your own scheduler, allocator, router or
-provider — without editing DevQ core.
+How to extend DevQ with your own scheduler, allocator, router,
+provider or frontend — without editing DevQ core.
 
 This is the reference for the extensibility surface. The formulas the
 built-in policies implement are in [`COST_MODEL.md`](COST_MODEL.md); the
@@ -58,13 +58,14 @@ schedulers, read live.
 
 ## Registration
 
-Four methods on the `DevQ` object, all chainable:
+Five methods on the `DevQ` object, all chainable:
 
 ```python
 devq.register_scheduler("mine", MyScheduler)
 devq.register_allocator("mine", MyAllocator)
 devq.register_router("mine",    MyRouter)
 devq.register_provider("ionq",  IonQProvider)
+devq.register_frontend("qasm3", QASM3Frontend)
 ```
 
 **Registration is instance-scoped.** Each `DevQ` object owns its own
@@ -90,6 +91,7 @@ config and resolved at build time, never carried in by a device.
 | allocator | same |
 | router | constructed from the **config cascade**, so an instance would silently ignore it |
 | provider | registration names a type; constructing it is the caller's business |
+| frontend | DevQ constructs one per name and holds it as data for per-job dispatch; it is stateless and takes no constructor arguments |
 
 One rule, no exceptions: **register the class, construct what you
 attach.** Routers and providers once accepted a ready-made instance;
@@ -370,6 +372,32 @@ classification and router-level candidate filtering.
 **New router** — subclass `BaseRouter`, implement
 `select(qcb, candidates) → DeviceContext`. Candidates arrive already
 filtered by the job's device constraints and per-device feasibility; the
+**New frontend** — subclass `BaseFrontend`, implement
+`parse(source) → CircuitRep`, and declare `EXTENSIONS` (lowercase, dotted)
+for the source files it reads. A frontend takes **no constructor
+arguments**: it is a stateless source-to-`CircuitRep` reader, so unlike
+the other kinds DevQ injects nothing at construction. A knob, if one is
+ever needed, is a namespaced `CONFIG_SCHEMA` key (the router precedent),
+never a constructor argument.
+
+A frontend is **dispatched, not selected**. There is no `frontend` config
+key naming one winner the way `router` or `scheduler` does. Every
+registered frontend is available at once, and DevQ picks one *per job*
+from the source's extension. This is deliberate — it lets a single
+session read several source languages in one queue. Registering a
+frontend makes its extensions dispatchable immediately, with no core
+edit, exactly like registering a scheduler makes its name a legal
+`scheduler` value.
+
+Two frontends may legally claim the same extension — `qasm2` and a future
+`qasm3` both read `.qasm`. That is **not** a registration conflict; it is
+resolved per job. A job whose extension is claimed by more than one
+frontend must name its frontend explicitly, with `--frontend=<name>` in
+the shell or a `"frontend"` key in a workload spec, and is rejected with
+a precise error otherwise. An extension no frontend claims is likewise
+rejected, before the file is read. The built-in `qasm2` ships registered
+with no third-party dependency, so DevQ reads `.qasm` out of the box.
+
 ## The event log
 
 The kernel emits structured records; **sinks** decide what to do with
