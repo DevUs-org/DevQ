@@ -1931,8 +1931,8 @@ def block_benchmark_runner():
               "metrics.json carries the session's metrics, keyed by session id")
         check(set(metrics_json[entry["session_id"]]) ==
               {"throughput", "queue_latency", "utilisation", "rejection_rate",
-               "load_imbalance"},
-              "the session's metrics carry the five metric groups")
+               "load_imbalance", "fidelity"},
+              "the session's metrics carry the six metric groups")
 
         # A single run uses the SAME directory structure as a matrix, so
         # a reader never branches on which it is looking at.
@@ -2725,10 +2725,10 @@ def block_metrics():
 
         bundle = M.compute(from_jsonl)
 
-        # Structure: the bundle is the four metric groups, plain data.
+        # Structure: the bundle is the six metric groups, plain data.
         check(set(bundle) == {"throughput", "queue_latency", "utilisation",
-                              "rejection_rate", "load_imbalance"},
-              f"bundle carries the five metric groups, got {sorted(bundle)}")
+                              "rejection_rate", "load_imbalance", "fidelity"},
+              f"bundle carries the six metric groups, got {sorted(bundle)}")
         # On this all-completing run nothing is rejected.
         check(bundle["rejection_rate"]["rejected"] == 0
               and bundle["rejection_rate"]["rate"] == 0.0,

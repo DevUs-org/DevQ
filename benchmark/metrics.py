@@ -345,6 +345,187 @@ def load_imbalance(records):
     return {"by_count": basis(counts), "by_busy_time": basis(busy)}
 
 
+# ── fidelity ────────────────────────────────────────────────────────────
+
+def _normalise(counts):
+    '''
+    Turn a {bitstring: shots} counts dict into a probability distribution
+    {bitstring: p} summing to 1. Returns None for an empty or all-zero
+    population — a job with no measured shots has no distribution, and the
+    population rule says that is undefined, not a uniform or zero one.
+
+    Kept separate and pure so a test can assert the exact probabilities
+    from hand-built counts.
+    '''
+    if not counts:
+        return None
+    total = sum(counts.values())
+    if total == 0:
+        return None
+    return {k: v / total for k, v in counts.items()}
+
+
+def hellinger_fidelity(measured, ideal):
+    '''
+    Hellinger fidelity between two probability distributions — the
+    headline fidelity number, matching the definition QOS (Giortamis et
+    al., OSDI 2025) reports so a comparison is like-for-like. That
+    definition is Qiskit's hellinger_fidelity: from the Hellinger distance
+    H = (1/sqrt(2)) * sqrt(sum_k (sqrt(p_k) - sqrt(q_k))^2), the fidelity
+    is (1 - H^2)^2, ranging [0, 1] with HIGHER better (1.0 = identical).
+
+    Computed directly from the formula here rather than by importing
+    Qiskit, so the metric layer stays pure and dependency-free; a test
+    asserts this against Qiskit's own hellinger_fidelity on shared inputs
+    to prove they agree.
+
+    Both dicts are distributions over bitstring keys. A key present in one
+    and absent in the other is treated as probability 0 there — Hellinger
+    is well defined on differing support (the reason it suits GHZ-like
+    circuits, whose ideal has mass on two strings while the noisy result
+    smears across many). Inputs are assumed already normalised.
+    '''
+    keys = set(measured) | set(ideal)
+    # Hellinger distance squared: (1/2) * sum (sqrt(p) - sqrt(q))^2.
+    h_sq = 0.5 * sum(
+        (measured.get(k, 0.0) ** 0.5 - ideal.get(k, 0.0) ** 0.5) ** 2
+        for k in keys)
+    return (1 - h_sq) ** 2
+
+
+def total_variation_distance(measured, ideal):
+    '''
+    Total variation distance: half the summed absolute difference,
+    (1/2) * sum_k |p_k - q_k|, in [0, 1] with LOWER better (0 = identical).
+
+    The hand-verifiable companion to Hellinger fidelity: it is trivial to
+    compute by eye, so a test fixture can pin it exactly, and it is a
+    DIFFERENT number from Hellinger on the same inputs — a broken metric
+    that computed one while labelling the other, or dropped Hellinger's
+    square, cannot accidentally match the right value. Missing keys count
+    as 0 in the distribution that lacks them. Inputs assumed normalised.
+    '''
+    keys = set(measured) | set(ideal)
+    return 0.5 * sum(
+        abs(measured.get(k, 0.0) - ideal.get(k, 0.0)) for k in keys)
+
+
+def _resolves(records):
+    '''
+    The resolve records, keyed by job_id — where measured counts and each
+    job's circuit_hash live. Fidelity is the first metric to read this
+    record type (the timing metrics read only the summary); it must, since
+    counts are not in the per-job summary rows.
+    '''
+    out = {}
+    for r in records:
+        if r.get("event") == "resolve":
+            out[r["job_id"]] = r
+    return out
+
+
+def _ideals(records):
+    '''
+    The recorded reference ideals, keyed by circuit_hash. Absent when no
+    reference-capable provider ran (a devq-only session), in which case
+    fidelity is uniformly None — an honest undefined, not a fabricated
+    score.
+    '''
+    out = {}
+    for r in records:
+        if r.get("event") == "reference":
+            out[r["circuit_hash"]] = r["ideal"]
+    return out
+
+
+def fidelity(records):
+    '''
+    How close each job's measured distribution came to its circuit's
+    noiseless ideal — the metric that decides whether a scheduling or
+    allocation win preserved answer quality, as opposed to trading
+    correctness for speed.
+
+    Reported like the other distributional metrics: PER JOB (each job's
+    measured-vs-ideal, so you can see which circuits degraded) AND as a
+    SESSION distribution (min/median/mean/max/p95 across jobs, the number
+    a policy comparison turns on). Two distance measures per job: Hellinger
+    fidelity (headline, higher-better, matching QOS) and TVD (companion,
+    lower-better, hand-verifiable).
+
+    THREE RECORD TYPES. Unlike the timing metrics, which read only the
+    summary, fidelity joins across the log: the summary's per_job rows for
+    the job roster and state, the resolve records for measured counts and
+    each job's circuit_hash, and the reference records for the ideal keyed
+    by that hash. It stays a PURE read — no execution, no qiskit — which is
+    the invariant that matters; "one record type" was never the point,
+    reproducibility was.
+
+    POPULATION RULE. A job has a fidelity only if it BOTH produced measured
+    counts (finished, non-empty) AND has a recorded ideal for its circuit.
+    A rejected job (no counts), a failed job (empty counts), or any job
+    whose circuit had no reference ideal (no reference-capable provider)
+    is skipped — its per-job fidelity is None and it is left out of the
+    session aggregate, never folded in as a 0. A 0 would be a lie: it means
+    "measured, and maximally wrong", which is the opposite of "never
+    measured". When no job qualifies, every aggregate field is None.
+
+    KEY ALIGNMENT. Measured and ideal keys are both Option-B-width
+    bitstrings rendered the same way (the reference marginalises through
+    the same measure map the run measured with), so a measured "001" and an
+    ideal "001" denote the same classical bits and align directly. If a
+    circuit's measured width and ideal width disagree (they should not,
+    both deriving from one width rule), the distributions simply share few
+    keys and fidelity reads low — the guard is that both come from the same
+    lowering, not a runtime width assertion here.
+    '''
+    rows     = _summary(records)["per_job"]
+    resolves = _resolves(records)
+    ideals   = _ideals(records)
+
+    per_job = {}
+    hellingers = []   # session population: only qualifying jobs
+    tvds       = []
+
+    for row in rows:
+        job_id = row["job_id"]
+        resolve = resolves.get(job_id)
+
+        # A job qualifies only with both measured counts and an ideal.
+        measured_counts = resolve.get("counts") if resolve else None
+        chash = resolve.get("circuit_hash") if resolve else None
+        ideal = ideals.get(chash) if chash is not None else None
+
+        measured = _normalise(measured_counts) if measured_counts else None
+
+        if measured is None or ideal is None:
+            per_job[job_id] = {"hellinger": None, "tvd": None}
+            continue
+
+        h = hellinger_fidelity(measured, ideal)
+        t = total_variation_distance(measured, ideal)
+        per_job[job_id] = {"hellinger": h, "tvd": t}
+        hellingers.append(h)
+        tvds.append(t)
+
+    def distribution(values):
+        if not values:
+            return {k: None for k in
+                    ("min", "median", "mean", "max", "p95")}
+        return {
+            "min"   : min(values),
+            "median": median(values),
+            "mean"  : mean(values),
+            "max"   : max(values),
+            "p95"   : _percentile_nearest_rank(values, 95),
+        }
+
+    return {
+        "per_job": per_job,
+        "hellinger": distribution(hellingers),
+        "tvd"      : distribution(tvds),
+    }
+
+
 # ── bundle ──────────────────────────────────────────────────────────────
 
 def compute(records):
@@ -359,6 +540,7 @@ def compute(records):
         "utilisation" : utilisation(records),
         "rejection_rate": rejection_rate(records),
         "load_imbalance": load_imbalance(records),
+        "fidelity"    : fidelity(records),
     }
 
 
