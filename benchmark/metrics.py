@@ -17,8 +17,11 @@ rule (timings come from `*_at`, never `seq`/`cycle`), the population rule
 the reproducibility obligation (plain data, fixed conventions) that this
 module is written to satisfy.
 
-Currently implemented: throughput, queue latency, utilisation. Rejection
-rate, load balance and fidelity are named in the doc but not yet built.
+Implemented here: throughput, queue latency, utilisation, rejection
+rate, and load imbalance — the five offline metrics that close Phase
+5.3. Fidelity, the sixth metric, is deferred to Phase 5.4: it compares
+measured-bit distributions against an ideal or a noiseless reference
+run, and that reference machinery is 5.4 work.
 '''
 
 from statistics import mean, median

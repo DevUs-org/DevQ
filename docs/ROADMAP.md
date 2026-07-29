@@ -148,19 +148,35 @@ above once Phase 5 ships:
   `${}` spec placeholders that keep credentials out of logged artifacts.
 - **5.3 — metrics layer** ✅ throughput, queue latency, utilisation,
   rejection rate and load imbalance, computed offline from a finished run
-  (see [`METRICS.md`](METRICS.md)). Fidelity — the last metric — and the
-  comparison modes remain to close 5.3 out; fidelity is gated on 5.4's
-  real measurement.
-- **5.4 — workload suite** 🔭 QASMBench and a noiseless reference run for
-  the circuits without a closed-form ideal. The frontend blocker is
-  **resolved**: the `qasm2` parser now keeps gate parameters, so
-  parameterised QASMBench circuits parse and run. What remains is the
-  suite itself and the reference-run machinery.
-- **5.5 — comparison matrix and α/β sweep** 🔭 answerable from one
-  recorded run via the per-candidate route scores.
+  (see [`METRICS.md`](METRICS.md)). This closes 5.3: the metric layer is
+  the measuring surface, and the two pieces once tracked under it have
+  moved to where they actually belong — **fidelity** to 5.4 (it needs the
+  noiseless reference run, which is 5.4 machinery, so it cannot land
+  before that suite exists) and the **comparison modes** to 5.5b (they
+  present comparison results, so they follow the matrix and sweep engine
+  they read from rather than preceding it).
+- **5.4 — workload suite and fidelity** 🔭 QASMBench, a noiseless
+  reference run for the circuits without a closed-form ideal, and the
+  **fidelity metric** built on it (Hellinger/TVD against the ideal or the
+  reference run). The frontend blocker is **resolved**: the `qasm2` parser
+  keeps gate parameters and both providers now honour real measurement, so
+  parameterised QASMBench circuits parse, run, and yield the measured-bit
+  distributions fidelity compares. What remains is the suite, the
+  reference-run machinery, and the metric itself.
+- **5.5a — comparison matrix and α/β sweep** 🔭 the cross-config
+  analysis engine: run the matrix, and answer an α/β weight sweep from one
+  recorded run via the per-candidate route scores (enhancing `explain()`
+  to log the cost decomposition the sweep needs).
+- **5.5b — comparison modes** 🔭 the reading surface over 5.5a: absolute
+  (one session's bundle), inter-component (diff bundles across the
+  matrix's sessions), intra-component (present the sweep). Deferred to
+  after 5.5a deliberately — the modes present comparison results, so
+  building them before the matrix and sweep exist would mean designing a
+  reader for data that is not yet produced.
 - **5.6 — baseline plugins** 🔭 published baselines to compare against;
   this is what turns the platform into a result.
-- **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer.
+- **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer,
+  folding in the comparison modes.
 - **5.8 — real hardware** 🔭 gated on credits and access.
 
 ### 🚧 Phase 6 — Interchangeable Frontends (foundation landed)

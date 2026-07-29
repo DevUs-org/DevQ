@@ -13,9 +13,11 @@ Notation follows [`COST_MODEL.md`](COST_MODEL.md). The two-clock model
 
 **Status.** Throughput, queue latency, utilisation, rejection rate and
 load imbalance are specified below and implemented in
-`benchmark/metrics.py`, verified by the `metrics` test block. Fidelity is
-named but not yet specified, and will be added once its noiseless
-reference (Phase 5.4) exists.
+`benchmark/metrics.py`, verified by the `metrics` test block — the five
+offline metrics that close Phase 5.3. Fidelity, the sixth metric, is
+Phase 5.4 work: it compares measured-bit distributions against an ideal
+or a noiseless reference run, and that reference machinery lands with the
+5.4 workload suite. It is specified and implemented there, not here.
 
 ---
 
