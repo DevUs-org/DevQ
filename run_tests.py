@@ -2899,6 +2899,22 @@ def block_fidelity():
     # correct code does NOT produce it, pinning the distinction.
     check("01" not in marg, "marginalisation is not qubit-order ('01')")
 
+    # The reference must use a DENSITY-MATRIX simulation, not statevector.
+    # A Bell pair with q0 then reset leaves q1 in a genuinely MIXED state:
+    # the correct ideal is 50/50 on "00"/"10". A statevector reference
+    # would collapse the mixture and report {"00": 1.0} — wrong. No
+    # reset-free circuit (Bell, GHZ) can tell the two methods apart, and a
+    # reset on an unentangled qubit cannot either; the reset must follow
+    # entanglement. This assertion is what makes the density-matrix choice
+    # load-bearing rather than merely intended.
+    reset_ent = fe.parse("test_circuits/qasm2/reset_entangled.qasm")
+    ideal_re = prov.reference_ideal(reset_ent)
+    check(abs(ideal_re.get("00", 0) - 0.5) < 1e-9
+          and abs(ideal_re.get("10", 0) - 0.5) < 1e-9
+          and abs(ideal_re.get("01", 0)) < 1e-12,
+          f"reset-after-entanglement ideal is mixed 00/10 (density matrix, "
+          f"not statevector's collapsed 00), got {ideal_re}")
+
     # Closed-form structured ideals: Bell -> 50/50 on 00/11, hand-known.
     bell = fe.parse(BELL)
     ideal_bell = prov.reference_ideal(bell)

@@ -43,17 +43,18 @@ cannot.
 
 ## Results
 
-**103 distinct mutants, 101 killed, 2 excluded** (M10 equivalent and P7
+**114 distinct mutants, 112 killed, 2 excluded** (M10 equivalent and P7
 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 66/64/2 from the prior
-state plus the 14 new Metrics mutants, 3 new Shell mutants, 6 new
-Frontend mutants, 6 new OpenQASM 2.0 parser mutants, 6 new
-measurement/execution mutants, and 2 new provider-contract mutants below,
-each verified by running the mutant against the affected block, not
-assumed. The pre-existing set was taken as given.
+The total is delta-consistent, not recounted: 103/101/2 from the prior
+state plus the 11 new Fidelity mutants below (all killed — FID11 after a
+fixture was added for it), each verified by running the mutant against the
+affected block, not assumed. Earlier deltas: 66/64/2 before the metrics
+layer, plus the 14 Metrics, 3 Shell, 6 Frontend, 6 OpenQASM 2.0 parser, 6
+measurement/execution, and 2 provider-contract mutants. The pre-existing
+set was taken as given.
 
 ### Device identity — `hardware/device.py`, `providers/`, `devq.py`
 
@@ -108,6 +109,44 @@ behind by the refactor.
 | T5 | `execution_time` `None` guard removed | killed (1) |
 | T6 | `resolved_at` never stamped | killed (1) |
 | T7 | `queue_latency` `None` guard removed | killed (1) |
+
+### Fidelity — `benchmark/metrics.py`, `benchmark/reference.py`, `providers/ibm/`
+
+| # | Mutation | Result |
+|---|---|---|
+| FID1 | `_marginalise` places a bit by qubit index, not clbit index | killed (1) |
+| FID2 | Hellinger drops the outer square (`(1−H²)²` → `1−H²`) | killed (1) |
+| FID3 | Hellinger drops the `½` in `H²` | killed (1) |
+| FID4 | TVD drops the `½` factor | killed (1) |
+| FID5 | `_normalise` zero-fills empty counts (`{}`) instead of `None` | killed (1) |
+| FID6 | fidelity folds no-ideal / no-counts jobs in as `0`, not skipped | killed (1) |
+| FID7 | measure-all fallback range off by one | killed (fidelity + ibm_measurement) |
+| FID8 | Hellinger uses `+` instead of `−` inside the square | killed (1) |
+| FID9 | fidelity ignores the per-job `circuit_hash` join, grabs any ideal | killed (1) |
+| FID10 | reference-provider capability check inverted | killed (1) |
+| FID11 | reference uses `statevector` instead of `density_matrix` | **survived → killed** |
+
+FID1 is the marginalisation survivor: the `swapped_measure` fixture
+(`q0 -> c1`, `q1 -> c0`) makes the map-based `"10"` and the qubit-order
+`"01"` distinguishable, so a reading that ignores the measure map fails —
+a fixture with aligned indices could not catch this (the W1 lesson).
+FID8 and FID2/FID3/FID4 are caught by the hand-computed distance values
+and the assertion that DevQ's Hellinger equals Qiskit's on shared inputs.
+FID9 is killed by the population fixture's two distinct circuits (one with
+an ideal, one without): a metric that does not respect per-job identity
+mixes them.
+
+**FID11 SURVIVED first, then drove a new fixture.** Switching the
+reference from `density_matrix` to `statevector` left the suite green,
+because no fixture contained a mid-circuit reset *after entanglement* —
+the only case where the two methods diverge. Bell, GHZ, and
+`swapped_measure` have no reset, and a reset on an unentangled qubit
+stays pure, so statevector matched density-matrix on all of them. The
+`reset_entangled` fixture was added (a Bell pair then `reset q0`, leaving
+q1 in a mixed 50/50 state that statevector collapses to `{"00": 1.0}`
+while density-matrix correctly gives `{"00": 0.5, "10": 0.5}`); with it,
+FID11 is killed. This is the survivor lesson again — the missing case, not
+the passing suite, is the signal.
 
 ### Metrics — `benchmark/metrics.py`
 
