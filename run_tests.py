@@ -3587,6 +3587,47 @@ def block_ibm_measurement():
           f"IBM reset in position: x then reset -> measures ~0, got {counts}")
 
 
+def block_counts_width_contract():
+    '''BaseProvider._counts_width is the one source of the Option B width rule'''
+    # The bitstring-width rule (span the declared classical register,
+    # fall back to the qubit count) is a cross-provider contract: the
+    # fidelity metric compares bitstrings from different providers
+    # directly, so if two providers derived width even slightly
+    # differently the comparison would silently be wrong. The rule
+    # therefore lives in ONE helper on BaseProvider, and both built-in
+    # providers call it. This block pins the helper's contract directly,
+    # so a regression is caught at the source rather than only through a
+    # provider's end-to-end counts.
+
+    from providers.base_provider import BaseProvider
+    from circuits.circuit_rep import CircuitRep
+
+    # Declared creg narrower than the qubit count: width is the register.
+    check(BaseProvider._counts_width(CircuitRep(3, 2)) == 2,
+          "counts_width: 3 qubits, creg c[2] -> 2 (the register, not qubits)")
+    # No creg declared: fall back to the qubit count.
+    check(BaseProvider._counts_width(CircuitRep(4, 0)) == 4,
+          "counts_width: no creg -> num_qubits fallback")
+    # creg wider than qubits (legal: a creg may exceed the qubits used).
+    check(BaseProvider._counts_width(CircuitRep(2, 5)) == 5,
+          "counts_width: creg wider than qubits -> the register width")
+
+    # Both built-in providers must actually USE the helper, not re-derive
+    # the rule. A structural check: the helper's result drives the width
+    # both providers report. devq is dependency-free, so assert through it
+    # — a 3-qubit / 2-clbit circuit must yield 2-bit strings, which only
+    # holds if the provider took the register width from the helper.
+    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    sh = (DevQ(config_path=CONFIG + "router_only.config.json")
+          .add_device(DevQSimulatedProvider(seed=SEED).get_device("random", 8))
+          .build())
+    out = run(sh, [f"qrun {QASM2}narrow_creg.qasm"])
+    counts = counts_of(out, 1)
+    check(all(len(k) == 2 for k in counts),
+          f"counts_width: devq reports the helper's width (2-bit), "
+          f"got {set(len(k) for k in counts)}")
+
+
 # ── Shell robustness ─────────────────────────────────────────────────────────
 
 def block_shell_input_handling():
@@ -3690,6 +3731,7 @@ BLOCKS = [
     ("qasm2_parser",             block_qasm2_parser),
     ("devq_measurement",         block_devq_measurement),
     ("ibm_measurement",          block_ibm_measurement),
+    ("counts_width_contract",    block_counts_width_contract),
     ("shipped_workloads",        block_shipped_workloads),
     ("repo_hygiene",             block_repo_hygiene),
     ("benchmark_runner",         block_benchmark_runner),

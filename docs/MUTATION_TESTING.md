@@ -43,17 +43,17 @@ cannot.
 
 ## Results
 
-**101 distinct mutants, 99 killed, 2 excluded** (M10 equivalent and P7
+**103 distinct mutants, 101 killed, 2 excluded** (M10 equivalent and P7
 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
 The total is delta-consistent, not recounted: 66/64/2 from the prior
 state plus the 14 new Metrics mutants, 3 new Shell mutants, 6 new
-Frontend mutants, 6 new OpenQASM 2.0 parser mutants, and 6 new
-measurement/execution mutants below, each verified by running the mutant
-against the affected block, not assumed. The pre-existing set was taken
-as given.
+Frontend mutants, 6 new OpenQASM 2.0 parser mutants, 6 new
+measurement/execution mutants, and 2 new provider-contract mutants below,
+each verified by running the mutant against the affected block, not
+assumed. The pre-existing set was taken as given.
 
 ### Device identity — `hardware/device.py`, `providers/`, `devq.py`
 
@@ -287,6 +287,22 @@ would measure ~1) is caught; M4 catches the fallback firing on top of
 explicit measures, which double-measures and unpins the c[2] bit. Each
 was run against `devq_measurement` or `ibm_measurement`, confirmed to
 turn it red, then reverted; both provider files were diffed clean after.
+
+### Provider contract — `providers/base_provider.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| CW1 | `_counts_width` uses `and` instead of `or` (wrong when a creg is declared) | killed (1) |
+| CW2 | `_counts_width` ignores `num_clbits`, always returns `num_qubits` | killed (1) |
+
+`_counts_width` is the single source of the Option B width rule, shared
+by both providers so it cannot drift between them. CW1 and CW2 are the
+two ways to get the fallback wrong: `and` returns the qubit count
+whenever a creg is declared (backwards), and dropping `num_clbits`
+entirely loses the register width. Both are caught by
+`counts_width_contract`, which asserts the helper directly rather than
+only through a provider's end-to-end counts. Each was run against that
+block, confirmed red, then reverted; `base_provider.py` was diffed clean.
 
 ### Workload spec — `benchmark/spec.py`, `providers/base_provider.py`
 

@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 53 sanity blocks in `run_tests.py`, covering
+Specification for the 54 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, and the Phase 5.3 metrics layer.
 
 `run_tests.py` asserts **what** each block expects. This document
@@ -12,7 +12,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 53 blocks, one line each
+python run_tests.py              # all 54 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -944,6 +944,26 @@ strings (width is the register); and — the ordering assertion — `x q[0]`
 then `reset q[0]` then measure yields **~all-zero**, since a reset
 honoured at its source position returns the qubit to 0, whereas a dropped
 or end-lumped reset would measure ~all-one.
+
+---
+
+### `counts_width_contract`
+
+*`BaseProvider._counts_width` is the one source of the Option B width rule.*
+
+The bitstring-width rule — results span the declared classical register,
+falling back to the qubit count when no `creg` is declared — is a
+**cross-provider** contract: the fidelity metric compares bitstrings from
+different providers directly, so if two providers derived the width even
+slightly differently the comparison would silently be wrong. The rule
+therefore lives in one helper on `BaseProvider`, and both built-in
+providers call it rather than re-deriving it. This block pins the
+helper's contract at the source: a creg narrower than the qubit count
+yields the register width (not the qubits), no creg falls back to the
+qubit count, and a creg wider than the qubits yields the register width.
+A closing check runs a three-qubit, two-bit-creg circuit through devq and
+confirms the provider actually reports the helper's width (2-bit
+strings), so the helper is wired in, not bypassed.
 
 ---
 

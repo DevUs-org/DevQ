@@ -351,6 +351,20 @@ not ignored: `IBMSimulatedProvider` translates it into a transpiler
 A provider that drops it silently erases the allocator's effect on
 fidelity.
 
+Third, **the counts a provider returns must obey a shared shape**, because
+cross-provider comparison (the fidelity metric, baseline sweeps) reads the
+bitstrings directly and a disagreement is silent. The result's `counts`
+maps measured bitstrings to shot counts; the bitstring width is the
+declared classical register (`num_clbits`, falling back to `num_qubits`
+when no `creg` is declared) — call `self._counts_width(circuit)` rather
+than re-deriving it, so the rule cannot drift between providers. A
+measured bit sits at its own classical-bit index, an unmeasured bit reads
+0, explicit measures are honoured (fall back to measure-all only when the
+circuit has none), and `reset` is applied at its source position. A
+provider that ignores gate semantics (a uniform mock) still owes the width
+and index conventions — only the distribution is its own business. The
+full statement lives on `BaseProvider.execute()`'s docstring.
+
 If your provider is stochastic, accept `seed=None` in `__init__`, call
 `super().__init__(seed)`, and derive all randomness from a provider-local
 generator — see [Reproducibility & Seeding](CONFIGURATION.md#reproducibility--seeding).

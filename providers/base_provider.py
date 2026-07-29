@@ -5,7 +5,10 @@ BaseProvider — Abstract base class for all DevQ hardware providers.
 
 Every provider must implement:
   - get_device()  : construct and return a fully formed QuantumDevice
-  - execute()     : run a circuit on the underlying backend
+  - execute()     : run a circuit on the underlying backend, returning
+                    counts that satisfy the OUTPUT CONTRACT documented on
+                    execute() — the bitstring width and index conventions
+                    every provider must agree on. Use _counts_width().
 
 Optionally override:
   - preferred_config() : express provider-level config preferences
@@ -156,9 +159,53 @@ class BaseProvider(ABC):
                        select per-device state (backend, noise model).
 
         Returns:
-            ExecutionFuture
+            ExecutionFuture resolving to an ExecutionResult.
+
+        OUTPUT CONTRACT — the counts every provider must agree on.
+        The result's `counts` maps measured BITSTRINGS to shot counts,
+        and every provider must report them the same way, because
+        cross-provider comparison (the fidelity metric, baseline sweeps)
+        compares these strings directly and a disagreement is silent:
+
+          - WIDTH is the declared classical register: len(bitstring) ==
+            circuit.num_clbits, falling back to circuit.num_qubits when no
+            creg is declared. Use _counts_width(circuit) — do not
+            re-derive it, so the rule cannot drift between providers.
+          - A measured bit sits at ITS OWN INDEX: `measure q -> c[j]`
+            places that qubit's outcome at position j of the string, so
+            the string position is the classical-bit index and needs no
+            side map. An unmeasured bit reads 0.
+          - Explicit measures are HONOURED; a circuit with no measures
+            falls back to measuring all qubits (see the measurement
+            blocks in run_tests.py). `reset` is applied at its source
+            position in circuit.instructions, not lumped at the end.
+
+        A provider that ignores gate semantics (a uniform mock) still
+        owes the WIDTH and index conventions — only the distribution is
+        its own business.
         '''
         pass
+
+    @staticmethod
+    def _counts_width(circuit):
+        '''
+        The bitstring width a provider must report counts over: the
+        declared classical-register width, or the qubit count when no
+        classical register was declared.
+
+        This is the single source of the Option B width rule (see
+        execute()'s output contract). Both built-in providers call it;
+        a new provider that calls it inherits the convention for free and
+        cannot drift from the others by re-deriving the rule slightly
+        differently.
+
+        Args:
+            circuit: CircuitRep
+
+        Returns:
+            int — the number of classical bits the result strings span.
+        '''
+        return circuit.num_clbits or circuit.num_qubits
 
     def preferred_config(self) -> dict:
         '''

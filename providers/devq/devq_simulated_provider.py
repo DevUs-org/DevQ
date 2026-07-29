@@ -119,17 +119,12 @@ class DevQSimulatedProvider(BaseProvider):
 
         def _run():
             # devq.simulated does not interpret gates — it returns a
-            # uniform distribution, its defining behaviour. What changed
-            # with real measurement is the WIDTH of the bitstrings: they
-            # span the classical register (Option B), so an unmeasured
-            # circuit's results still cover num_qubits bits, while a
-            # measured circuit covers its declared creg width and a
-            # measured bit sits at its own index. Fallback: no creg
-            # declared -> width is the qubit count, matching the
-            # historical all-qubit distribution.
-            width = circuit.num_clbits
-            if width == 0:
-                width = circuit.num_qubits
+            # uniform distribution, its defining behaviour. It still owes
+            # the shared WIDTH convention: bitstrings span the classical
+            # register (Option B), via the one helper on BaseProvider so
+            # this cannot drift from the other providers. Only the
+            # distribution is devq's own business, not the width.
+            width = self._counts_width(circuit)
 
             num_states  = 2 ** width
             mock_counts = {

@@ -206,15 +206,12 @@ class IBMSimulatedProvider(BaseProvider):
                 # width, so a measured bit sits at its own index and the
                 # bitstring position IS the classical-bit index — no side
                 # map, matching how real hardware reports a creg. Unmeasured
-                # bits stay 0. Fallback: a circuit that declares no creg
-                # (num_clbits == 0) but is measured-all-implicitly needs
-                # somewhere to put the results, so the width falls back to
-                # the qubit count.
+                # bits stay 0. Falls back to the qubit count when no creg
+                # is declared. Computed by the shared BaseProvider helper
+                # so the rule stays identical across providers.
                 has_measures = any(i["op"] == "measure"
                                    for i in circuit.instructions)
-                num_clbits = circuit.num_clbits
-                if num_clbits == 0:
-                    num_clbits = num_virtual
+                num_clbits = self._counts_width(circuit)
                 qc = QuantumCircuit(num_virtual, num_clbits)
 
                 # Walk the ordered stream, honouring each op in source
