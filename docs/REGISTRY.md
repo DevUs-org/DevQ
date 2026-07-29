@@ -369,6 +369,27 @@ If your provider is stochastic, accept `seed=None` in `__init__`, call
 `super().__init__(seed)`, and derive all randomness from a provider-local
 generator — see [Reproducibility & Seeding](CONFIGURATION.md#reproducibility--seeding).
 
+**Optionally, `reference_ideal(circuit)`** — the noiseless IDEAL
+distribution for a circuit, `{bitstring: probability}` at the same
+Option-B width `execute()` reports, or `None` if this provider cannot
+produce one. This is what the fidelity metric compares a noisy run
+against, and it is a property of the CIRCUIT, not a device — so one
+reference-capable provider computes a run's ideals, keyed by circuit hash,
+and two jobs running the same circuit on different backends share one
+ideal. The default on `BaseProvider` returns `None` (declines): a provider
+whose execution is a uniform mock has no meaningful ideal and correctly
+inherits it, so it is never used as a reference. Override it if your
+provider can simulate a circuit faithfully NOISELESSLY —
+`IBMSimulatedProvider` does, running the same lowered circuit `execute()`
+uses through a noiseless Aer **density-matrix** simulation and reading
+exact probabilities (density-matrix, not statevector, so a mid-circuit
+`reset` on an entangled qubit — a genuinely mixed state — is represented
+correctly). The shipped, vendor-neutral orchestrator in
+`benchmark/reference.py` discovers a capable provider through this method,
+so DevQ obtains ideals without core depending on any provider; a run with
+no capable provider simply reports fidelity as `None`. See
+[`METRICS.md`](METRICS.md) (fidelity) for how the ideal is used.
+
 **New allocator** — subclass `BaseAllocator`, implement `allocate()` per the
 documented contract (reserve via `pool.allocate()` on success; raise on
 failure; honour thresholds as hard constraints). Every allocator is
