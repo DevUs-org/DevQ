@@ -374,6 +374,11 @@ def hellinger_fidelity(measured, ideal):
     H = (1/sqrt(2)) * sqrt(sum_k (sqrt(p_k) - sqrt(q_k))^2), the fidelity
     is (1 - H^2)^2, ranging [0, 1] with HIGHER better (1.0 = identical).
 
+    Definitions borrowed, not original — see docs/REFERENCES.md
+    [Qiskit-HF] (the exact fidelity definition), [Hellinger] (the distance
+    formula), and [QOS] (why this definition, for cross-system
+    comparability).
+
     Computed directly from the formula here rather than by importing
     Qiskit, so the metric layer stays pure and dependency-free; a test
     asserts this against Qiskit's own hellinger_fidelity on shared inputs
@@ -397,6 +402,7 @@ def total_variation_distance(measured, ideal):
     '''
     Total variation distance: half the summed absolute difference,
     (1/2) * sum_k |p_k - q_k|, in [0, 1] with LOWER better (0 = identical).
+    See docs/REFERENCES.md [TVD].
 
     The hand-verifiable companion to Hellinger fidelity: it is trivial to
     compute by eye, so a test fixture can pin it exactly, and it is a

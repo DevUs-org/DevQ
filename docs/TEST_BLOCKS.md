@@ -1,7 +1,8 @@
 # DevQ Sanity Test Plan
 
-Specification for the 54 sanity blocks in `run_tests.py`, covering
-Phases 0–5.2, the component registry, and the Phase 5.3 metrics layer.
+Specification for the 55 sanity blocks in `run_tests.py`, covering
+Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
+the Phase 5.4 fidelity metric.
 
 `run_tests.py` asserts **what** each block expects. This document
 records **why** those values are correct — the S-cost arithmetic behind
@@ -12,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 54 blocks, one line each
+python run_tests.py              # all 55 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -1312,7 +1313,7 @@ deviation (denominator `n`) and the `1/(1+cv)` inversion are both pinned
 by these exact values.
 
 The real half runs a two-device `devq.simulated` session and asserts the
-bundle carries the five groups; that execution throughput ≥ turnaround
+bundle carries the six groups; that execution throughput ≥ turnaround
 (the execution span is a subset of the turnaround span); that every
 per-device fraction is in `[0,1]` and the system figure lies between the
 extremes; and that the latency distribution is internally ordered. It
@@ -1323,6 +1324,60 @@ from both. Finally the writer is checked: `write_metrics` drops
 value equals the file byte-for-byte — the round-trip matters because
 JSON has no integer keys, so per-device maps carry **string** device
 keys on disk and a caller must see the same.
+
+
+### `fidelity`
+
+Covers the Phase 5.4 fidelity metric — Hellinger fidelity and TVD between
+a job's measured distribution and its circuit's noiseless ideal — defined
+in [`METRICS.md`](METRICS.md), with the distance definitions attributed in
+[`REFERENCES.md`](REFERENCES.md).
+
+Like the metrics block, exact numbers are asserted only against
+**hand-built distributions and records**; the real run asserts structure
+and a physical bound. Four halves:
+
+**The distance measures**, on hand-built distributions. Measured
+`{00:.4, 11:.5, 01:.1}` against ideal `{00:.5, 11:.5}` gives **TVD =
+0.1** (half the summed absolute difference) and a **Hellinger fidelity**
+matching `(1−H²)²` computed by hand. The headline number is asserted
+**equal to Qiskit's `hellinger_fidelity`** on the same ratios as counts —
+this is what backs the [`REFERENCES.md`](REFERENCES.md) `[Qiskit-HF]`
+claim that DevQ matches QOS's definition without importing Qiskit. HF and
+TVD are asserted **numerically distinct** on the same inputs, so a
+swapped or square-dropped formula cannot pass by matching the other's
+value. Identical distributions give HF `1.0` / TVD `0.0`; disjoint
+support gives HF `0.0` / TVD `1.0`, exercising Hellinger's
+differing-support handling (the reason it suits GHZ). `_normalise` turns
+counts into a distribution and returns `None` for empty or all-zero
+counts.
+
+**The marginalisation survivor.** The `swapped_measure` fixture flips
+`q0` to `|1>` and `q1` to `|0>` but measures `q0 -> c1` and `q1 -> c0`,
+so the correct classical string is `c1c0 = "10"`. A marginalisation that
+followed **qubit order** instead of the measure map would produce `"01"`
+— a different number — so this fixture makes the two implementations
+distinguishable, unlike one whose qubit and clbit indices align (the W1
+lesson). Both `reference_ideal` and the pure `_marginalise` are asserted
+to yield `"10"` and never `"01"`. Bell's ideal is checked as exactly
+50/50 on `00`/`11`.
+
+**The population rule**, on synthetic records joining the three record
+types fidelity reads (summary `per_job`, `resolve` counts, `reference`
+ideal). A finished job with counts and an ideal gets a real fidelity
+(its TVD is hand-checked at `0.02`); a **rejected** job (no counts) and a
+**finished job whose circuit has no recorded ideal** both get `None`, not
+`0` — a `0` would falsely mean "measured and maximally wrong". The
+session aggregate spans only qualifying jobs, so the skipped ones are not
+folded in as zeros, and an all-unqualified run makes every aggregate
+field `None`.
+
+**A real IBM run** asserts structure and a physical bound rather than
+fragile exact numbers: all four jobs get a fidelity in `[0,1]`, and **mean
+GHZ fidelity ≤ mean Bell fidelity** under the same noise — GHZ's ideal
+concentrates on two of eight strings, so noise smears it harder than
+Bell's two of four, the exact case Hellinger is chosen to handle
+honestly.
 
 
 ### `router_scoring`

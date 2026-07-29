@@ -67,6 +67,7 @@ Documentation, all under `docs/`:
 | `WORKLOADS.md` | The shipped workload specs, what each exercises, and how to run them |
 | `MUTATION_TESTING.md` | Whether the tests would notice a regression — mutants run, killed, and the gaps they exposed |
 | `ROADMAP.md` | What each phase delivered; where the project is going |
+| `REFERENCES.md` | External works DevQ cites or builds on — papers, dependencies, benchmark suites, data provenance, and citation keys |
 
 ---
 

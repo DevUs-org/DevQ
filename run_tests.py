@@ -2808,6 +2808,234 @@ def block_metrics():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def block_fidelity():
+    '''Fidelity: hand-computed distances, marginalisation, population rule'''
+    import json, math, os, tempfile
+    from benchmark import metrics as M
+    from benchmark import runner as R
+    from frontends.qasm2.qasm2_frontend import QASM2Frontend
+    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+
+    # ── HALF ONE: the distance measures, on HAND-BUILT distributions ──
+    # Values are computed by hand in the comments; asserting a metric
+    # against its own output proves nothing (the metrics-block lesson).
+    #
+    # measured {00:0.4, 11:0.5, 01:0.1}  vs  ideal {00:0.5, 11:0.5}
+    m = {"00": 0.4, "11": 0.5, "01": 0.1}
+    i = {"00": 0.5, "11": 0.5}
+
+    # TVD = 1/2 (|0.4-0.5| + |0.5-0.5| + |0.1-0.0|) = 1/2 (0.1+0+0.1) = 0.1
+    tvd = M.total_variation_distance(m, i)
+    check(abs(tvd - 0.1) < 1e-12, f"TVD hand-computed 0.1, got {tvd}")
+
+    # Hellinger fidelity = (1 - H^2)^2 with
+    #   H^2 = 1/2 sum (sqrt(p) - sqrt(q))^2
+    # keys: 00: (sqrt.4-sqrt.5)^2, 11: (sqrt.5-sqrt.5)^2=0,
+    #       01: (sqrt.1-0)^2 = 0.1
+    h_sq = 0.5 * ((0.4 ** 0.5 - 0.5 ** 0.5) ** 2
+                  + 0.0
+                  + (0.1 ** 0.5 - 0.0) ** 2)
+    expected_hf = (1 - h_sq) ** 2
+    hf = M.hellinger_fidelity(m, i)
+    check(abs(hf - expected_hf) < 1e-12,
+          f"Hellinger fidelity hand-computed {expected_hf}, got {hf}")
+
+    # The headline number MUST equal Qiskit's hellinger_fidelity — that is
+    # the definition QOS reports and docs/REFERENCES.md [Qiskit-HF] claims
+    # we match. Qiskit takes COUNTS; scale the same ratios to integers.
+    from qiskit.quantum_info import hellinger_fidelity as qiskit_hf
+    qhf = qiskit_hf({"00": 400, "11": 500, "01": 100}, {"00": 500, "11": 500})
+    check(abs(hf - qhf) < 1e-9,
+          f"our Hellinger equals Qiskit's ({qhf}), got {hf}")
+
+    # HF and TVD are DIFFERENT numbers on the same inputs — a swapped or
+    # square-dropped formula cannot pass by accidentally matching the
+    # other's value (the survivor guard for the distance choice).
+    check(abs(hf - tvd) > 0.1,
+          f"Hellinger ({hf}) and TVD ({tvd}) are numerically distinct")
+
+    # Identical distributions: HF exactly 1.0, TVD exactly 0.0.
+    check(M.hellinger_fidelity(i, i) == 1.0, "identical -> HF 1.0")
+    check(M.total_variation_distance(i, i) == 0.0, "identical -> TVD 0.0")
+
+    # Disjoint support: HF 0.0, TVD 1.0. Hellinger is well defined on
+    # differing support (the GHZ rationale, [GHZ-rationale]); a naive
+    # same-support assumption would KeyError or misread here.
+    a = {"00": 1.0}
+    b = {"11": 1.0}
+    check(abs(M.hellinger_fidelity(a, b) - 0.0) < 1e-12,
+          "disjoint support -> HF 0.0")
+    check(abs(M.total_variation_distance(a, b) - 1.0) < 1e-12,
+          "disjoint support -> TVD 1.0")
+
+    # _normalise: counts -> distribution; empty / all-zero -> None (the
+    # population rule, so a job with no shots has no distribution).
+    check(M._normalise({"0": 3, "1": 1}) == {"0": 0.75, "1": 0.25},
+          "counts normalise to a probability distribution")
+    check(M._normalise({}) is None and M._normalise({"0": 0}) is None,
+          "empty / all-zero counts -> None, not a uniform or zero dist")
+
+    # ── HALF TWO: MARGINALISATION survivor (qubit index != clbit index) ─
+    # The swapped_measure fixture flips q0 to |1>, q1 to |0>, but measures
+    # q0 -> c1 and q1 -> c0. The correct, map-based ideal is c1c0 = "10".
+    # An implementation that marginalised in QUBIT order would give "01" —
+    # a different string. With this fixture the two are distinguishable, so
+    # a qubit-order regression cannot survive (unlike a fixture whose qubit
+    # and clbit indices align).
+    fe = QASM2Frontend()
+    prov = IBMSimulatedProvider(seed=SEED)
+    swapped = fe.parse("test_circuits/qasm2/swapped_measure.qasm")
+    ideal_sw = prov.reference_ideal(swapped)
+    check(ideal_sw == {"10": 1.0},
+          f"swapped measure map -> ideal '10' (map-based), got {ideal_sw}")
+
+    # And directly against the pure marginaliser, so the assertion does not
+    # depend on the Aer path: probs has all mass on index 1 (q0=1, q1=0).
+    probs = [0.0, 1.0, 0.0, 0.0]
+    marg = IBMSimulatedProvider._marginalise(probs, [(0, 1), (1, 0)], 2, 2)
+    check(marg == {"10": 1.0},
+          f"_marginalise follows the measure map, got {marg}")
+    # The buggy qubit-order reading would have produced "01" — assert the
+    # correct code does NOT produce it, pinning the distinction.
+    check("01" not in marg, "marginalisation is not qubit-order ('01')")
+
+    # Closed-form structured ideals: Bell -> 50/50 on 00/11, hand-known.
+    bell = fe.parse(BELL)
+    ideal_bell = prov.reference_ideal(bell)
+    check(abs(ideal_bell.get("00", 0) - 0.5) < 1e-9
+          and abs(ideal_bell.get("11", 0) - 0.5) < 1e-9
+          and set(ideal_bell) == {"00", "11"},
+          f"Bell ideal is 50/50 on 00/11, got {ideal_bell}")
+
+    # ── HALF THREE: the fidelity metric's POPULATION RULE, on synthetic
+    # records. Build a run with a finished job (has counts + ideal), a
+    # rejected job (no counts), and a job whose circuit has NO ideal.
+    chash_bell = "hash_bell"
+    chash_noref = "hash_noref"
+    records = [
+        {"event": "reference", "circuit_hash": chash_bell,
+         "ideal": {"00": 0.5, "11": 0.5}, "label": "bell"},
+        # job 1 FINISHED, measured near-ideal, has a reference ideal
+        {"event": "resolve", "job_id": 1, "state": "FINISHED",
+         "success": True, "circuit_hash": chash_bell,
+         "counts": {"00": 480, "11": 500, "01": 20}},
+        # job 2 REJECTED, no counts
+        {"event": "resolve", "job_id": 2, "state": "REJECTED",
+         "success": False, "circuit_hash": chash_bell, "counts": None},
+        # job 3 FINISHED but its circuit has NO recorded ideal
+        {"event": "resolve", "job_id": 3, "state": "FINISHED",
+         "success": True, "circuit_hash": chash_noref,
+         "counts": {"00": 500, "11": 500}},
+        {"event": "summary",
+         "devices_attached": {"0": "d"},
+         "per_job": [
+             {"job_id": 1, "state": "FINISHED", "device": 0,
+              "circuit_hash": chash_bell},
+             {"job_id": 2, "state": "REJECTED", "device": None,
+              "circuit_hash": chash_bell},
+             {"job_id": 3, "state": "FINISHED", "device": 0,
+              "circuit_hash": chash_noref},
+         ]},
+    ]
+    fid = M.fidelity(records)
+
+    # job 1 has a real fidelity; hand-check its TVD:
+    # measured normalised: 00: 480/1000=.48, 11:.50, 01:.02
+    # TVD = 1/2(|.48-.5| + |.5-.5| + |.02-0|) = 1/2(.02+0+.02) = 0.02
+    check(abs(fid["per_job"][1]["tvd"] - 0.02) < 1e-12,
+          f"job 1 TVD hand-computed 0.02, got {fid['per_job'][1]['tvd']}")
+    check(fid["per_job"][1]["hellinger"] is not None
+          and 0.9 < fid["per_job"][1]["hellinger"] <= 1.0,
+          "job 1 has a high (near-ideal) Hellinger fidelity")
+
+    # job 2 REJECTED -> None, NOT a 0 (a rejected job never measured; 0
+    # would falsely mean 'measured and maximally wrong').
+    check(fid["per_job"][2]["hellinger"] is None
+          and fid["per_job"][2]["tvd"] is None,
+          "rejected job (no counts) -> fidelity None, not 0")
+
+    # job 3 FINISHED but NO ideal -> None (no reference-capable provider
+    # covered this circuit; an absent ideal is not a zero distribution).
+    check(fid["per_job"][3]["hellinger"] is None
+          and fid["per_job"][3]["tvd"] is None,
+          "finished job with no recorded ideal -> fidelity None")
+
+    # The session aggregate is over QUALIFYING jobs only — here just job 1,
+    # so min == max == job 1's value, and the skipped jobs are not folded
+    # in as zeros (which would crater the mean).
+    check(fid["hellinger"]["min"] == fid["hellinger"]["max"]
+          == fid["per_job"][1]["hellinger"],
+          "aggregate spans only qualifying jobs, skips None (no zero-fill)")
+
+    # Empty population: no job qualifies -> every aggregate field None.
+    none_records = [
+        {"event": "summary", "devices_attached": {"0": "d"},
+         "per_job": [{"job_id": 1, "state": "REJECTED", "device": None,
+                      "circuit_hash": "x"}]},
+        {"event": "resolve", "job_id": 1, "state": "REJECTED",
+         "success": False, "circuit_hash": "x", "counts": None},
+    ]
+    fn = M.fidelity(none_records)
+    check(all(fn["hellinger"][k] is None for k in
+              ("min", "median", "mean", "max", "p95")),
+          "no qualifying job -> every aggregate field None, not 0")
+
+    # ── HALF FOUR: a REAL run — structure and a physical BOUND ─────────
+    # Exact fidelity numbers off a noisy Aer run are seed-fragile, so here
+    # we assert STRUCTURE and a bound that must hold physically: under the
+    # same noise, GHZ fidelity <= Bell fidelity. GHZ's ideal concentrates
+    # on two of 2^3 strings, so noise smears it harder than Bell's two of
+    # 2^2 — the very case Hellinger is chosen to handle honestly.
+    tmp = tempfile.mkdtemp()
+    try:
+        spec = os.path.join(tmp, "wl.json")
+        with open(spec, "w") as h:
+            json.dump({
+                "name": "fidelity", "seed": SEED,
+                "devices": [{"id": "nairobi", "provider": "ibm.simulated",
+                             "backend": {"backend_name": "FakeNairobiV2"}}],
+                "jobs": [{"circuit": BELL, "repeat": 2},
+                         {"circuit": GHZ, "repeat": 2}],
+            }, h)
+        out = os.path.join(tmp, "run")
+        manifest = R.run(spec, out_dir=out, quiet=True,
+                         register_providers={"ibm.simulated":
+                                             IBMSimulatedProvider})
+        log = os.path.join(out, manifest["sessions"][0]["log"])
+        with open(log) as h:
+            recs = [json.loads(line) for line in h if line.strip()]
+
+        fid_real = M.fidelity(recs)
+        # Every job that finished has a numeric fidelity in [0, 1].
+        vals = [v["hellinger"] for v in fid_real["per_job"].values()
+                if v["hellinger"] is not None]
+        check(len(vals) == 4, f"all 4 IBM jobs have a fidelity, got {len(vals)}")
+        check(all(0.0 <= v <= 1.0 for v in vals),
+              "every Hellinger fidelity lies in [0, 1]")
+
+        # Bound: mean GHZ fidelity <= mean Bell fidelity under this noise.
+        # Map each job to its circuit via the per_job circuit_hash.
+        by_hash = {r["circuit_hash"]: r["ideal"]
+                   for r in recs if r.get("event") == "reference"}
+        bell_hash = next(h for h, ideal in by_hash.items()
+                         if set(ideal) == {"00", "11"})
+        ghz_hash = next(h for h, ideal in by_hash.items()
+                        if set(ideal) == {"000", "111"})
+        summ = next(r for r in recs if r.get("event") == "summary")
+        job_hash = {row["job_id"]: row["circuit_hash"]
+                    for row in summ["per_job"]}
+        bell_f = [fid_real["per_job"][j]["hellinger"]
+                  for j, hsh in job_hash.items() if hsh == bell_hash]
+        ghz_f = [fid_real["per_job"][j]["hellinger"]
+                 for j, hsh in job_hash.items() if hsh == ghz_hash]
+        check(sum(ghz_f) / len(ghz_f) <= sum(bell_f) / len(bell_f) + 1e-9,
+              f"GHZ fidelity <= Bell fidelity under noise "
+              f"(ghz {ghz_f}, bell {bell_f})")
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def block_router_scoring():
     '''Router weights change routing, and explain() matches select()'''
     # Every other routing block runs at the default 0.5/0.5, where the
@@ -3739,6 +3967,7 @@ BLOCKS = [
     ("placeholder_resolution",   block_placeholder_resolution),
     ("event_log",                block_event_log),
     ("metrics",                  block_metrics),
+    ("fidelity",                 block_fidelity),
     ("router_scoring",           block_router_scoring),
     ("provider_registration",    block_provider_registration_enforced),
     ("device_identity",          block_device_identity),
