@@ -39,49 +39,143 @@ marginalises. So this module returns the body and the map, and lets each
 caller finish its own way — it does not itself call qc.measure().
 '''
 
+# Stdlib only at module scope. qiskit stays LAZY (imported inside
+# build_qiskit_circuit) so importing this module costs nothing; math is
+# needed for u2's fixed π/2 and carries no such cost.
+import math
+
 
 # ── the gate map ────────────────────────────────────────────────────────
 #
-# CircuitRep gate name -> a call on a Qiskit QuantumCircuit. Kept at module
-# scope (not rebuilt per gate) and applied by name. An unknown gate is a
-# warning and a skip, matching the provider's historical behaviour — a
-# circuit using a gate the lowering does not know still runs, minus that
-# gate, rather than crashing a whole benchmark.
+# CircuitRep gate name -> a call on a Qiskit QuantumCircuit. Genuinely at
+# module scope: built once at import, not per instruction. Each entry takes
+# (qc, qubits, params) as arguments rather than closing over them, which is
+# what lets the table live out here — the previous version rebuilt a dict of
+# closures on EVERY gate, a cost a 1500-instruction circuit pays 1500 times.
 #
-# The lambdas close over (qc, qubits, params) passed at call time.
+# SCOPE OF THIS TABLE. It covers every name in the qasm2 frontend's
+# _BUILTIN_GATES (the qelib1.inc vocabulary) plus `ecr`, which IBM hardware
+# has as a native two-qubit gate and qelib1 does not define. A test block
+# asserts that superset relation, because the two tables were written for
+# different reasons — the frontend's to qelib1's spec, this one inherited
+# from a phase whose whole circuit corpus was Bell and GHZ — and nothing
+# else couples them. Every .qasm fixture in the repo uses six gate names
+# between them, so a gap here is invisible to the suite unless something
+# asserts the coupling directly.
+#
+# FOUR SUBSTITUTIONS. u1/u2/u3/cu1 have no QuantumCircuit methods — they
+# were removed in Qiskit 1.0 — so they lower to the surviving general
+# forms. Verified identical by Operator comparison rather than assumed:
+#
+#     u1(λ)      -> p(λ)                (both are diag(1, e^{iλ}))
+#     u2(φ, λ)   -> u(π/2, φ, λ)
+#     u3(θ, φ, λ)-> u(θ, φ, λ)
+#     cu1(λ)     -> cp(λ)
+#
+# These are exact rewrites, not approximations, so nothing about a fidelity
+# comparison follows from the substitution.
+
+_PI = math.pi
+
+_GATE_TABLE = {
+    # ── one qubit, no parameters ──
+    'id':    lambda qc, q, p: qc.id(q[0]),
+    'x':     lambda qc, q, p: qc.x(q[0]),
+    'y':     lambda qc, q, p: qc.y(q[0]),
+    'z':     lambda qc, q, p: qc.z(q[0]),
+    'h':     lambda qc, q, p: qc.h(q[0]),
+    's':     lambda qc, q, p: qc.s(q[0]),
+    'sdg':   lambda qc, q, p: qc.sdg(q[0]),
+    't':     lambda qc, q, p: qc.t(q[0]),
+    'tdg':   lambda qc, q, p: qc.tdg(q[0]),
+    'sx':    lambda qc, q, p: qc.sx(q[0]),
+    'sxdg':  lambda qc, q, p: qc.sxdg(q[0]),
+
+    # ── one qubit, parameterised ──
+    'rx':    lambda qc, q, p: qc.rx(p[0], q[0]),
+    'ry':    lambda qc, q, p: qc.ry(p[0], q[0]),
+    'rz':    lambda qc, q, p: qc.rz(p[0], q[0]),
+    'p':     lambda qc, q, p: qc.p(p[0], q[0]),
+    'u1':    lambda qc, q, p: qc.p(p[0], q[0]),
+    'u2':    lambda qc, q, p: qc.u(_PI / 2, p[0], p[1], q[0]),
+    'u3':    lambda qc, q, p: qc.u(p[0], p[1], p[2], q[0]),
+    'u':     lambda qc, q, p: qc.u(p[0], p[1], p[2], q[0]),
+
+    # ── two qubits, no parameters ──
+    'cx':    lambda qc, q, p: qc.cx(q[0], q[1]),
+    'cy':    lambda qc, q, p: qc.cy(q[0], q[1]),
+    'cz':    lambda qc, q, p: qc.cz(q[0], q[1]),
+    'ch':    lambda qc, q, p: qc.ch(q[0], q[1]),
+    'swap':  lambda qc, q, p: qc.swap(q[0], q[1]),
+    'ecr':   lambda qc, q, p: qc.ecr(q[0], q[1]),
+
+    # ── two qubits, parameterised ──
+    'crx':   lambda qc, q, p: qc.crx(p[0], q[0], q[1]),
+    'cry':   lambda qc, q, p: qc.cry(p[0], q[0], q[1]),
+    'crz':   lambda qc, q, p: qc.crz(p[0], q[0], q[1]),
+    'cp':    lambda qc, q, p: qc.cp(p[0], q[0], q[1]),
+    'cu1':   lambda qc, q, p: qc.cp(p[0], q[0], q[1]),
+
+    # ── three qubits ──
+    'ccx':   lambda qc, q, p: qc.ccx(q[0], q[1], q[2]),
+    'cswap': lambda qc, q, p: qc.cswap(q[0], q[1], q[2]),
+}
+
+
+class UnknownGateError(ValueError):
+    '''
+    Raised when a CircuitRep names a gate this lowering cannot express.
+
+    WHY THIS DECLINES INSTEAD OF SKIPPING. This used to warn on stdout and
+    drop the gate, so a circuit ran minus that gate rather than crashing a
+    benchmark. That trade is wrong for anything measuring FIDELITY.
+    execute() and reference_ideal() share this lowering deliberately, so a
+    dropped gate is dropped on BOTH sides: the measured distribution gets
+    compared against the ideal of the same truncated circuit, the two
+    agree closely, and Hellinger fidelity comes out HIGH for a circuit
+    nobody ran. A silent skip does not degrade the number, it invalidates
+    it while leaving it plausible — and a suite whose fixtures all stay
+    inside the known vocabulary stays green throughout.
+
+    Raising gives each caller the failure it can actually express.
+    execute() already wraps its run in try/except and returns
+    ExecutionResult(success=False), so the job lands in FAILED naming the
+    gate. reference_ideal() catches this and returns None, which is
+    precisely the case benchmark/reference.compute_ideals() already
+    documents — "cannot simulate it — a gate it does not know ... an
+    absent ideal is not a zero distribution" — so fidelity reports None
+    instead of a forged value. That contract was written in 5.4 and could
+    never fire while the lowering skipped.
+
+    This is a NORMAL condition, not exotic input. The qasm2 frontend
+    validates arity against its builtin table but passes ANY gate name
+    through to the CircuitRep by design, "a provider may support a gate
+    this table does not list". Declining precisely is the contract.
+    '''
+
 
 def _apply_gate(qc, gate, qubits, params):
     '''
     Apply one CircuitRep gate to a Qiskit circuit. Names are matched
-    lower-cased by the caller. Unknown gate -> warn and skip.
+    lower-cased by the caller.
 
     This is the single gate vocabulary the IBM provider understands;
     execute() and reference_ideal() share it, so a gate added here is
     available to both at once and cannot be known to one but not the
     other.
+
+    Raises:
+        UnknownGateError : the name is not in _GATE_TABLE. See that class
+            for why this declines rather than skipping.
     '''
-    table = {
-        'h':    lambda: qc.h(qubits[0]),
-        'x':    lambda: qc.x(qubits[0]),
-        'y':    lambda: qc.y(qubits[0]),
-        'z':    lambda: qc.z(qubits[0]),
-        's':    lambda: qc.s(qubits[0]),
-        't':    lambda: qc.t(qubits[0]),
-        'sx':   lambda: qc.sx(qubits[0]),
-        'cx':   lambda: qc.cx(qubits[0], qubits[1]),
-        'cz':   lambda: qc.cz(qubits[0], qubits[1]),
-        'ecr':  lambda: qc.ecr(qubits[0], qubits[1]),
-        'swap': lambda: qc.swap(qubits[0], qubits[1]),
-        'rz':   lambda: qc.rz(params[0], qubits[0]),
-        'rx':   lambda: qc.rx(params[0], qubits[0]),
-        'ry':   lambda: qc.ry(params[0], qubits[0]),
-        'ccx':  lambda: qc.ccx(qubits[0], qubits[1], qubits[2]),
-    }
-    action = table.get(gate)
-    if action:
-        action()
-    else:
-        print(f"[qiskit_lowering] Warning: unknown gate '{gate}', skipping.")
+    action = _GATE_TABLE.get(gate)
+    if action is None:
+        raise UnknownGateError(
+            f"gate '{gate}' is not in the IBM lowering's vocabulary, so this "
+            f"circuit cannot be lowered to Qiskit. Known gates: "
+            f"{', '.join(sorted(_GATE_TABLE))}."
+        )
+    action(qc, qubits, params)
 
 
 def resolve_measure_map(circuit, width):

@@ -48,6 +48,14 @@ class IBMSimulatedProvider(BaseProvider):
     # may define one; the registry falls back to the class name.
     LABEL = "IBM Simulated Provider"
 
+    # Below this magnitude, a density-matrix probability is floating-point
+    # dust around a true zero (observed ~1e-17, sometimes negative from
+    # cancellation), not real mass. _marginalise drops anything under it so
+    # the reference ideal is a clean, non-negative distribution. Nine
+    # orders above the observed residue, far below any meaningful
+    # probability. See _marginalise for the full reasoning.
+    _DUST = 1e-12
+
     def __init__(self, seed=None):
         '''
         Args:
@@ -426,14 +434,28 @@ class IBMSimulatedProvider(BaseProvider):
             return None
 
         from providers.ibm.qiskit_lowering import (
-            build_qiskit_circuit, resolve_measure_map)
+            build_qiskit_circuit, resolve_measure_map, UnknownGateError)
 
         width = self._counts_width(circuit)
 
         # Same lowering as execute(): gate/reset body, no measures baked
         # in. The reference reads probabilities off the unmeasured state
         # and marginalises, so it must NOT measure into the circuit.
-        qc, measure_map = build_qiskit_circuit(circuit, width)
+        #
+        # A gate the lowering cannot express means this provider cannot
+        # produce an ideal for this circuit, which is a None — the same
+        # honest degrade as a missing Aer, and exactly what
+        # benchmark/reference.compute_ideals() documents it may receive
+        # ("cannot simulate it — a gate it does not know"). It must NOT
+        # propagate: compute_ideals() has no handler, so a raise here would
+        # abort a whole multi-circuit run over one unlowerable circuit
+        # instead of costing that circuit its fidelity number. The
+        # corresponding job still FAILS visibly via execute(), so the
+        # condition is never silent.
+        try:
+            qc, measure_map = build_qiskit_circuit(circuit, width)
+        except UnknownGateError:
+            return None
         qc.save_probabilities()
 
         sim = AerSimulator(
@@ -469,10 +491,29 @@ class IBMSimulatedProvider(BaseProvider):
         at clbit j sits `width-1-j` characters from the left — matching how
         get_counts() renders the same register, so measured and ideal keys
         align character-for-character.
+
+        DUST CLAMP. A density-matrix probability is never exactly 0.0 — the
+        simulator returns tiny residues (±1e-17-ish) around true zeros,
+        including small NEGATIVE values from floating-point cancellation. A
+        `p == 0` skip lets those through, and a negative probability is not
+        merely ugly: it is a malformed distribution. It breaks any consumer
+        that takes sqrt (Hellinger fidelity raises "math domain error", or
+        yields a complex value from a hand-rolled sqrt) and it would sit in
+        the recorded reference ideal for every downstream reader — 5.5's
+        comparison modes, any future metric — not just this one. Bell and
+        GHZ never exposed it because their exact rational amplitudes land
+        on clean zeros; QASMBench circuits do not. So we clamp at the
+        SOURCE: any |p| below `_DUST` is treated as zero and dropped, the
+        same outcome the old `p == 0` meant to produce. The threshold is
+        nine orders of magnitude above the observed residue and far below
+        any physically meaningful probability, so it removes numerical dust
+        without touching real mass. No renormalisation: the surviving
+        probabilities already sum to 1.0 within 1e-15, and dividing would
+        add a second numerical operation to reason about for no gain.
         '''
         out = {}
         for index, p in enumerate(probs):
-            if p == 0:
+            if abs(p) < IBMSimulatedProvider._DUST:
                 continue
             bits = ["0"] * width
             for qubit, clbit in measure_map:
