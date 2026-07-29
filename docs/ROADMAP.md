@@ -155,14 +155,23 @@ above once Phase 5 ships:
   before that suite exists) and the **comparison modes** to 5.5b (they
   present comparison results, so they follow the matrix and sweep engine
   they read from rather than preceding it).
-- **5.4 — workload suite and fidelity** 🔭 QASMBench, a noiseless
-  reference run for the circuits without a closed-form ideal, and the
-  **fidelity metric** built on it (Hellinger/TVD against the ideal or the
-  reference run). The frontend blocker is **resolved**: the `qasm2` parser
-  keeps gate parameters and both providers now honour real measurement, so
-  parameterised QASMBench circuits parse, run, and yield the measured-bit
-  distributions fidelity compares. What remains is the suite, the
-  reference-run machinery, and the metric itself.
+- **5.4 — noiseless reference run and fidelity** ◐ The reference-run
+  machinery and the **fidelity metric** are **done**: a reference-capable
+  provider produces each circuit's exact noiseless ideal
+  (`BaseProvider.reference_ideal`, implemented by `IBMSimulatedProvider`
+  via a density-matrix Aer path), the runner records ideals keyed by
+  circuit hash, and `fidelity()` computes Hellinger fidelity (matching
+  QOS's Qiskit definition) and TVD per job and per session — offline,
+  pure, and covered by the `fidelity` test block and eleven mutation
+  tests (see [`METRICS.md`](METRICS.md), [`TEST_BLOCKS.md`](TEST_BLOCKS.md),
+  [`MUTATION_TESTING.md`](MUTATION_TESTING.md)). The frontend blocker was
+  resolved earlier: the `qasm2` parser keeps gate parameters and both
+  providers honour real measurement, so parameterised circuits parse, run,
+  and yield the measured-bit distributions fidelity compares. **Remaining
+  before 5.5**: assembling the QASMBench workload set and running it
+  through the finished metric to gather numbers — a validation activity on
+  DevQ's machinery, not a change to it (QASMBench is workload data, cited
+  in [`REFERENCES.md`](REFERENCES.md), not a DevQ component).
 - **5.5a — comparison matrix and α/β sweep** 🔭 the cross-config
   analysis engine: run the matrix, and answer an α/β weight sweep from one
   recorded run via the per-candidate route scores (enhancing `explain()`

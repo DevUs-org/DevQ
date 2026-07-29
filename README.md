@@ -197,10 +197,11 @@ together they are the authoritative description of DevQ.
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | The four-level config cascade, key scopes, seeding and reproducibility, and the components DevQ ships with |
 | [`docs/REGISTRY.md`](docs/REGISTRY.md) | Plugin author reference — registering your own scheduler, allocator, router or provider, and declaring its configuration |
 | [`docs/COST_MODEL.md`](docs/COST_MODEL.md) | Formal statement of the block cost `S` and the router's device score, with notation and worked values |
-| [`docs/METRICS.md`](docs/METRICS.md) | Metrics computed from a completed run — throughput and queue latency so far, with definitions and the offline/reproducibility rules |
+| [`docs/METRICS.md`](docs/METRICS.md) | Metrics computed from a completed run — throughput, queue latency, utilisation, rejection rate, load imbalance and fidelity, with definitions and the offline/reproducibility rules |
 | [`docs/TEST_BLOCKS.md`](docs/TEST_BLOCKS.md) | Sanity test plan — what each block checks and why; run it with `python run_tests.py` |
 | [`docs/MUTATION_TESTING.md`](docs/MUTATION_TESTING.md) | Whether those tests would catch a regression — mutants run, results, and the gaps they found |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | What each development phase delivered, and what the remaining phases are for |
+| [`docs/REFERENCES.md`](docs/REFERENCES.md) | External works DevQ cites or builds on — papers, dependencies, benchmark suites, data provenance, and citation keys |
 | [`AGENTS.md`](AGENTS.md) | Orientation for AI coding assistants — task-oriented routing into the documents above |
 
 ---
@@ -220,3 +221,24 @@ documentation, and figure preparation; GPT-5.5 (OpenAI) for architecture
 refinement and design brainstorming; and Gemini 3.5 Flash (Google) for
 literature search. All designs, AI-assisted code, and text were reviewed,
 tested, and validated by the author, who takes sole responsibility for the
+content and correctness of this project.
+
+## Trademarks & attribution
+
+DevQ is an independent, unaffiliated research project. "IBM", "Qiskit",
+"IBM Quantum", and the device and backend names it references (Nairobi,
+Lagos, Sherbrooke, Eagle, Heron, Falcon, and others) are trademarks or
+product names of their respective owners. DevQ's use of these names is
+**nominative** — it accurately identifies the open-source tooling it
+builds on and the origin of the calibration data it uses — and does not
+imply endorsement, affiliation, or partnership. The provider identifier
+`ibm.simulated` names a data source, not a relationship.
+
+The IBM-simulated provider uses historical device snapshots via the
+open-source `qiskit-ibm-runtime` fake backends; its noisy results reflect
+a **pinned past calibration snapshot**, not live hardware. DevQ depends on
+Qiskit, Qiskit Aer, qiskit-ibm-runtime, NetworkX, and the OpenQASM 2.0
+language, and draws benchmark circuits from QASMBench. Full citations,
+data provenance, and the license-and-trademark obligations to verify
+before publication or release are collected in
+[`docs/REFERENCES.md`](docs/REFERENCES.md).

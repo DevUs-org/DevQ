@@ -14,10 +14,10 @@ Notation follows [`COST_MODEL.md`](COST_MODEL.md). The two-clock model
 **Status.** Throughput, queue latency, utilisation, rejection rate and
 load imbalance are specified below and implemented in
 `benchmark/metrics.py`, verified by the `metrics` test block — the five
-offline metrics that close Phase 5.3. Fidelity, the sixth metric, is
-Phase 5.4 work: it compares measured-bit distributions against an ideal
-or a noiseless reference run, and that reference machinery lands with the
-5.4 workload suite. It is specified and implemented there, not here.
+offline metrics that closed Phase 5.3. Fidelity, the sixth metric, is
+specified below and implemented alongside them, verified by the
+`fidelity` test block — the Phase 5.4 metric that compares each job's
+measured-bit distribution against its circuit's noiseless ideal.
 
 ---
 
@@ -28,10 +28,18 @@ or a noiseless reference run, and that reference machinery lands with the
 Metrics are computed **offline** from a finished run: either the JSONL
 log in a run directory, or an in-memory `RecordSink` from the same
 session. Nothing here runs during execution or touches the kernel; the
-layer is a read-only pass over the logged artifact. Every metric below is
-derived from the closing `summary` record — mostly its per-job rows, and
-for load balance also its `devices_attached` roster — so none requires a
-change to the execution path, and each reads a single record type.
+layer is a read-only pass over the logged artifact. The five timing and
+counting metrics are each derived from the closing `summary` record —
+mostly its per-job rows, and for load balance also its
+`devices_attached` roster — so each reads a single record type and none
+requires a change to the execution path. **Fidelity is the exception**:
+it joins three record types (the `summary` per-job rows, the `resolve`
+records carrying measured counts and each job's circuit hash, and the
+`reference` records carrying ideals), because a measured-vs-ideal
+comparison needs data the summary alone does not hold. It remains a
+**pure, offline read** — no execution, no simulation, no qiskit — which
+is the invariant that actually matters; "one record type" was a property
+of the timing metrics, not a requirement of the layer.
 
 ### The two clocks
 
@@ -310,3 +318,102 @@ spread, so CV is `0` and load_balance `1.0` — one device cannot be
 imbalanced. When there is no load to spread (every job rejected, so the
 per-device mean is zero), CV is undefined and both `cv` and
 `load_balance` are `None`, not `0`.
+
+---
+
+## Fidelity
+
+Input: the `summary` per-job rows, the `resolve` records (measured counts
++ each job's `circuit_hash`), and the `reference` records (ideals keyed by
+`circuit_hash`). See the Foundations note — fidelity is the one metric
+that joins across record types.
+
+How close each job's measured distribution came to its circuit's
+noiseless ideal. This is the metric that decides whether a scheduling or
+allocation win preserved answer quality rather than trading correctness
+for speed: a policy that finishes faster but on noisier qubits can post a
+better throughput and a *worse* fidelity, and only this metric exposes
+that.
+
+### The ideal
+
+The ideal is a circuit's distribution on a perfect, noiseless machine —
+what the measured distribution is compared against. It is computed by a
+**reference-capable provider** (`BaseProvider.reference_ideal`), which a
+provider overrides if it can faithfully simulate a circuit noiselessly;
+`IBMSimulatedProvider` does, via a **noiseless Aer density-matrix**
+simulation reading exact probabilities. Density-matrix, not statevector,
+because it honours mid-circuit `reset` — a non-unitary operation whose
+post-reset reduced state can be *mixed* (a reset after entanglement leaves
+the partner qubit in a classical mixture), which a pure statevector cannot
+represent.
+
+Two properties make the ideal a clean artifact. It is **exact** (read from
+the density matrix, not sampled), so it carries no sampling noise and no
+reference seed to pin — `metrics.json` stays byte-reproducible. And it is
+a **property of the circuit, not the job or device**: one reference-capable
+provider computes it once per distinct circuit for the whole run, keyed by
+a content hash of the circuit (see `benchmark/reference.circuit_hash`), so
+two jobs running the same circuit on different devices share one ideal and
+their fidelities are comparable. The run records one `reference` record per
+distinct circuit; a provider that cannot simulate a given circuit
+contributes no ideal for it.
+
+When no reference-capable provider ran (for example a `devq.simulated`-only
+session, whose uniform mock has no meaningful ideal), no ideals are
+recorded and fidelity is uniformly `None` — an honest undefined, not a
+fabricated score.
+
+### The distance measures
+
+Two are reported per job, because they answer slightly different questions
+and together guard against a formula slip. Full attribution in
+[`REFERENCES.md`](REFERENCES.md).
+
+**Hellinger fidelity** `[Qiskit-HF]` — the headline number. From the
+Hellinger distance `[Hellinger]`
+
+$$H(P, Q) = \frac{1}{\sqrt 2}\sqrt{\sum_k (\sqrt{p_k} - \sqrt{q_k})^2}$$
+
+the fidelity is $(1 - H^2)^2$, in $[0, 1]$ with **higher better** (`1.0`
+identical). This is exactly Qiskit's `hellinger_fidelity`, which is the
+definition QOS `[QOS]` reports — DevQ matches it so a cross-system
+comparison is like-for-like, and the `fidelity` test asserts DevQ's value
+equals Qiskit's on shared inputs (DevQ computes it from the formula
+directly, never importing Qiskit into this pure layer). Hellinger is well
+defined on **differing support**, which is why it suits GHZ-like circuits
+`[GHZ-rationale]`: the ideal concentrates on two bitstrings while the noisy
+result smears across many, and Hellinger accounts for the zero-probability
+outcomes classical fidelity neglects.
+
+**Total variation distance** `[TVD]` — the companion.
+
+$$\text{TVD}(P, Q) = \frac{1}{2}\sum_k |p_k - q_k|$$
+
+in $[0, 1]$ with **lower better** (`0` identical). Reported alongside
+Hellinger because it is trivially checkable by hand (the "probability mass
+in the wrong bucket") and is a numerically distinct quantity on the same
+inputs — so the two together catch a swapped or square-dropped formula
+that a single measure could not.
+
+Both treat a key present in one distribution and absent in the other as
+probability `0` there; measured and ideal keys align directly because both
+are Option-B-width bitstrings rendered the same way (the reference
+marginalises through the same measure map the run measured with, so a
+measured `001` and an ideal `001` denote the same classical bits).
+
+### Population rule and reporting
+
+A job has a fidelity only if it **both** produced measured counts
+(finished, non-empty) **and** has a recorded ideal for its circuit. A
+rejected job (no counts), a failed job (empty counts), and a job whose
+circuit had no reference ideal are each **skipped** — per-job fidelity
+`None`, and left out of the session aggregate, never folded in as `0`. A
+`0` would be a lie: it means "measured, and maximally wrong", the opposite
+of "never measured".
+
+Reported like the other distributional metrics — **per job** (each job's
+`hellinger` and `tvd`, so the circuits that degraded are visible) and as a
+**session distribution** (`min`, `median`, `mean`, `max`, `p95`) over the
+qualifying jobs, using the same nearest-rank p95 convention as queue
+latency. When no job qualifies, every aggregate field is `None`.
