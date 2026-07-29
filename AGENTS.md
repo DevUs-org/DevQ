@@ -52,6 +52,7 @@ lets them run as plugins in one system on identical workloads.
 | `benchmark/workloads/` | Runnable example specs, also used as test fixtures — see `docs/WORKLOADS.md` |
 | `test_results/` | Output of those specs from the last test run, kept for inspection. Gitignored, overwritten, safe to delete |
 | `verify_local.py` | Run on YOUR machine: interactive shell, readline backend, real concurrency, pinned values |
+| `research/` | Paper/benchmark tooling built ON DevQ, not part of it — QASMBench fidelity runner, its workload spec, and the vendored circuits. Run as a module (`python -m research.run_qasmbench_small`). Tagged `Research`, outside the test suite |
 | `docs/` | All reference documentation |
 
 Documentation, all under `docs/`:
@@ -379,7 +380,11 @@ Blocks record *what they proved*, not merely that they passed. Use
 ## Conventions
 
 - **Docstrings use `'''`** and open with a `Tags:` line. Existing tag
-  values: `Main`, `Provider`, `Alt`, `Default`. Do not invent new ones.
+  values: `Main`, `Provider`, `Alt`, `Default`, and `Research` — the last
+  for paper/benchmark tooling that *uses* DevQ but is not part of it (the
+  `research/` package: its `__init__.py` and `run_qasmbench_small.py`),
+  distinguishing it from `Main` entry points into the system itself. Do
+  not invent new ones beyond these.
 - **Comments explain *why*, not *what*.** The codebase documents
   reasoning and rejected alternatives; match that.
 - **`LABEL` on a component** is its display name in `qconfig`. Without

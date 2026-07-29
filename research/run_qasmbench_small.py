@@ -1,5 +1,5 @@
 '''
-Tags: Main
+Tags: Research
 
 run_qasmbench_small.py — QASMBench fidelity validation for the paper.
 
