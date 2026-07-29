@@ -9,8 +9,10 @@ per-circuit table plus a session summary. It is PAPER TOOLING: it *uses*
 DevQ, it does not test it. That is why it lives here and not as a block in
 run_tests.py — run_tests.py verifies DevQ's own behaviour, and a benchmark
 sweep whose numbers depend on a pinned calibration snapshot is a different
-kind of thing. It is also why the spec lives under paper/qasmbench/ rather
-than benchmark/workloads/, which run_tests.py auto-enumerates as fixtures.
+kind of thing. It is also why everything here lives under the research/
+package — spec, vendored circuits, and this runner together — rather than
+in benchmark/workloads/, which run_tests.py auto-enumerates as fixtures and
+would run on every suite invocation.
 
 WHAT IT VALIDATES ANYWAY. Running real benchmark circuits exercises the
 lowering, the reference path, and fidelity end-to-end on distributions the
@@ -21,10 +23,19 @@ inside clean amplitudes. So while this is not a DevQ test, it is a genuine
 integration check, and worth re-running when the lowering or reference
 path changes.
 
-HOW TO RUN.
+HOW TO RUN. This lives in the research/ package and imports DevQ's
+top-level packages (benchmark, providers). Run it as a module with -m
+from the repo root, so the root is on sys.path and the imports resolve:
 
-    python run_qasmbench_small.py                 # full sweep
-    python run_qasmbench_small.py --circuit qft_n4  # one circuit, by label
+    python -m research.run_qasmbench_small                 # full sweep
+    python -m research.run_qasmbench_small --circuit qft_n4  # one circuit
+
+Running it as a plain script (python research/run_qasmbench_small.py) will
+NOT work: that puts research/ on sys.path instead of the repo root, so
+`from benchmark import ...` fails with ModuleNotFoundError. Use -m.
+
+The spec path and the vendored-circuit paths are anchored to this file's
+location, so the circuits resolve regardless.
 
 ibm.simulated is registered here exactly as example.py does it — it is not
 a DevQ built-in, so add_device() would refuse a device from an
@@ -46,16 +57,28 @@ import argparse
 import json
 import os
 
-from ..benchmark import runner as R
-from ..benchmark import metrics as M
-from ..providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+from benchmark import runner as R
+from benchmark import metrics as M
+from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
-SPEC = "./workloads/qasmbench_small.json"
+# Anchor paths to THIS file, not the caller's working directory. The spec
+# lives beside this script under research/workloads/; the circuit paths
+# INSIDE the spec are written relative to the repo root (that is where
+# load_spec -> frontend.parse opens them from). So we resolve the spec
+# absolutely from here, and run with the repo root as the working
+# directory, which makes `python -m research.run_qasmbench_small` behave
+# identically no matter where it is launched from.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_HERE)
+SPEC = os.path.join(_HERE, "workloads", "qasmbench_small.json")
 SEED = 42
 
 
 def _run(out_dir):
     '''Run the spec with ibm.simulated registered; return the JSONL path.'''
+    # Circuit paths in the spec are repo-root-relative; ensure that is the
+    # cwd so they resolve wherever this module was launched from.
+    os.chdir(_REPO_ROOT)
     R.run(
         SPEC,
         out_dir=out_dir,
@@ -124,7 +147,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run QASMBench small-scale circuits through DevQ fidelity.")
     parser.add_argument(
-        "--out", default="results/qasmbench_small",
+        "--out", default="research/results/qasmbench_small",
         help="output directory for the JSONL log (default: results/qasmbench_small)")
     parser.add_argument(
         "--circuit", default=None,

@@ -36,181 +36,181 @@
     },
     "jobs": [
         {
-            "circuit": "test_circuits/qasmbench/deutsch_n2.qasm",
+            "circuit": "research/circuits/qasmbench/small/deutsch_n2.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/dnn_n2.qasm",
+            "circuit": "research/circuits/qasmbench/small/dnn_n2.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/grover_n2.qasm",
+            "circuit": "research/circuits/qasmbench/small/grover_n2.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/iswap_n2.qasm",
+            "circuit": "research/circuits/qasmbench/small/iswap_n2.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/quantumwalks_n2.qasm",
+            "circuit": "research/circuits/qasmbench/small/quantumwalks_n2.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/basis_change_n3.qasm",
+            "circuit": "research/circuits/qasmbench/small/basis_change_n3.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/fredkin_n3.qasm",
+            "circuit": "research/circuits/qasmbench/small/fredkin_n3.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/linearsolver_n3.qasm",
+            "circuit": "research/circuits/qasmbench/small/linearsolver_n3.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/qaoa_n3.qasm",
+            "circuit": "research/circuits/qasmbench/small/qaoa_n3.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/teleportation_n3.qasm",
+            "circuit": "research/circuits/qasmbench/small/teleportation_n3.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/toffoli_n3.qasm",
+            "circuit": "research/circuits/qasmbench/small/toffoli_n3.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/wstate_n3.qasm",
+            "circuit": "research/circuits/qasmbench/small/wstate_n3.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/adder_n4.qasm",
+            "circuit": "research/circuits/qasmbench/small/adder_n4.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/basis_trotter_n4.qasm",
+            "circuit": "research/circuits/qasmbench/small/basis_trotter_n4.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/bell_n4.qasm",
+            "circuit": "research/circuits/qasmbench/small/bell_n4.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/cat_state_n4.qasm",
+            "circuit": "research/circuits/qasmbench/small/cat_state_n4.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/hs4_n4.qasm",
+            "circuit": "research/circuits/qasmbench/small/hs4_n4.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/qft_n4.qasm",
+            "circuit": "research/circuits/qasmbench/small/qft_n4.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/qrng_n4.qasm",
+            "circuit": "research/circuits/qasmbench/small/qrng_n4.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/variational_n4.qasm",
+            "circuit": "research/circuits/qasmbench/small/variational_n4.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/vqe_n4.qasm",
+            "circuit": "research/circuits/qasmbench/small/vqe_n4.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/error_correctiond3_n5.qasm",
+            "circuit": "research/circuits/qasmbench/small/error_correctiond3_n5.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/lpn_n5.qasm",
+            "circuit": "research/circuits/qasmbench/small/lpn_n5.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/pea_n5.qasm",
+            "circuit": "research/circuits/qasmbench/small/pea_n5.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/qec_en_n5.qasm",
+            "circuit": "research/circuits/qasmbench/small/qec_en_n5.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/qaoa_n6.qasm",
+            "circuit": "research/circuits/qasmbench/small/qaoa_n6.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/simon_n6.qasm",
+            "circuit": "research/circuits/qasmbench/small/simon_n6.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/sat_n7.qasm",
+            "circuit": "research/circuits/qasmbench/small/sat_n7.qasm",
             "no_exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/qpe_n9.qasm",
+            "circuit": "research/circuits/qasmbench/small/qpe_n9.qasm",
             "exec_on": [
                 "kolkata"
             ]
         },
         {
-            "circuit": "test_circuits/qasmbench/adder_n10.qasm",
+            "circuit": "research/circuits/qasmbench/small/adder_n10.qasm",
             "exec_on": [
                 "kolkata"
             ]
