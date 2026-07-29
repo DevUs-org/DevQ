@@ -38,6 +38,7 @@ Usage:
 '''
 
 from providers.base_provider import BaseProvider
+from providers.ibm.qiskit_lowering import build_qiskit_circuit
 from hardware.device import QuantumDevice
 
 
@@ -160,7 +161,7 @@ class IBMSimulatedProvider(BaseProvider):
         '''
         try:
             from qiskit_aer import AerSimulator
-            from qiskit import QuantumCircuit, transpile
+            from qiskit import transpile
         except ImportError:
             from circuits.execution_result import ExecutionResult, ExecutionFuture
             return ExecutionFuture(ExecutionResult(
@@ -200,8 +201,6 @@ class IBMSimulatedProvider(BaseProvider):
 
         def _run():
             try:
-                num_virtual = circuit.num_qubits
-
                 # Classical-register width (Option B): the DECLARED creg
                 # width, so a measured bit sits at its own index and the
                 # bitstring position IS the classical-bit index — no side
@@ -209,30 +208,19 @@ class IBMSimulatedProvider(BaseProvider):
                 # bits stay 0. Falls back to the qubit count when no creg
                 # is declared. Computed by the shared BaseProvider helper
                 # so the rule stays identical across providers.
-                has_measures = any(i["op"] == "measure"
-                                   for i in circuit.instructions)
                 num_clbits = self._counts_width(circuit)
-                qc = QuantumCircuit(num_virtual, num_clbits)
 
-                # Walk the ordered stream, honouring each op in source
-                # position — so a reset lands where the circuit put it,
-                # relative to the gates around it, not lumped at the end.
-                for inst in circuit.instructions:
-                    op = inst["op"]
-                    if op == "gate":
-                        self._add_gate(qc, inst["gate"].lower(),
-                                       inst["qubits"], inst.get("params", []))
-                    elif op == "measure":
-                        qc.measure(inst["qubit"], inst["clbit"])
-                    elif op == "reset":
-                        qc.reset(inst["qubit"])
-
-                # Explicit-with-implicit-fallback: honour the circuit's own
-                # measures; if it has none, measure every qubit into the
-                # matching classical bit (the historical behaviour, and what
-                # most tools do for an unmeasured circuit).
-                if not has_measures:
-                    qc.measure(range(num_virtual), range(num_virtual))
+                # Lower via the shared builder so this measured run and the
+                # noiseless reference (reference_ideal) walk the circuit
+                # through identical code — a gate, reset-ordering, or width
+                # difference between them would break a fidelity comparison
+                # silently. The builder returns the gate/reset body plus the
+                # RESOLVED measure map (explicit measures, or the
+                # measure-all fallback); execute bakes those measures in to
+                # sample the classical register.
+                qc, measure_map = build_qiskit_circuit(circuit, num_clbits)
+                for q, c in measure_map:
+                    qc.measure(q, c)
 
                 # Pin Aer's internal parallelism. Left unset, Aer sizes
                 # its thread pool from the CPU count and each thread
@@ -383,27 +371,114 @@ class IBMSimulatedProvider(BaseProvider):
         except Exception:
             return None
 
-    def _add_gate(self, qc, gate, qubits, params):
-        '''Map CircuitRep gate names to Qiskit QuantumCircuit methods.'''
-        gate_map = {
-            'h':    lambda: qc.h(qubits[0]),
-            'x':    lambda: qc.x(qubits[0]),
-            'y':    lambda: qc.y(qubits[0]),
-            'z':    lambda: qc.z(qubits[0]),
-            's':    lambda: qc.s(qubits[0]),
-            't':    lambda: qc.t(qubits[0]),
-            'sx':   lambda: qc.sx(qubits[0]),
-            'cx':   lambda: qc.cx(qubits[0], qubits[1]),
-            'cz':   lambda: qc.cz(qubits[0], qubits[1]),
-            'ecr':  lambda: qc.ecr(qubits[0], qubits[1]),
-            'swap': lambda: qc.swap(qubits[0], qubits[1]),
-            'rz':   lambda: qc.rz(params[0], qubits[0]),
-            'rx':   lambda: qc.rx(params[0], qubits[0]),
-            'ry':   lambda: qc.ry(params[0], qubits[0]),
-            'ccx':  lambda: qc.ccx(qubits[0], qubits[1], qubits[2]),
-        }
-        action = gate_map.get(gate)
-        if action:
-            action()
-        else:
-            print(f"[IBMSimulatedProvider] Warning: unknown gate '{gate}', skipping.")
+    # ── reference ideal (the noiseless yardstick fidelity compares to) ──
+
+    def reference_ideal(self, circuit):
+        '''
+        The IDEAL measured-bit distribution for a circuit — what a perfect,
+        noiseless machine would produce — as {bitstring: probability} at
+        Option-B classical width.
+
+        This is the noiseless yardstick the fidelity metric compares a
+        real noisy run against. It is a property of the CIRCUIT, not of any
+        device: the same circuit has one ideal regardless of which backend
+        ran it, which is exactly what makes a cross-device fidelity
+        comparison meaningful. A capable provider offers this so the
+        shipped, vendor-neutral reference orchestrator can obtain ideals
+        without DevQ core depending on any provider — the default on
+        BaseProvider declines (returns None), and this override supplies
+        the Qiskit-backed answer.
+
+        HOW THE IDEAL IS COMPUTED. The circuit's gate/reset body is lowered
+        by the SAME shared builder execute() uses — so the ideal and the
+        measured run cannot lower differently — and run on a NOISELESS Aer
+        density-matrix simulation. We read EXACT probabilities
+        (save_probabilities), not sampled counts: an exact ideal has no
+        sampling noise and no reference seed to pin, so metrics.json stays
+        byte-reproducible. Density-matrix (not statevector) is used because
+        it honours mid-circuit reset, a non-unitary op statevector
+        evolution cannot represent.
+
+        MARGINALISATION. Aer returns probabilities over ALL qubit basis
+        states, little-endian in qubit index. Fidelity compares
+        classical-register bitstrings, so we fold those qubit
+        probabilities down onto the classical register using the SAME
+        resolved measure map the measured run used (`measure q -> c[j]`
+        places qubit q's outcome at clbit j). A qubit measured onto clbit j
+        contributes its value to position j of the classical string;
+        unmeasured classical bits stay 0. This is the step where a naive
+        "just use qubit order" implementation goes silently wrong on a
+        circuit whose qubit and clbit indices differ, so the map is
+        authoritative, not the qubit order.
+
+        Args:
+            circuit : CircuitRep
+
+        Returns:
+            dict {bitstring: probability} summing to 1 over the classical
+            register, or None if the Qiskit/Aer path is unavailable (the
+            same honest degrade the execute path uses when qiskit-aer is
+            missing).
+        '''
+        try:
+            from qiskit_aer import AerSimulator
+        except ImportError:
+            return None
+
+        from providers.ibm.qiskit_lowering import (
+            build_qiskit_circuit, resolve_measure_map)
+
+        width = self._counts_width(circuit)
+
+        # Same lowering as execute(): gate/reset body, no measures baked
+        # in. The reference reads probabilities off the unmeasured state
+        # and marginalises, so it must NOT measure into the circuit.
+        qc, measure_map = build_qiskit_circuit(circuit, width)
+        qc.save_probabilities()
+
+        sim = AerSimulator(
+            method                   = "density_matrix",
+            max_parallel_threads     = 1,
+            max_parallel_experiments = 1,
+            max_parallel_shots       = 1,
+        )
+        result = sim.run(qc, shots=1).result()
+        probs = result.data(0)["probabilities"]
+
+        return self._marginalise(probs, measure_map, width,
+                                  circuit.num_qubits)
+
+    @staticmethod
+    def _marginalise(probs, measure_map, width, num_qubits):
+        '''
+        Fold full-qubit probabilities onto the classical register.
+
+        `probs` is indexed by the integer whose bit q (little-endian) is
+        qubit q's value. For each basis index with non-zero probability,
+        read each measured qubit's bit and place it at its clbit position
+        to form the classical bitstring, then accumulate the probability
+        under that string. Unmeasured classical bits stay 0.
+
+        Kept as pure arithmetic (no qiskit) and separate from the sim call
+        so a test can hand it a synthetic probability vector and a map and
+        assert exact numbers — the marginalisation is where a wrong index
+        mapping hides, so it is the piece worth isolating and pinning.
+
+        Bitstrings follow the Qiskit convention: position 0 of the STRING
+        is the highest clbit index (c[width-1] … c[0]), so a measured bit
+        at clbit j sits `width-1-j` characters from the left — matching how
+        get_counts() renders the same register, so measured and ideal keys
+        align character-for-character.
+        '''
+        out = {}
+        for index, p in enumerate(probs):
+            if p == 0:
+                continue
+            bits = ["0"] * width
+            for qubit, clbit in measure_map:
+                qubit_val = (index >> qubit) & 1
+                # Qiskit renders clbit j at string position width-1-j.
+                bits[width - 1 - clbit] = str(qubit_val)
+            key = "".join(bits)
+            out[key] = out.get(key, 0.0) + float(p)
+        return out

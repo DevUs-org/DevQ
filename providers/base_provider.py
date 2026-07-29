@@ -207,6 +207,38 @@ class BaseProvider(ABC):
         '''
         return circuit.num_clbits or circuit.num_qubits
 
+    def reference_ideal(self, circuit):
+        '''
+        The IDEAL, noiseless measured-bit distribution for a circuit —
+        {bitstring: probability} at the Option-B classical width — or None
+        if this provider cannot produce one.
+
+        This is the yardstick the fidelity metric compares a real noisy run
+        against. It is an OPTIONAL capability: the ideal is a property of
+        the circuit, not of any device, and computing it means simulating
+        the circuit noiselessly, which not every provider can do. The
+        default declines by returning None — a provider whose "execution"
+        is a uniform mock (DevQSimulatedProvider) has no meaningful ideal
+        to offer and correctly inherits this default, so it is never used
+        as a reference. A provider that CAN simulate the circuit faithfully
+        (IBMSimulatedProvider, via a noiseless Aer path) overrides this.
+
+        The shipped, vendor-neutral reference orchestrator asks a capable
+        provider for ideals through this method, so DevQ core obtains them
+        without depending on any particular provider — the same inversion
+        the rest of the provider contract uses. When no attached provider
+        implements it, fidelity has no ideal to compare against and is
+        reported as None (the population rule: undefined, never a fake 0).
+
+        Args:
+            circuit : CircuitRep
+
+        Returns:
+            dict {bitstring: probability} over the classical register, or
+            None if unsupported.
+        '''
+        return None
+
     def preferred_config(self) -> dict:
         '''
         Override to express provider-level configuration preferences.
