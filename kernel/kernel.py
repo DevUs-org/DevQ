@@ -308,6 +308,7 @@ class Kernel:
                            state   = qcb.state.value,
                            success = result.success,
                            counts  = result.counts,
+                           circuit_hash = qcb.circuit_hash,
                            error   = result.error)
             else:
                 still_pending.append(qcb)
@@ -350,6 +351,7 @@ class Kernel:
                            state   = qcb.state.value,
                            success = False,
                            counts  = None,
+                           circuit_hash = qcb.circuit_hash,
                            error   = qcb.result.error)
                 return
             time.sleep(poll_interval)

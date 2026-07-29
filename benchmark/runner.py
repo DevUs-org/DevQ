@@ -65,6 +65,7 @@ from kernel.events import JSONLSink, MultiSink, RecordSink
 from benchmark.spec import (load_spec, build_session,
                             submit_jobs, drain, SpecError)
 from circuits.execution_result import shutdown_executor
+from benchmark.reference import select_reference_provider, compute_ideals
 
 
 # Session outcomes recorded in the manifest. The distinction between
@@ -155,6 +156,36 @@ def _run_one(spec, config, out_dir, session_id, register_providers=None,
             jobs   = submit_jobs(shell, spec, session_id)
             cycles = drain(shell)
 
+            # ── reference ideals (the fidelity yardstick) ──────────────
+            # After the run, compute each distinct circuit's NOISELESS
+            # ideal and record it, so the fidelity metric (offline, pure)
+            # can join a job's measured counts to its circuit's ideal by
+            # hash without recomputing anything. The ideal is a property
+            # of the circuit, so one reference-capable provider computes
+            # all of them; the provider instances actually in play are the
+            # attached devices' providers. A run with no reference-capable
+            # provider (e.g. devq.simulated only) records no ideals, and
+            # fidelity is then reported as None — an honest undefined.
+            provider = select_reference_provider(
+                [ctx.device.provider for ctx in shell.kernel.contexts])
+            ideals = compute_ideals((j.circuit for j in jobs), provider)
+
+            # A hash -> human label map, sourced from the jobs' stamped
+            # labels (the spec path each circuit came from). Cosmetic: the
+            # hash is the join key; the label just makes the log readable.
+            hash_labels = {}
+            for j in jobs:
+                hash_labels.setdefault(j.circuit_hash, j.circuit_label)
+
+            # Emit one reference record per distinct circuit with an ideal.
+            for chash, data in ideals.items():
+                sink.emit({
+                    "event"       : "reference",
+                    "circuit_hash": chash,
+                    "ideal"       : data["ideal"],
+                    "label"       : hash_labels.get(chash),
+                })
+
             states = {}
             for job in jobs:
                 states[job.state.value] = states.get(job.state.value, 0) + 1
@@ -180,6 +211,7 @@ def _run_one(spec, config, out_dir, session_id, register_providers=None,
                     "job_id"        : j.job_id,
                     "state"         : j.state.value,
                     "device"        : j.device_index,
+                    "circuit_hash"  : j.circuit_hash,
                     "submitted_at"  : j.submitted_at,
                     "dispatched_at" : j.dispatched_at,
                     "resolved_at"   : j.resolved_at,

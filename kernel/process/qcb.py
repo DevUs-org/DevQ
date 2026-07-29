@@ -37,6 +37,21 @@ class QCB:
         # (sticky — a routed job is never re-routed).
         self.device_index = None
 
+        # An OPAQUE circuit-identity string, set by whoever submits the
+        # job (the benchmark layer computes a content hash; see
+        # benchmark/reference.circuit_hash). The kernel never computes or
+        # interprets it — it only stores it and echoes it on the resolve
+        # event, so the fidelity metric can join a job's measured counts
+        # to its circuit's recorded ideal without the kernel depending on
+        # the benchmark layer. None when no submitter stamped one (a bare
+        # kernel session that does not care about circuit identity).
+        self.circuit_hash = None
+
+        # An optional human-readable label for the circuit (its source
+        # path, when submitted from a spec) — cosmetic, for readable logs.
+        # Not an identity: the hash is the join key. None when unstamped.
+        self.circuit_label = None
+
         # Set when the job is classified REJECTED — a human-readable
         # reason string (router- or allocator-generated).
         self.reject_reason = None

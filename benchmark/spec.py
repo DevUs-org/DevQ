@@ -461,6 +461,7 @@ def submit_jobs(shell, spec, source="<spec>"):
     Returns the list of submitted QCBs.
     '''
     from frontends.resolver import resolve_frontend, FrontendResolutionError
+    from benchmark.reference import circuit_hash
 
     name_to_index = {ctx.name: ctx.index for ctx in shell.kernel.contexts
                      if ctx.name}
@@ -490,14 +491,25 @@ def submit_jobs(shell, spec, source="<spec>"):
                 return None
             return [name_to_index[d] for d in ids]
 
+        # Content hash of this circuit, stamped on every job that runs it
+        # so the fidelity metric can join a job's measured counts to its
+        # circuit's recorded ideal. Computed once per spec entry (the
+        # CircuitRep is parsed once and shared across repeats), not per
+        # job. The kernel stores it opaquely; the benchmark layer owns the
+        # hashing, keeping the kernel free of any dependency on this layer.
+        chash = circuit_hash(circuit)
+
         for _ in range(job.get("repeat", 1)):
-            submitted.append(shell.kernel.submit_job(
+            qcb = shell.kernel.submit_job(
                 circuit,
                 max_qubit_error = job.get("max_qubit_error"),
                 max_edge_error  = job.get("max_edge_error"),
                 exec_on         = indices("exec_on"),
                 no_exec_on      = indices("no_exec_on"),
-            ))
+            )
+            qcb.circuit_hash = chash
+            qcb.circuit_label = job["circuit"]
+            submitted.append(qcb)
 
     return submitted
 
