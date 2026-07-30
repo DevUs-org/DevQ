@@ -3359,10 +3359,173 @@ def block_router_scoring():
     picks = {r.select(qcb, contexts).index for _ in range(5)}
     check(len(picks) == 1, "repeated routing of identical input is deterministic")
 
+    # ── Sweep decomposition (Phase 5.5a) ──────────────────────────────────
+    # The α/β sweep re-weights the RAW per-candidate sums, so those sums
+    # must be logged AND correct — best_case_cost alone cannot be re-split
+    # into them. Pin the two sums directly; a swapped or mis-summed
+    # decomposition passes every check above (best_case_cost stays right
+    # by luck only if both are wrong compensatingly) but fails here.
+    detail, _ = scores_at(0.5, 0.5)
+    want_qsum = [(0, 0.097200), (1, 0.307800), (2, 0.108400)]
+    want_esum = [(0, 0.015577), (1, 0.037239), (2, 0.012674)]
+    got_qsum = [(d["device"], round(d["terms"]["qubit_error_sum"], 6))
+                for d in detail]
+    got_esum = [(d["device"], round(d["terms"]["edge_error_sum"], 6))
+                for d in detail]
+    check(got_qsum == want_qsum,
+          f"explain() records true qubit_error_sum {want_qsum}, got {got_qsum}")
+    check(got_esum == want_esum,
+          f"explain() records true edge_error_sum {want_esum}, got {got_esum}")
+
+    # The sweep's core invariant: α·Σq + β·Σe reproduces the weighted
+    # best_case_cost the router actually scored on. This is what lets a
+    # sweep recompute S at any ratio from the logged sums alone. Break the
+    # decomposition (drop α/β, swap the sums) and this diverges.
+    A, B = 0.1, 0.9
+    for d in detail:
+        recomposed = A * d["terms"]["qubit_error_sum"] + B * d["terms"]["edge_error_sum"]
+        # detail is at 0.5/0.5 weights but best_case_cost uses the router's
+        # OWN α/β (0.1/0.9 default), so recompose at those.
+        check(abs(recomposed - d["terms"]["best_case_cost"]) < 1e-9,
+              f"d{d['device']}: α·Σq+β·Σe reproduces best_case_cost")
+
+    # FAITHFULNESS ANCHOR. The unified contract means select(), explain()
+    # and the sweep all funnel through one path; the anchor proves it:
+    # replaying the logged terms at the router's own live params must
+    # reproduce the live routing decision. If it does not, the sweep would
+    # emit fiction, and this is the tripwire.
+    for wq, wn in ((0.5, 0.5), (0.9, 0.1), (0.1, 0.9), (0.0, 1.0)):
+        r = NoiseRouter(router_queue_weight=wq, router_noise_weight=wn)
+        report   = r.explain(qcb, contexts)
+        recorded = [(row["device"], row["terms"]) for row in report]
+        live     = r.select(qcb, contexts).index
+        replayed = r.sweep_decision(recorded, r.live_params())
+        check(replayed == live,
+              f"faithfulness anchor: sweep replay reproduces select() at "
+              f"w=({wq},{wn}) — live d{live}, replay d{replayed}")
+
+    # The sweep re-derives a DIFFERENT decision at different params from
+    # the SAME recorded run — the payoff. Re-weighting off one recording
+    # must match routing that recording live at the swept weights.
+    r = NoiseRouter(router_queue_weight=0.5, router_noise_weight=0.5)
+    recorded = [(row["device"], row["terms"])
+                for row in r.explain(qcb, contexts)]
+    for a in (0.0, 0.3, 0.7, 1.0):
+        params = {"router_queue_weight": 0.5, "router_noise_weight": 0.5,
+                  "qubit_error_weight": a, "edge_error_weight": 1 - a}
+        swept = r.sweep_decision(recorded, params)
+        live  = NoiseRouter(router_queue_weight=0.5, router_noise_weight=0.5,
+                            qubit_error_weight=a,
+                            edge_error_weight=1 - a).select(qcb, contexts).index
+        check(swept == live,
+              f"sweep from one recording matches live routing at α={a}: "
+              f"swept d{swept}, live d{live}")
+
     # A non-scoring router reports nothing rather than inventing scores.
     from kernel.router.round_robin_router import RoundRobinRouter
     check(RoundRobinRouter().explain(qcb, contexts) is None,
           "a router without scores returns None from explain()")
+
+
+def block_sweepable_contract():
+    '''The Sweepable contract derives explain/sweep for any component'''
+    # WHY A SYNTHETIC COMPONENT. router_scoring proves NoiseRouter works,
+    # but the unified contract's whole claim is that explain() and the
+    # sweep are derived IDENTICALLY for any Sweepable — router, allocator,
+    # scheduler alike. Testing that through NoiseRouter alone cannot
+    # separate "the contract is right" from "NoiseRouter is right". A
+    # minimal scoring double with hand-checkable numbers tests the
+    # CONTRACT: the base's derived explain_decision/sweep_decision, the
+    # not-scored default, and the faithfulness anchor — so the allocator
+    # and scheduler inherit machinery already proven here, not machinery
+    # first exercised three components deep.
+    from kernel.sweep import Sweepable, NOT_SCORED
+
+    # A scoring component: score(candidate) = w · value, lowest wins.
+    # Deliberately trivial and DISTINCT from any built-in (no
+    # normalisation, single term) so a pass cannot come from accidentally
+    # matching NoiseRouter's behaviour.
+    class ToyScorer(Sweepable):
+        def __init__(self, w):
+            self.w = w
+        def live_params(self):
+            return {"w": self.w}
+        def _sweep_terms(self, decision):
+            # decision is a dict {key: raw_value}
+            return [(k, {"value": v}) for k, v in decision.items()]
+        def _sweep_score(self, terms, params):
+            return params["w"] * terms["value"]
+        def _sweep_rank(self, scored, params):
+            # rank applies a +100 offset and exposes an enriched term, so
+            # the RANKED final differs from the raw _sweep_score output.
+            # This lets the block prove explain() reports the ranked final
+            # (via _sweep_rank), not the raw per-candidate score — a
+            # distinction a rank that merely echoed the score could not
+            # witness (that gap let a mutant survive).
+            return [(k, s + 100.0, dict(t, final=s + 100.0, ranked=True))
+                    for k, t, s in scored]
+
+    decision = {"a": 3.0, "b": 1.0, "c": 2.0}
+    toy = ToyScorer(w=2.0)
+
+    # explain_decision derives the report from the hooks THROUGH _sweep_rank:
+    # each candidate's ranked final (raw score + 100) with enriched terms.
+    report = toy.explain_decision(decision)
+    got = {r["key"]: r["score"] for r in report}
+    check(got == {"a": 106.0, "b": 102.0, "c": 104.0},
+          f"contract derives explain scores through _sweep_rank, got {got}")
+    check(all(r["terms"].get("ranked") for r in report),
+          "derived explain carries _sweep_rank's enriched terms")
+    check(all("value" in r["terms"] for r in report),
+          "derived explain carries the raw terms")
+
+    # sweep_decision picks argmin(final, key) from recorded terms — a pure
+    # replay. At w=2 the winner is b (lowest value), no re-running the
+    # decision path.
+    recorded = [(r["key"], r["terms"]) for r in report]
+    win = toy.sweep_decision(recorded, {"w": 2.0})
+    check(win == "b", f"sweep picks argmin from recorded terms, got {win}")
+
+    # FAITHFULNESS ANCHOR at the contract level: replay at live params
+    # reproduces what a live selection would choose. The toy's live choice
+    # is argmin of explain's scores.
+    live = min(report, key=lambda r: (r["score"], r["key"]))["key"]
+    check(toy.sweep_decision(recorded, toy.live_params()) == live,
+          "contract faithfulness: replay at live params matches live choice")
+
+    # The sweep yields a DIFFERENT decision at other params from the SAME
+    # recording — the payoff, tested without any component internals. The
+    # toy's score is monotone in w, so w flips nothing here; instead sweep
+    # a per-candidate reweighting by negating, which must flip the argmin
+    # to the largest value (a). Uses only the recorded terms.
+    flipped = toy.sweep_decision(recorded, {"w": -1.0})
+    check(flipped == "a",
+          f"sweep re-derives a different decision from one recording, got {flipped}")
+
+    # Tie-break: equal finals resolve to the lower key, deterministically.
+    tie = ToyScorer(w=0.0)  # every score 0
+    tie_report = tie.explain_decision(decision)
+    tie_recorded = [(r["key"], r["terms"]) for r in tie_report]
+    check(tie.sweep_decision(tie_recorded, {"w": 0.0}) == "a",
+          "contract tie-break resolves equal scores to the lower key")
+
+    # NOT-SCORED DEFAULT: a component that does not override the hooks is
+    # neither explainable nor sweepable — explain_decision returns None and
+    # is_sweepable is False, the honest outcome for a non-scoring policy.
+    class ToyBlind(Sweepable):
+        pass
+    blind = ToyBlind()
+    check(blind.explain_decision(decision) is None,
+          "a non-scoring component derives explain None")
+    check(blind.is_sweepable() is False,
+          "a non-scoring component reports not sweepable")
+    check(toy.is_sweepable() is True,
+          "a scoring component reports sweepable")
+
+    # NOT_SCORED is the sentinel _sweep_terms returns to opt out; confirm
+    # the default hook returns exactly it, so an override can compare.
+    check(Sweepable._sweep_terms(blind, decision) is NOT_SCORED,
+          "the default _sweep_terms returns the NOT_SCORED sentinel")
 
 
 def block_provider_registration_enforced():
@@ -4174,6 +4337,7 @@ BLOCKS = [
     ("metrics",                  block_metrics),
     ("fidelity",                 block_fidelity),
     ("router_scoring",           block_router_scoring),
+    ("sweepable_contract",       block_sweepable_contract),
     ("provider_registration",    block_provider_registration_enforced),
     ("device_identity",          block_device_identity),
     ("same_kind_isolation",      block_same_kind_device_isolation),

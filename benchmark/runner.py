@@ -252,27 +252,81 @@ def _run_one(spec, config, out_dir, session_id, register_providers=None,
     return entry
 
 
-def matrix_configs(dq=None):
+_MATRIX_KINDS = ("scheduler", "allocator", "router")
+
+
+def matrix_configs(dq=None, select=None):
     '''
     Every scheduler x allocator x router combination, derived from the
     registry rather than hardcoded — a registered plugin joins the
     matrix automatically, which is the point of Phase 5.6.
+
+    `select` narrows the matrix to named components per kind:
+
+        matrix_configs(select={"router": ["noise"],
+                               "scheduler": ["packing", "fcfs"]})
+
+    A kind listed in `select` contributes only its named components; a
+    kind ABSENT from `select` contributes all registered ones, so you
+    can pin just the router and let the other axes fan out fully.
+    `select=None` is the full cross-product — unchanged behaviour for
+    every existing caller.
+
+    Validation is loud and up front, never a silently-empty matrix: an
+    unknown component name, or a `select` key that is not one of the
+    three matrix kinds (a typo'd "routers"), raises with the legal set
+    listed. Silently dropping a misspelled kind would run the full
+    cross-product the caller was trying to narrow — the exact confusion
+    a benchmark run cannot afford.
+
+    Selected names are sorted regardless of the order given, because
+    session ids and --resume matching both depend on a stable session
+    ordering; caller list order is not preserved.
     '''
     probe = dq or DevQ()
+    select = select or {}
+
+    unknown_kinds = [k for k in select if k not in _MATRIX_KINDS]
+    if unknown_kinds:
+        raise SpecError(
+            f"matrix select names unknown kind(s) {sorted(unknown_kinds)}; "
+            f"the matrix varies {list(_MATRIX_KINDS)}"
+        )
+
+    chosen = {}
+    for kind in _MATRIX_KINDS:
+        registered = sorted(probe._registry.names(kind))
+        if kind not in select:
+            chosen[kind] = registered
+            continue
+        requested = list(select[kind])
+        unknown = [n for n in requested if n not in registered]
+        if unknown:
+            raise SpecError(
+                f"matrix select for {kind} names unknown component(s) "
+                f"{unknown}; registered {kind}s are {registered}"
+            )
+        chosen[kind] = sorted(set(requested))
+
     return [
         {"scheduler": s, "allocator": a, "router": r}
         for s, a, r in itertools.product(
-            sorted(probe._registry.names("scheduler")),
-            sorted(probe._registry.names("allocator")),
-            sorted(probe._registry.names("router")),
+            chosen["scheduler"],
+            chosen["allocator"],
+            chosen["router"],
         )
     ]
 
 
 def run(spec_path, out_dir=None, matrix=False, resume=False,
-        register_providers=None, quiet=False):
+        register_providers=None, quiet=False, select=None):
     '''
     Run a workload spec, optionally across the full component matrix.
+
+    `select` narrows which components the matrix ranges over — see
+    matrix_configs(). It only applies to a matrix run; naming components
+    implies a matrix, so a non-None select turns one on even if `matrix`
+    was not set explicitly.
 
     Returns the manifest dict. Writes one JSONL log per session plus
     manifest.json into out_dir.
@@ -284,7 +338,10 @@ def run(spec_path, out_dir=None, matrix=False, resume=False,
         out_dir = os.path.join("results", f"{spec['name']}_{stamp}")
     os.makedirs(out_dir, exist_ok=True)
 
-    configs = matrix_configs() if matrix else [None]
+    # Naming components is a matrix intent, so a select implies --matrix
+    # without the caller having to pass both.
+    matrix = matrix or select is not None
+    configs = matrix_configs(select=select) if matrix else [None]
 
     manifest_path = os.path.join(out_dir, "manifest.json")
     previous = {}
@@ -395,6 +452,22 @@ def main(argv=None):
                              "you are done with a run")
     parser.add_argument("--matrix", action="store_true",
                         help="run every scheduler x allocator x router combination")
+    # Repeatable per-kind narrowing. Naming any of these implies --matrix
+    # (a component list only means something for a matrix run), and a kind
+    # left unnamed fans out over everything registered for it. Pass a flag
+    # more than once to list several: --router noise --router round_robin.
+    parser.add_argument("--scheduler", action="append", dest="schedulers",
+                        metavar="NAME",
+                        help="limit the matrix's scheduler axis to this "
+                             "component (repeatable); implies --matrix")
+    parser.add_argument("--allocator", action="append", dest="allocators",
+                        metavar="NAME",
+                        help="limit the matrix's allocator axis to this "
+                             "component (repeatable); implies --matrix")
+    parser.add_argument("--router", action="append", dest="routers",
+                        metavar="NAME",
+                        help="limit the matrix's router axis to this "
+                             "component (repeatable); implies --matrix")
     parser.add_argument("--resume", action="store_true",
                         help="skip sessions this run directory records as "
                              "completed; a partially run session is re-run whole, "
@@ -402,9 +475,20 @@ def main(argv=None):
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
+    # Only the kinds actually named become select keys; an unnamed kind
+    # stays absent so matrix_configs() fans it out over all registered.
+    select = {}
+    if args.schedulers:
+        select["scheduler"] = args.schedulers
+    if args.allocators:
+        select["allocator"] = args.allocators
+    if args.routers:
+        select["router"] = args.routers
+    select = select or None
+
     try:
         manifest = run(args.spec, out_dir=args.out_dir, matrix=args.matrix,
-                       resume=args.resume, quiet=args.quiet)
+                       resume=args.resume, quiet=args.quiet, select=select)
     except SpecError as exc:
         print(f"[Spec error] {exc}", file=sys.stderr)
         return 2

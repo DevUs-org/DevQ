@@ -43,16 +43,16 @@ cannot.
 
 ## Results
 
-**125 distinct mutants, 122 killed, 3 excluded** (M10 equivalent, P7 and
+**131 distinct mutants, 128 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 114/112/2 from the prior
-state plus the 11 new unrunnable-circuit-detection mutants below (10
-killed — MC6 and SP3 after test blocks were strengthened for them — and
-CC1 inert), each verified by running the mutant against the affected
-block, not assumed. The 114/112/2 itself was 103/101/2 plus the 11
+The total is delta-consistent, not recounted: 125/122/3 from the prior
+state plus the 6 new Sweepable-contract-and-decomposition mutants below
+(all killed — MS-a after the `sweepable_contract` block was strengthened
+for it), each verified by running the mutant against the affected block,
+not assumed. The 125/122/3 itself was 114/112/2 plus the 11
 Fidelity mutants (all killed, FID11 after a fixture was added for it).
 Earlier deltas: 66/64/2 before the metrics layer, plus the 14 Metrics, 3
 Shell, 6 Frontend, 6 OpenQASM 2.0 parser, 6 measurement/execution, and 2
@@ -510,6 +510,42 @@ exact prose is not a behavioural contract). The reason is checked for the
 substring that carries meaning ("feedback"), not for its full text, so a
 cosmetic reword leaves the suite correctly green. Recorded, not counted as
 a gap.
+
+### Sweepable contract and cost decomposition — `kernel/sweep.py`, `kernel/router/noise_router.py`
+
+Phase 5.5a. The α/β sweep re-weights the raw per-candidate cost
+decomposition, and both the decomposition and the shared `Sweepable`
+machinery that derives `explain()`/sweep for every scoring component are
+mutation-checked. Six mutants, all killed; blocks `router_scoring` and
+`sweepable_contract`.
+
+- **M-a — swapped decomposition sums.** Returning `edge_cost, qubit_cost`
+  instead of `qubit_cost, edge_cost` from `_best_case_cost`. Killed by
+  `router_scoring`'s pinned `qubit_error_sum`/`edge_error_sum` — the
+  reason those sums are pinned to externally computed values and not
+  merely asserted present.
+- **M-b — dropped α/β weighting in `_sweep_score`.** Summing the raw sums
+  without weighting. Killed by the `α·Σq + β·Σe` reproduces
+  `best_case_cost` invariant and the sweep-matches-live checks.
+- **M-c — collapsed the router weight separation in `_sweep_rank`.**
+  `w_queue · p + w_queue · c` instead of `+ w_noise · c`. Killed by the
+  faithfulness anchor at asymmetric weights.
+- **MS-b — `min` → `max` in the base `sweep_decision`.** Killed by
+  `sweepable_contract`'s argmin-replay assertion.
+- **MS-c — base `explain_decision` ignores the `NOT_SCORED` sentinel**
+  (builds an empty report instead of returning `None`). Killed: a
+  non-scoring component reaching `_sweep_rank` raises, and the not-scored
+  `None` assertion catches it.
+
+**MS-a SURVIVED first, then drove a fixture change.** The mutant made the
+base `explain_decision` report the raw `_sweep_score` output instead of
+the ranked final from `_sweep_rank`. It survived because the original
+`ToyScorer` double's rank echoed the score unchanged, so raw and ranked
+were indistinguishable. Adding a `+100` rank offset to the double made the
+two witnessably different, and the mutant is now killed — the same
+survive-then-strengthen pattern as FID11 and the unrunnable-circuit
+mutants. A test double that does not differ observably from the code path
+it exercises cannot witness a mutation to that path.
 
 ---
 

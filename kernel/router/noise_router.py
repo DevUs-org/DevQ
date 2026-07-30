@@ -44,77 +44,121 @@ class NoiseRouter(BaseRouter):
     LABEL = "Noise Aware Router"
 
     def select(self, qcb, candidates):
-        scored = self._score_all(qcb, candidates)
-
-        # min() on (score, index, ctx): lowest score wins, ties break by
-        # lower device index — deterministic.
-        #
-        # NOTE: currently UNFALSIFIABLE. _candidates() yields contexts in
-        # index order and min() is stable, so removing the index term
-        # changes no observable behaviour; mutation testing confirms it.
-        # Kept because it makes the intent explicit and holds if a future
-        # candidate pipeline ever reorders. Do not write a test for it —
-        # such a test could not fail.
-        return min(scored, key=lambda t: (t[0], t[1]))[2]
-
-    def explain(self, qcb, candidates):
         '''
-        Report what select() scored, with the raw terms behind each score.
-
-        Shares _score_all() with select() rather than recomputing
-        independently, so the reported best candidate is the selected one
-        by construction. Recomputation costs about 0.05 ms per candidate
-        (one allocator dry-run), which is negligible beside execution —
-        caching would only add a staleness failure mode.
+        Route live by the SAME path a sweep replays: compute each
+        candidate's raw terms once, then score-and-select from them at the
+        router's live params. select(), explain_decision() and the sweep
+        driver therefore all funnel through _sweep_score/_sweep_rank and
+        cannot drift.
         '''
-        scored = self._score_all(qcb, candidates, with_terms=True)
-        return [
-            {"device": ctx.index, "score": score, "terms": terms}
-            for score, _idx, ctx, terms in scored
-        ]
+        decision = (qcb, candidates)
+        tagged   = self._sweep_terms(decision)          # [(index, terms), ...]
+        chosen   = self.sweep_decision(tagged, self.live_params())
+        return self._by_index[chosen]
 
-    def _score_all(self, qcb, candidates, with_terms=False):
+    # ── Sweepable hooks ───────────────────────────────────────────────────────
+
+    def live_params(self):
+        '''This router's live scoring parameters — the sweep anchor.'''
+        return {
+            "router_queue_weight": self.router_queue_weight,
+            "router_noise_weight": self.router_noise_weight,
+            "qubit_error_weight" : self.qubit_error_weight,
+            "edge_error_weight"  : self.edge_error_weight,
+        }
+
+    def _sweep_terms(self, decision):
         '''
-        Score every candidate. THE one scoring path — select() and
-        explain() both come through here so they cannot drift.
+        Per-candidate RAW terms for one routing decision, tagged by device
+        index. This is the expensive half — one allocator dry-run per
+        candidate — and it runs ONCE per live decision; the sweep re-scores
+        these recorded terms without repeating it.
 
-        Returns (score, index, ctx) tuples, or (score, index, ctx, terms)
-        when with_terms is set.
-
-        Scores are min-max normalised ACROSS THE CANDIDATE SET, so a
-        score is only meaningful relative to the others in the same
-        routing decision. That is why terms record the raw pressure and
-        cost alongside their normalised forms: raw values are comparable
-        across decisions and re-derivable under other weights, normalised
-        ones are not.
+        Records the α/β-free inputs to the noise cost (qubit_error_sum,
+        edge_error_sum) and the param-free queue pressure, which is exactly
+        what lets a sweep recompute the score at any weights from the log.
         '''
-        pressures = [self._queue_pressure(ctx) for ctx in candidates]
-        costs     = [self._best_case_cost(ctx, qcb) for ctx in candidates]
+        qcb, candidates = decision
+
+        # Stash the index -> ctx map so select() can resolve the winning
+        # key back to a context. Rebuilt each decision; never stale.
+        self._by_index = {ctx.index: ctx for ctx in candidates}
+
+        tagged = []
+        for ctx in candidates:
+            pressure = self._queue_pressure(ctx)
+            _weighted, q_sum, e_sum = self._best_case_cost(ctx, qcb)
+            tagged.append((ctx.index, {
+                "queue_pressure" : pressure,
+                # α/β-free inputs to S = α·Σq + β·Σe. None when allocation
+                # failed (no mapping to decompose) — the score is inf then,
+                # weight-invariant. See docs/COST_MODEL.md.
+                "qubit_error_sum": q_sum,
+                "edge_error_sum" : e_sum,
+            }))
+        return tagged
+
+    def _sweep_score(self, terms, params):
+        '''
+        One candidate's raw score components under `params`, as a
+        (pressure, cost) pair. NOT a scalar and NOT normalised: the two
+        components normalise independently across the candidate set, which
+        only _sweep_rank can do, so scoring stops at the raw pair here.
+
+        cost = α·Σq + β·Σe at the params' α/β; inf when the candidate had
+        no mapping (qubit_error_sum is None), which is weight-invariant.
+        pressure is parameter-independent and passes straight through.
+        '''
+        pressure = terms["queue_pressure"]
+        q_sum    = terms["qubit_error_sum"]
+        if q_sum is None:
+            return (pressure, float("inf"))
+        cost = (params["qubit_error_weight"] * q_sum
+                + params["edge_error_weight"] * terms["edge_error_sum"])
+        return (pressure, cost)
+
+    def _sweep_rank(self, scored, params):
+        '''
+        Across-candidate ranking for the decision, given
+        [(index, terms, (pressure, cost)), ...] and the parameters. Returns
+        [(index, final_score, enriched_terms), ...] where final_score is
+        w_queue·p̂ + w_noise·ĉ (both min-max normalised across the candidate
+        set) and enriched_terms is the raw terms plus the weighted
+        best_case_cost and both normalised forms — the log schema 5.5's
+        sweep and the router_scoring block read.
+
+        Selection is the base's argmin over (final_score, index), so the
+        lower-index tie-break falls out there; this method only produces
+        the comparable scores and the detail.
+        '''
+        pressures = [s[2][0] for s in scored]
+        costs     = [s[2][1] for s in scored]
 
         p_norm = _min_max(pressures)
         c_norm = _min_max(costs)
 
-        scored = []
-        for p_raw, c_raw, p, c, ctx in zip(pressures, costs, p_norm, c_norm,
-                                           candidates):
-            score = (self.router_queue_weight * p
-                     + self.router_noise_weight * c)
-            if with_terms:
-                scored.append((score, ctx.index, ctx, {
-                    "queue_pressure"     : p_raw,
-                    "best_case_cost"     : c_raw,
-                    "queue_pressure_norm": p,
-                    "best_case_cost_norm": c,
-                    "router_queue_weight": self.router_queue_weight,
-                    "router_noise_weight": self.router_noise_weight,
-                    "qubit_error_weight" : self.qubit_error_weight,
-                    "edge_error_weight"  : self.edge_error_weight,
-                }))
-            else:
-                scored.append((score, ctx.index, ctx))
-        return scored
+        w_queue = params["router_queue_weight"]
+        w_noise = params["router_noise_weight"]
 
-    # ── Scoring terms ─────────────────────────────────────────────────────────
+        ranked = []
+        for (key, terms, (p_raw, c_raw)), p, c in zip(scored, p_norm, c_norm):
+            final = w_queue * p + w_noise * c
+            enriched = {
+                "queue_pressure"     : p_raw,
+                "best_case_cost"     : c_raw,
+                "qubit_error_sum"    : terms["qubit_error_sum"],
+                "edge_error_sum"     : terms["edge_error_sum"],
+                "queue_pressure_norm": p,
+                "best_case_cost_norm": c,
+                "router_queue_weight": w_queue,
+                "router_noise_weight": w_noise,
+                "qubit_error_weight" : params["qubit_error_weight"],
+                "edge_error_weight"  : params["edge_error_weight"],
+            }
+            ranked.append((key, final, enriched))
+        return ranked
+
+    # ── Raw term computation (the expensive, live-only half) ──────────────────
 
     def _queue_pressure(self, ctx):
         return ctx.queue_depth() + ctx.running_jobs
@@ -126,6 +170,20 @@ class NoiseRouter(BaseRouter):
         Feasibility was already established by the base pipeline, so
         allocation on a free pool is expected to succeed; a surprise
         failure scores worst rather than crashing routing.
+
+        Returns the DECOMPOSITION, not just the total:
+
+            (weighted_cost, qubit_error_sum, edge_error_sum)
+
+        weighted_cost = α·qubit_error_sum + β·edge_error_sum is what
+        scoring consumes — routing is unchanged by this method returning
+        the pieces alongside it. The two raw sums are logged in explain()
+        so an α/β weight sweep can recompute S at ANY ratio from one
+        recorded run: they are the α- and β-free inputs to S, and the
+        total alone cannot be re-split into them. On allocation failure
+        the cost is float('inf') (scores worst, exactly as before) and
+        the sums are None — there is no mapping to decompose, and an
+        inf-cost candidate stays worst at every weight regardless.
         '''
         temp_pool = QubitPool(ctx.device.num_qubits)
         ALPHA = self.qubit_error_weight
@@ -140,7 +198,7 @@ class NoiseRouter(BaseRouter):
                 max_edge_error=qcb.max_edge_error
             )
         except Exception:
-            return float("inf")
+            return float("inf"), None, None
 
         qubits = list(mapping.values())
         qubit_cost = sum(ctx.device.qubit_error(q) for q in qubits)
@@ -151,7 +209,7 @@ class NoiseRouter(BaseRouter):
             if u in qubit_set and v in qubit_set:
                 edge_cost += ctx.device.edge_error(u, v)
 
-        return ALPHA * qubit_cost + BETA * edge_cost
+        return ALPHA * qubit_cost + BETA * edge_cost, qubit_cost, edge_cost
 
 
 def _min_max(values):

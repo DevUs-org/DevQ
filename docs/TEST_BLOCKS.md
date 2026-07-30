@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 56 sanity blocks in `run_tests.py`, covering
+Specification for the 57 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 56 blocks, one line each
+python run_tests.py              # all 57 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -1437,6 +1437,17 @@ asymmetric queue load. Also asserts that `explain()` records true raw
 terms, that those terms re-derive the decision at other weights, and
 that a non-scoring router returns `None`.
 
+For Phase 5.5a it additionally pins the raw cost decomposition the α/β
+sweep re-weights from — `qubit_error_sum` and `edge_error_sum` against
+independently computed values — and the invariant that
+`α·Σq + β·Σe` reproduces the weighted `best_case_cost`, which is what
+lets a sweep recompute the cost at any ratio from the logged sums alone.
+It closes with the **faithfulness anchor**: replaying the logged terms
+through `sweep_decision` at the router's own live params reproduces the
+live `select()` decision, and sweeping the same single recording across
+α values matches routing that recording live at each α. This is the
+property that makes a weight sweep answerable from one recorded run.
+
 Two lessons are built into it. First, asserting `explain()` against
 `select()` proves nothing — both read one shared scoring path, so a
 mutation moves them together and the comparison still holds; the scores
@@ -1449,6 +1460,36 @@ loaded) is the only configuration that witnesses it.
 Deliberately untested: the `(score, index)` tie-break in `select()`.
 Candidates arrive in index order and `min()` is stable, so removing the
 index term changes nothing observable — a test for it could not fail.
+
+
+### `sweepable_contract`
+
+Tests the `Sweepable` contract itself — the shared scoring/explain/sweep
+machinery in `kernel/sweep.py` that `BaseRouter`, and later the allocator
+and scheduler bases, inherit — independent of any real component. It uses
+a synthetic scoring double (`ToyScorer`) with hand-checkable arithmetic,
+deliberately distinct from any built-in (single term, a `+100` rank
+offset, no normalisation) so a pass cannot come from accidentally
+matching `NoiseRouter`.
+
+It asserts the base's derived `explain_decision` reports each candidate's
+final score **through `_sweep_rank`** (not the raw `_sweep_score` output —
+the rank offset is what distinguishes them, and a mutant collapsing the
+two survived until the offset was added), that `sweep_decision` is a pure
+argmin replay from recorded terms, that the contract-level faithfulness
+anchor holds (replay at live params matches the live choice), that a
+different parameter assignment re-derives a different decision from one
+recording, and that the tie-break resolves equal finals to the lower key.
+It also pins the not-scored default: a component that overrides none of
+the hooks derives `explain` `None` and reports `is_sweepable()` False,
+the honest outcome for a non-scoring policy.
+
+Why a synthetic component rather than reusing `router_scoring`: the
+contract's claim is that explain and the sweep are derived identically
+for *any* Sweepable, so testing it through one real implementation cannot
+separate "the contract is right" from "that component is right". The
+double tests the seam, so components inheriting it inherit proven
+machinery.
 
 
 ### `provider_registration`

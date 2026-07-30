@@ -32,8 +32,10 @@ The base class implements the shared candidate pipeline:
 
 from abc import ABC, abstractmethod
 
+from kernel.sweep import Sweepable
 
-class BaseRouter(ABC):
+
+class BaseRouter(Sweepable, ABC):
 
     def __init__(self, router_queue_weight=0.5, router_noise_weight=0.5, qubit_error_weight=0.1, edge_error_weight=0.9):
         self.router_queue_weight = router_queue_weight
@@ -64,44 +66,28 @@ class BaseRouter(ABC):
     def explain(self, qcb, candidates):
         '''
         Per-candidate scoring detail for the decision select() would make
-        on this same candidate list. Used only by the event log; routing
-        never depends on it.
+        on this candidate list, for the event log; routing never depends
+        on it. Returns None for routers that do not score — a round-robin
+        policy has no scores to report, and inventing them would be worse
+        than reporting none.
 
-        Returns None (the default) for routers that do not score — a
-        round-robin policy has no scores to report, and inventing them
-        would be worse than reporting none.
+        This is a thin adapter over the unified Sweepable contract: it
+        shapes the router's (qcb, candidates) decision into the generic
+        form and defers to explain_decision(), which derives the report
+        from the SAME _sweep_terms/_sweep_score a weight sweep replays.
+        select() and this therefore cannot drift, and a scoring router
+        gets both explain() and sweep support from one implementation.
 
-        Scoring routers return one dict per candidate:
-
-            [{"device": 1,                    # device index
-              "score": 0.42,                  # final comparable score
-              "terms": {...}}, ...]           # router-specific components
-
-        `terms` carries the RAW inputs to the score, not just the total.
-        The total alone is not enough to re-derive routing under
-        different cost weights, which is the whole point of logging
-        scores: a weight sweep should be answerable from one recorded
-        run rather than by re-executing every job.
-
-        Contract:
-          - MUST NOT mutate router or context state. It runs only when
-            logging is enabled, so any state it changed would make
-            logged runs diverge from unlogged ones.
-          - MUST be consistent with select(): the candidate this reports
-            as best must be the one select() returns for the same input.
-            Deriving both from one shared scoring helper is the reliable
-            way to guarantee that; two parallel implementations drift.
-          - Receives the SAME filtered candidate list select() gets, so
-            devices excluded by exec_on/feasibility never appear.
-
-        Args:
-            qcb:        the job being routed
-            candidates: non-empty list of feasible DeviceContexts
-
-        Returns:
-            list[dict] or None
+        The returned list uses "device" (not the generic "key") for the
+        candidate identifier, preserving the existing log schema.
         '''
-        return None
+        report = self.explain_decision((qcb, candidates))
+        if report is None:
+            return None
+        return [
+            {"device": row["key"], "score": row["score"], "terms": row["terms"]}
+            for row in report
+        ]
 
     @abstractmethod
     def select(self, qcb, candidates):
