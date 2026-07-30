@@ -212,19 +212,33 @@ real tokenizer, an expression evaluator that keeps gate parameters
 QASMBench circuits from running), recursive custom-`gate` inlining with
 parameter and qubit substitution, and first-class `measure`/`reset`.
 `CircuitRep` is one ordered, op-tagged instruction stream, so a `reset`
-keeps its source position relative to the gates around it. `if (creg==N)`
-is parsed and rejected precisely — it needs mid-circuit measurement
-feedback the execution model does not provide, and silently dropping the
-condition would change the circuit's meaning.
+keeps its source position relative to the gates around it. Two well-formed
+but unsupported constructs — `if (creg==N)` classical control and
+mid-circuit measurement (a gate or reset on a qubit after it was measured)
+— are DETECTED at the frontend and marked on the circuit
+(`unrunnable_reason`), not raised: the circuit still parses and becomes a
+job, and the KERNEL rejects that job (REJECTED, with the reason) at
+routing time. This keeps every "DevQ will not run this" verdict as one
+uniform outcome — a REJECTED job with a reason — rather than a parse
+exception that would abort a whole workload over one circuit. Both need
+mid-circuit measurement feedback the execution model does not provide, and
+running them anyway (silently dropping the condition, or hoisting the
+measure) would change the circuit's meaning; rejecting with a reason is
+the honest behaviour.
 
 Measure and reset are now **executed**, not just recorded. Both providers
 honour a circuit's explicit measures (falling back to measure-all only
-when there are none) and place each measure and reset at its source
-position; `ibm.simulated` applies a real `reset` mid-circuit. Results are
-reported over the declared classical register (bitstring width is
-`num_clbits`, falling back to `num_qubits` when no `creg` is declared),
-so a measured bit sits at its own index and an unmeasured bit reads 0 —
-the convention a fidelity comparison needs.
+when there are none), and `reset` is placed at its source position;
+`ibm.simulated` applies a real `reset` mid-circuit. Measurement, however,
+is **terminal**: the lowering reads out at the end of the circuit, so a
+circuit that measures a qubit and then operates on it again (mid-circuit
+measurement) cannot be run faithfully — it is detected and REJECTED (see
+above) rather than silently mis-run. Results are reported over the
+declared classical register (bitstring width is `num_clbits`, falling back
+to `num_qubits` when no `creg` is declared), so a measured bit sits at its
+own index and an unmeasured bit reads 0 — the convention a fidelity
+comparison needs. Full mid-circuit measurement (and the classical feedback
+built on it) is a later execution-model capability, not yet present.
 
 What remains for Phase 6: additional-language frontends — **OpenQASM
 3.0, Silq, Q#, Qiskit circuits** — each built against the same

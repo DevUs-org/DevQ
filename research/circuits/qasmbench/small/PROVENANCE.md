@@ -29,29 +29,56 @@ are pre-mapped to a fixed basis and coupling map, which is exactly the
 placement decision DevQ exists to make; running them would bypass the
 system under test. The per-circuit READMEs and PNGs were left upstream.
 
-**Vendored (31):** the `small/` set minus the exclusions below.
+**Vendored (42): the complete upstream `small/` suite.** Every circuit is
+vendored — there are no exclusions. A circuit is included whether DevQ can
+execute it or must reject it, because a REJECTED result is a valid,
+informative outcome that belongs in the results, not a reason to hide the
+circuit. The 42 split into three outcome classes:
 
-**Excluded — classical control (4).** `inverseqft_n4`, `ipea_n2`,
-`qec_sm_n5`, `shor_n5` use `if (creg==N)`, which DevQ rejects by design:
-it needs mid-circuit measurement feedback the execution model does not
-provide. Including them would only produce REJECTED jobs.
+**33 run** — DevQ executes them and reports a fidelity number:
+`adder_n4`, `adder_n10`, `basis_change_n3`, `basis_trotter_n4`, `bell_n4`,
+`cat_state_n4`, `deutsch_n2`, `dnn_n2`, `dnn_n8`, `error_correctiond3_n5`,
+`fredkin_n3`, `grover_n2`, `hhl_n7`, `hs4_n4`, `ising_n10`, `iswap_n2`,
+`linearsolver_n3`, `lpn_n5`, `pea_n5`, `qaoa_n3`, `qaoa_n6`, `qec_en_n5`,
+`qft_n4`, `qpe_n9`, `qrng_n4`, `quantumwalks_n2`, `sat_n7`, `simon_n6`,
+`teleportation_n3`, `toffoli_n3`, `variational_n4`, `vqe_n4`, `wstate_n3`.
 
-**Excluded — measure-then-reuse (1).** `bb84_n8` measures qubits and then
-operates on them further. DevQ's IBM lowering currently appends all
-measures after the circuit body (only `reset` is placed at its source
-position), so the post-measurement operations would act on an uncollapsed
-state — a different circuit than written. Because `execute()` and
-`reference_ideal()` share the lowering, both sides would be wrong
-identically and fidelity would read spuriously high. Excluded until
-source-position measurement lands. `bb84_n8` is the ONLY `small/` circuit
-affected; it was checked against every candidate.
+**5 rejected — well-formed but unsupported.** They parse into valid
+circuits using constructs DevQ's execution model does not support, so the
+frontend marks them unrunnable and the kernel rejects the job (REJECTED)
+with a precise reason:
+- **Classical control (4):** `inverseqft_n4`, `ipea_n2`, `qec_sm_n5`,
+  `shor_n5` use `if (creg==N)`, which needs mid-circuit measurement
+  feedback the model does not provide.
+- **Mid-circuit measurement (1):** `bb84_n8` measures qubits and then
+  operates on them again; DevQ measures terminally, so it is detected and
+  rejected rather than silently mis-run.
 
-**Excluded — too large for a quick reference (6).** `hhl_n10`,
-`vqe_uccsd_n8`, `vqe_uccsd_n6`, `dnn_n8`, `hhl_n7`, `ising_n10`. The
-noiseless reference is an exact density-matrix simulation whose cost grows
-with instruction count; these range from ~500 to ~187k instructions and
-are deferred to keep the validation pass fast. They can be added later
-without any code change — only reference runtime.
+**4 rejected — unparseable.** `vqe_uccsd_n4`, `vqe_uccsd_n6`,
+`vqe_uccsd_n8`, `hhl_n10` measure a register (`q`) the file never declares.
+This is a defect in the upstream QASMBench encoding, confirmed by Qiskit's
+own OpenQASM 2.0 parser rejecting them with the identical error (`'q' is
+not defined in this scope`). These are standard, valuable algorithms
+(VQE-UCCSD ansätze, HHL) — only this particular serialisation is invalid.
+Rather than drop them, the benchmark runner turns a parse failure into a
+REJECTED job whose reason is the parse error, so they appear as rejected
+rows with a clear cause.
+
+## Two rejection reasons, distinguished
+
+The results show two flavours of REJECTED, so the cause is legible at a
+glance:
+- *"...requires mid-circuit measurement feedback..."* / *"mid-circuit
+  measurement: qubit N ..."* — a well-formed circuit DevQ's execution model
+  cannot run.
+- *"could not parse circuit: ...unknown qreg 'q'..."* — a circuit whose
+  source is not valid OpenQASM 2.0.
+
+A note on the runner's failure policy: a parse failure becomes a REJECTED
+job (a property of the circuit), but a genuine SPEC-authoring error — a
+missing circuit file, or an unknown frontend for the extension — still
+aborts the run loudly, because that is the user's spec being wrong, not a
+circuit being unrunnable.
 
 ## Gate coverage
 

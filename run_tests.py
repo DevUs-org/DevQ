@@ -489,6 +489,20 @@ def block_rejection_semantics():
     check(m and "d1:" in m.group(1) and "d2:" in m.group(1),
           "job 3's rejection reason aggregates both d1 and d2")
 
+    # A circuit DevQ cannot faithfully run (here: classical control, which
+    # needs mid-circuit feedback) is REJECTED too — the SAME umbrella
+    # terminal state as an unsatisfiable allocation, not a parse crash.
+    # The reason is carried from the circuit layer (the frontend marked it
+    # unrunnable) through to the job, proving the two rejection sources
+    # converge on one outcome.
+    sh2 = three_device()
+    out2 = run(sh2, [f"qrun {QASM2}conditional.qasm"])
+    expect(out2, "REJECTED")
+    m2 = re.search(r"Job \d+ REJECTED: ([^\n]*)", out2)
+    check(m2 and "feedback" in m2.group(1).lower(),
+          f"an unrunnable circuit rejects with its circuit-level reason, "
+          f"got {m2.group(1) if m2 else None!r}")
+
 
 def block_packing_across_devices():
     '''Bracket groups, batch packing and cross-device concurrency'''
@@ -3666,16 +3680,33 @@ def block_qasm2_parser():
           f"multi_register: b[2] is global qubit 4, got {c.measurements}")
 
     # ── Rejections are precise and line-numbered ────────────────────────
-    def rejected(name, phrase):
-        try:
-            load(name)
-            return False, "did not reject"
-        except QASMError as e:
-            return (phrase in str(e).lower()), str(e)
+    # A conditional is WELL-FORMED but unsupported: DevQ cannot do the
+    # mid-circuit feedback it needs. The parser no longer RAISES on it —
+    # raising would abort a whole spec over one such circuit. Instead the
+    # circuit parses and is marked unrunnable, so the KERNEL rejects the
+    # job (REJECTED, with this reason). Assert the mark, not an exception.
+    c = load("conditional.qasm")
+    check(c.unrunnable_reason is not None,
+          "conditional (if): parses and is marked unrunnable, not raised")
+    check("feedback" in (c.unrunnable_reason or "").lower(),
+          f"conditional: reason cites the missing feedback, got "
+          f"{c.unrunnable_reason!r}")
 
-    ok, msg = rejected("conditional.qasm", "feedback")
-    check(ok, f"conditional (if): rejected for lack of feedback, got {msg!r}")
-    check("line 7" in msg, f"conditional: error points at the if line, got {msg!r}")
+    # Mid-circuit measurement (a gate on a qubit after it was measured) is
+    # the same class of unsupported-but-well-formed: marked, not raised.
+    mid = parse("OPENQASM 2.0; qreg q[1]; creg c[1]; "
+                "measure q[0] -> c[0]; x q[0];")
+    check(mid.unrunnable_reason is not None
+          and "mid-circuit" in mid.unrunnable_reason.lower(),
+          f"mid-circuit measurement: marked unrunnable with a reason, got "
+          f"{mid.unrunnable_reason!r}")
+
+    # A clean circuit is NOT flagged — the check does not fire on terminal
+    # measurement (the normal case).
+    clean = parse("OPENQASM 2.0; qreg q[2]; creg c[2]; h q[0]; cx q[0],q[1]; "
+                  "measure q[0] -> c[0]; measure q[1] -> c[1];")
+    check(clean.unrunnable_reason is None,
+          f"terminal measurement is NOT flagged, got {clean.unrunnable_reason!r}")
 
     # Inline-source rejects for constructs without a fixture — each a
     # DIFFERENT failure mode, proving the parser distinguishes them rather

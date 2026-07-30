@@ -221,6 +221,15 @@ Three outcomes that must stay distinct:
   aggregate `d1: ...` *and* `d2: ...`, so a user sees why every allowed
   device failed rather than just the first.
 
+A fourth outcome shares the umbrella: a **circuit DevQ cannot faithfully
+run** (here `conditional.qasm`, which uses classical control) is REJECTED
+with a reason carried from the circuit layer — the frontend marked it
+`unrunnable_reason`, and the kernel rejects the job at routing time. This
+proves the two rejection sources — an unsatisfiable allocation (jobs 1/3)
+and an unsupported construct — converge on the SAME terminal state, so
+"DevQ will not run this" is one outcome regardless of which layer detected
+the reason, never a parse exception that aborts the workload.
+
 ### `edge_threshold_semantics`
 
 *`--max-edge-error` filters by coupling quality, independently of qubits.*
@@ -898,14 +907,19 @@ land in `CircuitRep`'s separate channels — recording `(qubit, clbit)`
 pairs and reset qubits — while the gate list stays gate-only, so
 `get_depth()` (which iterates gates) counts only the unitary gates;
 several `qreg`/`creg` declarations flatten into one global index space,
-so `b[0]` after `qreg a[2]` is global qubit 2. And the constructs DevQ
-cannot honour are rejected with precise, line-numbered messages, each a
-**different** failure mode rather than one lumped "unsupported":
-`if (creg==N)` for lack of mid-circuit feedback, an out-of-range qubit
+so `b[0]` after `qreg a[2]` is global qubit 2. Genuinely MALFORMED source
+is rejected with precise, line-numbered messages, each a **different**
+failure mode rather than one lumped "unsupported": an out-of-range qubit
 index, a gate arity mismatch, an `opaque` gate with no body, a 3.0 header
-(pointing at a separate frontend), and a circuit with no quantum
-register. A closing end-to-end check runs a parameterised fixture through
-a real provider to confirm the lowered circuit executes.
+(pointing at a separate frontend), and a circuit with no quantum register.
+Distinct from these, a WELL-FORMED but unsupported construct — `if
+(creg==N)` classical control, or mid-circuit measurement (a gate on a
+qubit after it was measured) — does NOT raise: it parses and is marked
+`unrunnable_reason`, so the kernel later rejects the job rather than a
+parse exception aborting a whole workload. The block asserts both: the
+mark is set with the right reason, and a clean terminally-measured circuit
+is left unflagged. A closing end-to-end check runs a parameterised fixture
+through a real provider to confirm the lowered circuit executes.
 
 ---
 

@@ -558,15 +558,24 @@ class _Parser:
 
     def _parse_if(self):
         '''
-        Parse `if (creg == N) <statement>` and REJECT it.
+        Parse `if (creg == N) <statement>` and mark the circuit UNRUNNABLE.
 
         A conditional needs the classical result of a mid-circuit
         measurement to steer later gates — a feedback loop DevQ's
         execution model does not have (devq.simulated has no state to
         branch on). Silently dropping the condition would change the
-        circuit's meaning, so rejecting is the honest behaviour. The
-        condition is fully parsed first so the error is precise rather
-        than a syntax stumble.
+        circuit's meaning.
+
+        We do NOT raise. The circuit is well-formed OpenQASM; it is just a
+        construct DevQ cannot faithfully run. So we set
+        `unrunnable_reason` on the CircuitRep and let the kernel reject the
+        JOB at routing time (REJECTED, with this reason) — the same
+        uniform outcome as any other unrunnable circuit, rather than a
+        parse exception that would abort submission of the whole spec. The
+        condition is fully parsed first so the reason is precise, and the
+        guarded statement is then consumed normally so the token stream
+        stays in sync and the rest of the file still parses (its ops are
+        recorded but never run — the whole circuit is already flagged).
         '''
         c = self.cursor
         line = c.peek().line
@@ -576,10 +585,25 @@ class _Parser:
         c.expect("SYMBOL", "==")
         c.expect("NUMBER")
         c.expect("SYMBOL", ")")
-        raise QASMError(
+
+        self._mark_unrunnable(
             f"conditional execution (if ({creg}==...)) requires mid-circuit "
             f"measurement feedback, which DevQ's execution model does not "
-            f"provide", line)
+            f"provide")
+
+        # Consume the guarded statement so parsing continues in sync.
+        self._parse_statement()
+
+    def _mark_unrunnable(self, reason):
+        '''
+        Record that this circuit, though well-formed, cannot be faithfully
+        executed by DevQ. First reason wins — a circuit may contain more
+        than one unsupported construct, and the first detected is the most
+        useful to report. The kernel reads this and rejects the job.
+        '''
+        self._ensure_circuit()
+        if self.circuit.unrunnable_reason is None:
+            self.circuit.unrunnable_reason = reason
 
 
 def parse(source_text, source_name="<qasm>"):
@@ -591,15 +615,32 @@ def parse(source_text, source_name="<qasm>"):
         source_name: a label used only in error messages.
 
     Returns:
-        CircuitRep — gates in `instructions`, measurements and resets in
-        their own channels, num_qubits/num_clbits from the declarations.
+        CircuitRep — all operations in one ordered `instructions` stream,
+        num_qubits/num_clbits from the declarations. If the circuit is
+        well-formed but uses a construct DevQ cannot faithfully execute
+        (classical control, mid-circuit measurement), `unrunnable_reason`
+        is set and the kernel will reject the job; parsing still succeeds.
 
     Raises:
-        QASMError: on any malformed or unsupported construct. The message
-                   carries the source line; the caller adds the file name.
+        QASMError: only on genuinely MALFORMED or unparseable source (bad
+                   syntax, undeclared register, opaque gate with no body).
+                   An unsupported-but-well-formed construct does NOT raise
+                   — it is marked unrunnable instead, so it becomes a
+                   REJECTED job rather than aborting submission.
     '''
     tokens = tokenize(source_text)
     circuit = _Parser(tokens).parse()
     if circuit.num_qubits == 0:
         raise QASMError("no qreg declared — nothing to run")
+
+    # Structural check over the finished stream: a qubit operated on after
+    # measurement is mid-circuit measurement, which DevQ cannot run. The
+    # parser may already have marked the circuit unrunnable (classical
+    # control, detected inline); first reason wins, so this only fills in
+    # when nothing was flagged during parsing.
+    if circuit.unrunnable_reason is None:
+        mid = circuit.find_mid_circuit_measurement()
+        if mid is not None:
+            circuit.unrunnable_reason = mid
+
     return circuit

@@ -51,6 +51,7 @@ seed_effective is the resolved integer the run actually used. The two
 coincide for a spec with no placeholder.
 '''
 
+import hashlib
 import json
 import os
 
@@ -462,6 +463,7 @@ def submit_jobs(shell, spec, source="<spec>"):
     '''
     from frontends.resolver import resolve_frontend, FrontendResolutionError
     from benchmark.reference import circuit_hash
+    from circuits.circuit_rep import CircuitRep
 
     name_to_index = {ctx.name: ctx.index for ctx in shell.kernel.contexts
                      if ctx.name}
@@ -470,20 +472,48 @@ def submit_jobs(shell, spec, source="<spec>"):
 
     for i, job in enumerate(spec["jobs"]):
         where = f"{source}: jobs[{i}]"
+
+        # Two kinds of failure, deliberately handled differently:
+        #
+        #  - A SPEC-AUTHORING error (no frontend for the extension, or the
+        #    file does not exist) is the spec's fault, not the circuit's.
+        #    It aborts loudly, because silently recording it would hide a
+        #    typo in the workload the user wrote.
+        #
+        #  - A PARSE error (the file exists and a frontend claimed it, but
+        #    its contents are not valid/ supported source) is a property
+        #    of the CIRCUIT. It does NOT abort: the circuit becomes a
+        #    REJECTED job carrying the parse error as its reason, so it
+        #    appears in the results as a rejected row alongside the ones
+        #    that ran, and one bad circuit never takes down a 40-circuit
+        #    sweep. This is the same umbrella as a well-formed-but-
+        #    unsupported circuit (classical control, mid-circuit
+        #    measurement): every "DevQ will not run this" is one outcome —
+        #    a REJECTED job with a reason — whether the block is detected
+        #    at parse time or later. The difference is only the reason
+        #    text: "malformed/unsupported source: ..." here versus the
+        #    execution-model reason a well-formed circuit carries.
         try:
             frontend = resolve_frontend(
                 job["circuit"], frontends, explicit=job.get("frontend")
             )
-            circuit = frontend.parse(job["circuit"])
         except FrontendResolutionError as exc:
             raise SpecError(f"{where}: {exc}") from None
+
+        parse_failed = False
+        try:
+            circuit = frontend.parse(job["circuit"])
         except FileNotFoundError:
             raise SpecError(f"{where}: circuit not found: {job['circuit']}") from None
         except Exception as exc:
-            raise SpecError(
-                f"{where}: could not load {job['circuit']}: "
-                f"{type(exc).__name__}: {exc}"
-            ) from None
+            # A parse failure: build a placeholder circuit marked
+            # unrunnable so the kernel rejects the job through the normal
+            # path. num_qubits=0 is fine — a rejected job never routes or
+            # allocates, so width is never read; the reason is what matters.
+            circuit = CircuitRep(0, 0)
+            circuit.unrunnable_reason = (
+                f"could not parse circuit: {type(exc).__name__}: {exc}")
+            parse_failed = True
 
         def indices(key):
             ids = job.get(key)
@@ -497,7 +527,20 @@ def submit_jobs(shell, spec, source="<spec>"):
         # CircuitRep is parsed once and shared across repeats), not per
         # job. The kernel stores it opaquely; the benchmark layer owns the
         # hashing, keeping the kernel free of any dependency on this layer.
-        chash = circuit_hash(circuit)
+        #
+        # An UNPARSEABLE placeholder is a special case: every parse failure
+        # yields the same empty CircuitRep(0,0), so content-hashing would
+        # collapse all unparseable circuits onto ONE hash — they would
+        # collide in the log and the results table would show only the
+        # first and dedup the rest. Since a rejected job has no counts and
+        # no ideal, its hash is never a real join key; it only needs to be
+        # UNIQUE per circuit so each shows its own name. Derive it from the
+        # source path instead.
+        if parse_failed:
+            chash = hashlib.sha256(
+                f"unparseable:{job['circuit']}".encode("utf-8")).hexdigest()
+        else:
+            chash = circuit_hash(circuit)
 
         for _ in range(job.get("repeat", 1)):
             qcb = shell.kernel.submit_job(

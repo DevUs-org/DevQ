@@ -143,6 +143,15 @@ def compute_ideals(circuits, provider):
         key = circuit_hash(circuit)
         if key in ideals:
             continue
+        # A circuit the frontend marked unrunnable (classical control,
+        # mid-circuit measurement) will be REJECTED by the kernel and will
+        # never produce measured counts, so it has no fidelity to compute —
+        # and computing its ideal is not just wasted work but can fail
+        # outright (the density-matrix reference may reject a construct the
+        # circuit only reaches because it is unrunnable). Skip it: no ideal,
+        # exactly as for a circuit whose provider returns None.
+        if getattr(circuit, "unrunnable_reason", None) is not None:
+            continue
         ideal = provider.reference_ideal(circuit)
         if ideal is None:
             continue

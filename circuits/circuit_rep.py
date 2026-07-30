@@ -30,6 +30,14 @@ simple view while the ordered list stays the single source of truth —
 the two cannot drift apart. `num_clbits` is stored, not derived: it is
 the DECLARED classical-register width, which is not recoverable from the
 measures that happened to fire (a creg may be wider than its used bits).
+
+UNRUNNABLE, BUT WELL-FORMED. `unrunnable_reason` marks a circuit DevQ
+parsed successfully but cannot faithfully execute — classical control or
+mid-circuit measurement, constructs the execution model does not support.
+None for a runnable circuit. A frontend SETS it rather than raising, so
+the circuit still becomes a job and the kernel rejects that job (REJECTED,
+with this reason) at routing time — one uniform "declined with a reason"
+outcome instead of a parse exception that aborts submission.
 '''
 
 class CircuitRep:
@@ -40,6 +48,22 @@ class CircuitRep:
         # circuit does — gates, measures, resets — appends here in the
         # order the source expressed it.
         self.instructions = []
+
+        # When set (to a human-readable string), this circuit is one DevQ
+        # cannot FAITHFULLY execute — a construct the execution model does
+        # not support (classical control, mid-circuit measurement). It is
+        # NOT a parse failure: the circuit is well-formed and fully built,
+        # so it is carried like any other and the kernel rejects the JOB
+        # (state REJECTED, this string as the reason) at routing time,
+        # before it reaches a device. This keeps every "DevQ declines to
+        # run this" verdict expressed as one thing — a REJECTED job with a
+        # reason — whether the reason was detected here at the circuit
+        # layer or later by the router/allocator. Detecting is the
+        # frontend's job; REJECTING is the kernel's. A frontend must never
+        # raise for an unsupported-but-well-formed construct, because an
+        # exception would abort submission instead of producing a job that
+        # can be rejected and reported alongside the ones that ran.
+        self.unrunnable_reason = None
 
     def add_gate(self, name, qubits, params = None):
         self.instructions.append({
@@ -106,3 +130,60 @@ class CircuitRep:
                 qubit_depths[q] = current_max + 1
 
         return max(qubit_depths)
+
+    def find_mid_circuit_measurement(self):
+        '''
+        Return a reason string if any qubit is operated on AFTER it has
+        been measured — mid-circuit measurement — else None.
+
+        WHY THIS IS UNRUNNABLE. DevQ's execution model treats measurement
+        as terminal: every provider reads out at the end. A measure
+        followed by a gate or reset on the SAME qubit means the later
+        operation acts on the post-measurement (collapsed) state, which
+        the model cannot represent — the IBM lowering hoists all measures
+        to the end, so it would apply that later operation to an
+        UNcollapsed qubit and silently execute a different circuit than
+        the one written. Because the measured run and the noiseless
+        reference share that lowering, both would be wrong identically and
+        a fidelity comparison would report a high, plausible number for a
+        circuit that was never actually run — the worst kind of failure,
+        invisible in a green suite. Detecting it lets the kernel reject the
+        job honestly instead.
+
+        This is a pure structural property of the ordered instruction
+        stream, so it lives on CircuitRep rather than in one frontend:
+        every frontend that lowers to CircuitRep gets the check, and a
+        circuit built by any means is judged the same way. It does not set
+        unrunnable_reason itself — detection and marking are separate so a
+        caller can decide (a frontend marks; a diagnostic tool might only
+        report).
+
+        Returns the reason for the FIRST offending qubit (source order),
+        naming the qubit, or None if measurement is terminal throughout.
+        '''
+        measured = set()
+        for inst in self.instructions:
+            op = inst["op"]
+            if op == "measure":
+                measured.add(inst["qubit"])
+            elif op == "gate":
+                for q in inst["qubits"]:
+                    if q in measured:
+                        return (
+                            f"mid-circuit measurement: qubit {q} is used by "
+                            f"gate '{inst['gate']}' after being measured, "
+                            f"which DevQ's execution model (terminal "
+                            f"measurement only) cannot faithfully run")
+            elif op == "reset":
+                # A reset after measure is legitimate on real hardware and
+                # is arguably representable, but the current lowering still
+                # hoists the measure, so the reset would land relative to
+                # an unmeasured qubit. Treat it as mid-circuit for now:
+                # honest reject over a silent wrong distribution.
+                if inst["qubit"] in measured:
+                    return (
+                        f"mid-circuit measurement: qubit {inst['qubit']} is "
+                        f"reset after being measured, which DevQ's execution "
+                        f"model (terminal measurement only) cannot faithfully "
+                        f"run")
+        return None

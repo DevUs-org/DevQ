@@ -191,6 +191,22 @@ class Kernel:
         self._cycle += 1
 
         self.router_queue.remove(qcb)
+
+        # Same unrunnable-circuit guard as the scheduling path: a
+        # well-formed but unsupported circuit is REJECTED before routing,
+        # never executed. qrun must not be a back door around it.
+        reason = getattr(qcb.circuit, "unrunnable_reason", None)
+        if reason is not None:
+            self._emit("reject",
+                       job_id        = qcb.job_id,
+                       candidates    = [],
+                       scores        = None,
+                       reason        = reason,
+                       circuit_hash  = qcb.circuit_hash,
+                       circuit_label = qcb.circuit_label)
+            self._reject(qcb, reason)
+            return
+
         ctx, reason = self._route(qcb)
 
         if ctx is None:
@@ -220,8 +236,30 @@ class Kernel:
         rejected = []
 
         for qcb in list(self.router_queue):
-            ctx, reason = self._route(qcb)
             self.router_queue.remove(qcb)
+
+            # A circuit the frontend flagged as unrunnable (a well-formed
+            # but unsupported construct — classical control, mid-circuit
+            # measurement) is rejected here, before routing: no device can
+            # faithfully run it, so binding it to one would be wrong. This
+            # is the SAME terminal outcome as an unsatisfiable allocation —
+            # REJECTED with a reason — the umbrella covering every "DevQ
+            # will not run this", whether the reason came from the circuit
+            # layer or from the router/allocator below.
+            reason = getattr(qcb.circuit, "unrunnable_reason", None)
+            if reason is not None:
+                self._emit("reject",
+                           job_id        = qcb.job_id,
+                           candidates    = [],
+                           scores        = None,
+                           reason        = reason,
+                           circuit_hash  = qcb.circuit_hash,
+                           circuit_label = qcb.circuit_label)
+                self._reject(qcb, reason)
+                rejected.append(qcb)
+                continue
+
+            ctx, reason = self._route(qcb)
 
             if ctx is None:
                 self._reject(qcb, reason)
@@ -254,10 +292,12 @@ class Kernel:
                        scores     = scores)
         else:
             self._emit("reject",
-                       job_id     = qcb.job_id,
-                       candidates = [c.index for c in candidates],
-                       scores     = scores,
-                       reason     = reason)
+                       job_id        = qcb.job_id,
+                       candidates    = [c.index for c in candidates],
+                       scores        = scores,
+                       reason        = reason,
+                       circuit_hash  = qcb.circuit_hash,
+                       circuit_label = qcb.circuit_label)
 
         return ctx, reason
 

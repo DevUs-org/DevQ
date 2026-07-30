@@ -214,6 +214,78 @@
             "exec_on": [
                 "kolkata"
             ]
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/bb84_n8.qasm",
+            "exec_on": [
+                "kolkata"
+            ]
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/dnn_n8.qasm",
+            "exec_on": [
+                "kolkata"
+            ]
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/hhl_n7.qasm",
+            "no_exec_on": [
+                "kolkata"
+            ]
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/inverseqft_n4.qasm",
+            "no_exec_on": [
+                "kolkata"
+            ]
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/ipea_n2.qasm",
+            "no_exec_on": [
+                "kolkata"
+            ]
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/ising_n10.qasm",
+            "exec_on": [
+                "kolkata"
+            ]
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/qec_sm_n5.qasm",
+            "no_exec_on": [
+                "kolkata"
+            ]
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/shor_n5.qasm",
+            "no_exec_on": [
+                "kolkata"
+            ]
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/vqe_uccsd_n4.qasm",
+            "no_exec_on": [
+                "kolkata"
+            ]
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/vqe_uccsd_n6.qasm",
+            "no_exec_on": [
+                "kolkata"
+            ]
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/vqe_uccsd_n8.qasm",
+            "exec_on": [
+                "kolkata"
+            ]
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/hhl_n10.qasm",
+            "exec_on": [
+                "kolkata"
+            ]
         }
     ]
 }
