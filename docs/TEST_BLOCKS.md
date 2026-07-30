@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 55 sanity blocks in `run_tests.py`, covering
+Specification for the 56 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 55 blocks, one line each
+python run_tests.py              # all 56 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -229,6 +229,41 @@ proves the two rejection sources — an unsatisfiable allocation (jobs 1/3)
 and an unsupported construct — converge on the SAME terminal state, so
 "DevQ will not run this" is one outcome regardless of which layer detected
 the reason, never a parse exception that aborts the workload.
+
+### `unrunnable_circuits`
+
+*Unrunnable circuits become REJECTED jobs through the runner, no crash.*
+
+`rejection_semantics` proves the kernel rejects an unrunnable circuit;
+this proves the whole benchmark runner survives one. A workload spec mixes
+three jobs through a real `benchmark/runner.run`: a runnable circuit
+(`bell`), a well-formed-but-unsupported one (`conditional.qasm`, classical
+control), and two DIFFERENT deliberately malformed circuits that each
+measure an undeclared register — the exact defect that makes the real
+QASMBench `vqe_uccsd`/`hhl` files unparseable.
+
+What it pins:
+
+- **The run completes, it does not crash.** One malformed circuit used to
+  raise `SpecError` and abort the whole workload; now it is a rejected
+  row. The session outcome is completed/with-failures, never crashed.
+- **One FINISHED, three REJECTED.** `bell` runs; the unsupported and both
+  malformed circuits reject.
+- **Two rejection flavours, both correct.** The reason strings distinguish
+  a well-formed-but-unsupported circuit ("...mid-circuit measurement
+  feedback...") from an unparseable one ("could not parse circuit: ...").
+- **The two malformed circuits get DISTINCT hashes.** A parse-failure
+  placeholder is an empty circuit, so content-hashing would collapse every
+  malformed circuit onto one hash — they would collide in the log and the
+  results table would show only the first and dedup the rest. The hash is
+  derived from the source path instead; this block asserts the two differ.
+  (A mutant that reverts to a constant hash is killed here.)
+- **Reject records carry a `circuit_label`.** So the report names every
+  rejected row instead of printing a bare hash — the log is
+  self-describing for rejected jobs, not only for the ones that ran.
+- **A genuine SPEC error still aborts.** A spec naming a missing circuit
+  file fails the session — that is the user's spec being wrong, not a
+  circuit DevQ declines, and must not be silently absorbed as a rejection.
 
 ### `edge_threshold_semantics`
 

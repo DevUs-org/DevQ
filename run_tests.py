@@ -503,6 +503,163 @@ def block_rejection_semantics():
           f"an unrunnable circuit rejects with its circuit-level reason, "
           f"got {m2.group(1) if m2 else None!r}")
 
+    # The SAME must hold on the SCHEDULING path (qsubmit + qrunpack), not
+    # just the qrun fast path — they are separate guards in the kernel, and
+    # a regression could disable one while the other still rejects. Submit
+    # via the queue and drain: the unrunnable circuit must still be REJECTED
+    # before it ever routes to a device.
+    sh3 = three_device()
+    out3 = run(sh3, [f"qsubmit {QASM2}conditional.qasm", "qrunpack", "qps"])
+    expect(out3, "REJECTED")
+    m3 = re.search(r"Job \d+ REJECTED: ([^\n]*)", out3)
+    check(m3 and "feedback" in m3.group(1).lower(),
+          f"an unrunnable circuit is rejected on the scheduling path too, "
+          f"got {m3.group(1) if m3 else None!r}")
+
+
+def block_unrunnable_circuits():
+    '''Unrunnable circuits become REJECTED jobs through the runner, no crash'''
+    # DevQ declines two kinds of circuit, and the benchmark runner must
+    # surface BOTH as REJECTED jobs in a completed run rather than crashing:
+    #   - well-formed but UNSUPPORTED (classical control, mid-circuit
+    #     measurement): the frontend marks unrunnable_reason, the kernel
+    #     rejects the job.
+    #   - MALFORMED source that fails to parse: submit_jobs turns the parse
+    #     error into a REJECTED placeholder job carrying the error as its
+    #     reason, so one bad circuit does not abort a whole workload.
+    # A genuine SPEC-authoring error (missing file) must STILL abort — that
+    # is the user's spec being wrong, not a circuit being unrunnable.
+    import json, os, tempfile
+    from benchmark import runner as R
+    from benchmark.spec import SpecError
+
+    tmp = tempfile.mkdtemp(prefix="devq_unrunnable_")
+
+    # A deliberately malformed circuit: measures a register it never
+    # declares — invalid OpenQASM 2.0 (the real QASMBench vqe_uccsd defect).
+    bad = os.path.join(tmp, "malformed.qasm")
+    with open(bad, "w") as h:
+        h.write("OPENQASM 2.0;\ninclude \"qelib1.inc\";\n"
+                "qreg reg[2];\ncreg c[2];\nh reg[0];\n"
+                "measure q[0] -> c[0];\n")   # 'q' undeclared
+
+    # A SECOND, different malformed circuit. Both fail to parse and become
+    # placeholder REJECTED jobs — and their placeholder hashes must be
+    # DISTINCT (derived from the source path), or the two collapse onto one
+    # circuit_hash and the report shows only one, deduping the other. This
+    # is the collision that made rejected rows print a shared bare hash.
+    bad2 = os.path.join(tmp, "malformed2.qasm")
+    with open(bad2, "w") as h:
+        h.write("OPENQASM 2.0;\ninclude \"qelib1.inc\";\n"
+                "qreg other[3];\ncreg c[3];\nx other[1];\n"
+                "measure p[0] -> c[0];\n")   # 'p' undeclared, different file
+
+    spec_path = os.path.join(tmp, "wl.json")
+    with open(spec_path, "w") as h:
+        json.dump({
+            "name": "unrunnable", "seed": SEED,
+            "devices": [{"id": "alpha", "provider": "devq.simulated",
+                         "backend": {"kind": "fully_connected",
+                                     "num_qubits": 5}}],
+            "jobs": [
+                {"circuit": BELL},                       # runs
+                {"circuit": QASM2 + "conditional.qasm"},  # unsupported
+                {"circuit": bad},                        # malformed
+                {"circuit": bad2},                       # malformed (2nd)
+            ],
+        }, h)
+
+    try:
+        out = os.path.join(tmp, "run")
+        manifest = R.run(spec_path, out_dir=out, quiet=True)
+
+        entry = manifest["sessions"][0]
+        # The run COMPLETED (with failures) — it did not crash on the
+        # malformed circuit. This is the whole point: a bad circuit is a
+        # rejected row, not a fatal SpecError.
+        check(entry["outcome"] in (R.COMPLETED, R.WITH_FAILURES),
+              f"a workload with unrunnable circuits still completes, "
+              f"got {entry['outcome']}"
+              + (f" — {entry.get('error','')[:80]}"
+                 if entry["outcome"] == R.CRASHED else ""))
+
+        log = os.path.join(out, entry["log"])
+        recs = [json.loads(l) for l in open(log) if l.strip()]
+        summary = [r for r in recs if r.get("event") == "summary"][-1]
+        states = {row["job_id"]: row["state"] for row in summary["per_job"]}
+        rejects = {r["job_id"]: r.get("reason", "")
+                   for r in recs if r.get("event") == "reject"}
+
+        # Job 1 (bell) runs; jobs 2, 3, 4 reject.
+        state_vals = sorted(states.values())
+        n_finished = sum(1 for s in states.values() if s == "FINISHED")
+        n_rejected = sum(1 for s in states.values() if s == "REJECTED")
+        check(n_finished == 1 and n_rejected == 3,
+              f"bell FINISHED, all three unrunnable circuits REJECTED — got "
+              f"{state_vals}")
+
+        # The rejection reasons cover both flavours: the unsupported
+        # construct (feedback) and the parse failures.
+        reasons = " || ".join(rejects.values()).lower()
+        check("feedback" in reasons,
+              f"the unsupported circuit rejects citing missing feedback, "
+              f"reasons={list(rejects.values())}")
+        check("could not parse" in reasons or "parse" in reasons,
+              f"the malformed circuits reject citing a parse failure, "
+              f"reasons={list(rejects.values())}")
+
+        # The two DIFFERENT malformed circuits must have DISTINCT
+        # circuit_hashes — otherwise they collide onto one and the report
+        # shows only one rejected row, hiding the other. This is the bug
+        # that made rejected rows print a shared bare hash.
+        malformed_hashes = [row["circuit_hash"] for row in summary["per_job"]
+                            if row["state"] == "REJECTED"
+                            and row["circuit_hash"]
+                            and rejects.get(row["job_id"], "").lower()
+                                .startswith("could not parse")]
+        check(len(malformed_hashes) == len(set(malformed_hashes))
+              and len(malformed_hashes) == 2,
+              f"the two malformed circuits get distinct hashes (no "
+              f"collision), got {malformed_hashes}")
+
+        # The malformed circuit's reject record carries a circuit_label, so
+        # the results are self-describing (this is what stops rejected rows
+        # from printing a bare hash).
+        labelled = [r for r in recs if r.get("event") == "reject"
+                    and r.get("circuit_label")]
+        check(len(labelled) == 3,
+              f"all three reject records carry a circuit_label for the "
+              f"report, got {len(labelled)}")
+
+        # A genuine SPEC error still aborts: a missing circuit file is the
+        # user's mistake, not a circuit DevQ declines.
+        bad_spec = os.path.join(tmp, "missing.json")
+        with open(bad_spec, "w") as h:
+            json.dump({
+                "name": "missing", "seed": SEED,
+                "devices": [{"id": "alpha", "provider": "devq.simulated",
+                             "backend": {"kind": "linear", "num_qubits": 3}}],
+                "jobs": [{"circuit": "does_not_exist.qasm"}],
+            }, h)
+        raised = False
+        try:
+            R.run(bad_spec, out_dir=os.path.join(tmp, "x"), quiet=True)
+        except Exception:
+            raised = True
+        # R.run records a crashed session rather than propagating; check the
+        # outcome reflects the failure either way.
+        if not raised:
+            mf = R.run(bad_spec, out_dir=os.path.join(tmp, "x2"), quiet=True)
+            crashed = mf["sessions"][0]["outcome"] == R.CRASHED
+        else:
+            crashed = True
+        check(crashed,
+              "a missing circuit file is a spec error and fails the "
+              "session, not silently absorbed as a rejected job")
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
 
 def block_packing_across_devices():
     '''Bracket groups, batch packing and cross-device concurrency'''
@@ -3969,6 +4126,7 @@ BLOCKS = [
     ("name_index_equivalence",   block_name_index_equivalence),
     ("name_validation",          block_name_validation),
     ("rejection_semantics",      block_rejection_semantics),
+    ("unrunnable_circuits",      block_unrunnable_circuits),
     ("edge_threshold_semantics", block_edge_threshold_semantics),
     ("combined_thresholds",      block_combined_thresholds),
     ("packing_across_devices",   block_packing_across_devices),

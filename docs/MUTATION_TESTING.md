@@ -43,18 +43,20 @@ cannot.
 
 ## Results
 
-**114 distinct mutants, 112 killed, 2 excluded** (M10 equivalent and P7
-inert — see below). Grouped by subsystem. Several were re-run against
+**125 distinct mutants, 122 killed, 3 excluded** (M10 equivalent, P7 and
+CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 103/101/2 from the prior
-state plus the 11 new Fidelity mutants below (all killed — FID11 after a
-fixture was added for it), each verified by running the mutant against the
-affected block, not assumed. Earlier deltas: 66/64/2 before the metrics
-layer, plus the 14 Metrics, 3 Shell, 6 Frontend, 6 OpenQASM 2.0 parser, 6
-measurement/execution, and 2 provider-contract mutants. The pre-existing
-set was taken as given.
+The total is delta-consistent, not recounted: 114/112/2 from the prior
+state plus the 11 new unrunnable-circuit-detection mutants below (10
+killed — MC6 and SP3 after test blocks were strengthened for them — and
+CC1 inert), each verified by running the mutant against the affected
+block, not assumed. The 114/112/2 itself was 103/101/2 plus the 11
+Fidelity mutants (all killed, FID11 after a fixture was added for it).
+Earlier deltas: 66/64/2 before the metrics layer, plus the 14 Metrics, 3
+Shell, 6 Frontend, 6 OpenQASM 2.0 parser, 6 measurement/execution, and 2
+provider-contract mutants. The pre-existing set was taken as given.
 
 ### Device identity — `hardware/device.py`, `providers/`, `devq.py`
 
@@ -463,6 +465,51 @@ W1 initially survived: the assertion computed the expected job count
 together. Counts are now pinned in `run_tests.py`, with a second check
 that the spec still declares the same number — so a deliberate change to
 an example forces a deliberate change to the pin.
+
+---
+
+### Unrunnable-circuit detection and rejection — `circuits/circuit_rep.py`, `frontends/qasm2/parser.py`, `kernel/kernel.py`, `benchmark/spec.py`
+
+DevQ declines a circuit it cannot faithfully run — a well-formed but
+unsupported construct (classical control, mid-circuit measurement) or
+malformed source that fails to parse — and surfaces it as a REJECTED job
+with a reason rather than dropping it, forging a number, or crashing the
+run. These mutants attack each link of that chain.
+
+| # | Mutation | Result |
+|---|---|---|
+| MC1 | `find_mid_circuit_measurement` always returns None (never detects) | killed (1) |
+| MC2 | the gate-after-measure check disabled (`if False and ...`) | killed (1) |
+| MC3 | `_parse_if` no longer calls `_mark_unrunnable` | killed (1) |
+| MC4 | `parse()` skips the mid-circuit scan (result never applied) | killed (1) |
+| MC5 | the qrun-path kernel guard neutralised (`reason = None`) | killed (1) |
+| MC6 | the scheduling-path kernel guard neutralised | killed (1) |
+| RJ1 | the `reject` event drops `circuit_label` | killed (1) |
+| SP1 | a parse failure re-raises `SpecError` instead of a placeholder job | killed (1) |
+| SP2 | the placeholder is built but never marked unrunnable | killed (1) |
+| SP3 | every unparseable placeholder gets one constant hash (collision) | killed (1) |
+| CC1 | the classical-control reason wording changed ("mid-circuit"→other) | **inert** |
+
+MC6 survived first. The kernel has TWO unrunnable-circuit guards — one on
+the `qrun` fast path, one on the scheduling (`qrunpack`) path — and
+`rejection_semantics` exercised only the first, so neutralising the second
+changed nothing observable. The block now submits an unrunnable circuit
+via the queue and drains it, so both guards are covered; MC6 is killed.
+
+SP3 survived first, twice over. The first attempt was a no-op mutation
+(`chash = "" or hashlib...` still evaluates to the hash); the second, a
+genuine constant-hash collision, passed because the block had only ONE
+malformed circuit and a collision needs two to be visible. The
+`unrunnable_circuits` block now runs two DIFFERENT malformed circuits and
+asserts their hashes differ — the collision that made rejected rows print
+a shared bare hash. Both drove the block that now exists to catch them.
+
+CC1 is **inert**, like P7: it changes only the human-readable wording of a
+rejection reason, which no test asserts on verbatim (and none should — the
+exact prose is not a behavioural contract). The reason is checked for the
+substring that carries meaning ("feedback"), not for its full text, so a
+cosmetic reword leaves the suite correctly green. Recorded, not counted as
+a gap.
 
 ---
 
