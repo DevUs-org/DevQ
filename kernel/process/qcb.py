@@ -37,6 +37,14 @@ class QCB:
         # (sticky — a routed job is never re-routed).
         self.device_index = None
 
+        # The allocation decision that placed this job — the candidate
+        # blocks a scoring allocator considered, pinned by the scheduler at
+        # allocation time so a batch scheduler cannot clobber it across
+        # jobs. None for a non-scoring allocator or before allocation. The
+        # kernel reads it on dispatch to emit the `allocate` event that
+        # makes an α/β allocator sweep answerable from the log.
+        self.alloc_decision = None
+
         # An OPAQUE circuit-identity string, set by whoever submits the
         # job (the benchmark layer computes a content hash; see
         # benchmark/reference.circuit_hash). The kernel never computes or

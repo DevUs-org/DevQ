@@ -39,10 +39,12 @@ Contract:
 
 from abc import ABC, abstractmethod
 
+from kernel.sweep import Sweepable
+
 from .filtering import eligible_qubits
 
 
-class BaseAllocator(ABC):
+class BaseAllocator(Sweepable, ABC):
 
     def __init__(self, qubit_error_weight=0.1, edge_error_weight=0.9):
         '''

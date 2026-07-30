@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 57 sanity blocks in `run_tests.py`, covering
+Specification for the 58 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 57 blocks, one line each
+python run_tests.py              # all 58 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -1490,6 +1490,41 @@ for *any* Sweepable, so testing it through one real implementation cannot
 separate "the contract is right" from "that component is right". The
 double tests the seam, so components inheriting it inherit proven
 machinery.
+
+
+### `allocator_scoring`
+
+The allocator as the second `Sweepable` component. It pins
+`NoiseGraphAllocator`'s per-block cost decomposition — `qubit_error_sum`
+and `edge_error_sum` per candidate block — against independently computed
+values, asserts the `α·Σq + β·Σe` reproduces-S invariant, and shows an
+α/β sweep flipping the chosen block from `(0,1,2)` (lowest edge cost) to
+`(3,4,5)` (lower qubit cost) as qubit weight rises, all from the recorded
+decomposition. The faithfulness anchor checks that replaying at the
+allocator's live weights reproduces the block `allocate()` actually
+reserves, and a cost-oblivious allocator (Static) is confirmed
+not-sweepable — the honest silence, no `allocate` event.
+
+Two things unique to the allocator are exercised end to end against a real
+run. **The `allocate` event**: a workload is run and every dispatched job
+is shown to emit exactly one `allocate` event carrying its own placement's
+per-block scores with the decomposition — dispatch-to-allocate parity that
+a stash clobber breaks by dropping events. **Per-job capture**: each job's
+recorded decision must contain the block that job was placed on (a clobber
+would have a job reading a later job's candidates, where its own placement
+is typically absent), and the base-scheduler path's capture
+(`_attempt_allocation`, distinct from the packing path smoke.json drives)
+is checked directly by driving an FCFS scheduler and asserting the
+decision landed on the job. The log-driven replay closes it: the sweep is
+answerable from the recorded log alone, not just a live object.
+
+Why the strong per-job assertions: the allocator's decision stash is
+per-instance and a batch scheduler allocates several jobs before any
+dispatch, so without pinning each job's decision at allocation time the
+last job's decision would be reported for all of them. Two mutation
+survivors drove these assertions — distinctness of candidate sets alone
+was too weak to witness the clobber; parity and placement-in-own-candidates
+are the sharp tests.
 
 
 ### `provider_registration`

@@ -312,6 +312,26 @@ class Kernel:
                    device_label = ctx.label,
                    v2p_map      = qcb.v2p_map,
                    shots        = ctx.shots)
+
+        # Allocation decision (Phase 5.5a). Mirrors the router's `route`
+        # event: the allocator recorded the candidate blocks it scored to
+        # place THIS job during its live allocate(); here, on the dispatch
+        # that placement enabled, the kernel reads that decision back and
+        # logs the per-block scores, so an α/β sweep is answerable from the
+        # log. A scoring allocator exposes it via explain_recorded (built
+        # from the stash, not a re-enumeration — the pool has since
+        # changed); a cost-oblivious allocator (Static/Graph) is not
+        # sweepable and contributes nothing, the same honest silence as a
+        # non-scoring router. Emitted only on dispatch — a failed WAITING
+        # retry placed nothing and is not a decision worth logging.
+        scores = self._allocation_scores(ctx, qcb)
+        if scores is not None:
+            self._emit("allocate",
+                       job_id  = qcb.job_id,
+                       device  = ctx.index,
+                       block   = list(qcb.v2p_map.values()),
+                       scores  = scores)
+
         qcb.dispatched_seq = self._seq - 1
         qcb.dispatched_at  = time.time()
         qcb.future = ctx.device.execute(qcb.circuit, qcb.v2p_map,
@@ -319,6 +339,29 @@ class Kernel:
         qcb.state  = JobStates.RUNNING
         ctx.running_jobs += 1
         self._pending.append(qcb)
+
+    def _allocation_scores(self, ctx, qcb):
+        '''
+        Per-block scores for the allocation that placed THIS job, or None
+        if the context's allocator does not score. Reads the decision the
+        scheduler pinned on the job at allocation time (qcb.alloc_decision)
+        — per-job, so a batch scheduler that allocated several jobs before
+        dispatch reports each its own decision, not the last one's. The
+        block keys are lists (JSON-friendly) rather than the tuple keys the
+        allocator uses internally.
+        '''
+        allocator = ctx.memory_manager.allocator
+        if not getattr(allocator, "is_sweepable", lambda: False)():
+            return None
+        recorded = getattr(qcb, "alloc_decision", None)
+        if not recorded:
+            return None
+        report = allocator.explain_recorded(recorded)
+        return [
+            {"block": list(row["key"]), "score": row["score"],
+             "terms": row["terms"]}
+            for row in report
+        ]
 
     def _resolve_pending(self):
         '''

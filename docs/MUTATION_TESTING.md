@@ -43,16 +43,16 @@ cannot.
 
 ## Results
 
-**131 distinct mutants, 128 killed, 3 excluded** (M10 equivalent, P7 and
+**135 distinct mutants, 132 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 125/122/3 from the prior
-state plus the 6 new Sweepable-contract-and-decomposition mutants below
-(all killed — MS-a after the `sweepable_contract` block was strengthened
-for it), each verified by running the mutant against the affected block,
-not assumed. The 125/122/3 itself was 114/112/2 plus the 11
+The total is delta-consistent, not recounted: 131/128/3 from the prior
+state plus the 4 new allocator-sweep-and-capture mutants below (all
+killed — MA-b and MA-c after `allocator_scoring` was strengthened for
+them), each verified by running the mutant against the affected block,
+not assumed. The 131/128/3 itself was 125/122/3 plus the 6
 Fidelity mutants (all killed, FID11 after a fixture was added for it).
 Earlier deltas: 66/64/2 before the metrics layer, plus the 14 Metrics, 3
 Shell, 6 Frontend, 6 OpenQASM 2.0 parser, 6 measurement/execution, and 2
@@ -546,6 +546,40 @@ two witnessably different, and the mutant is now killed — the same
 survive-then-strengthen pattern as FID11 and the unrunnable-circuit
 mutants. A test double that does not differ observably from the code path
 it exercises cannot witness a mutation to that path.
+
+### Allocator sweep and per-job capture — `kernel/memory/allocators/noise_graph_allocator.py`, `kernel/kernel.py`, `kernel/scheduler/`
+
+Phase 5.5a. The allocator is the second `Sweepable` component: it logs the
+per-block cost decomposition (the `allocate` event) and its decision is
+pinned per-job so a batch scheduler cannot clobber it. Four mutants, all
+killed; block `allocator_scoring`.
+
+- **MA-a — swapped decomposition sums** in the general-path enumeration.
+  Killed by the pinned `qubit_error_sum`/`edge_error_sum` per block.
+- **MA-d — dropped α/β weighting in the allocator's `_sweep_score`.**
+  Killed by the reproduces-S invariant and the pinned swept block choice.
+
+Two survived first and drove the block's per-job assertions:
+
+- **MA-b — the kernel reads the allocator's live `_last_decision` at
+  dispatch** instead of the job's pinned `alloc_decision` (reintroducing
+  the batch clobber). It SURVIVED the first assertion — distinctness of
+  candidate sets across jobs — because on the shipped workload two jobs
+  with different pool states differ even under the clobber. The killing
+  assertion is **dispatch-to-allocate parity**: under the clobber, jobs
+  whose decision was overwritten before dispatch emit no `allocate` event,
+  so the dispatched-job and allocated-job id sets diverge. Distinctness
+  measured the wrong thing; parity measures the actual invariant.
+- **MA-c — dropped the per-job capture in the base scheduler**
+  (`_attempt_allocation`). It SURVIVED because the shipped smoke workload
+  drives the *packing* scheduler, whose capture is in a different method
+  (`_try_allocate_temp`) — the base/serial path was untested. The block
+  now drives an FCFS scheduler directly and asserts the decision lands on
+  the job, exercising the path a batch-only workload never touches.
+
+Both are the same lesson: a witness workload that does not force the
+discriminating case leaves an assertion decorative. The clobber needed a
+parity check, and the serial-path capture needed a serial scheduler.
 
 ---
 

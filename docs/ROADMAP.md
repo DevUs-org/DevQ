@@ -152,9 +152,13 @@ above once Phase 5 ships:
   the measuring surface, and the two pieces once tracked under it have
   moved to where they actually belong — **fidelity** to 5.4 (it needs the
   noiseless reference run, which is 5.4 machinery, so it cannot land
-  before that suite exists) and the **comparison modes** to 5.5b (they
-  present comparison results, so they follow the matrix and sweep engine
-  they read from rather than preceding it).
+  before that suite exists) and the two **comparison modes** that diff or
+  sweep to 5.5b (they present cross-session results, so they follow the
+  matrix and sweep engine they read from). The *absolute* view — one
+  session's own metric bundle — is not a separate mode: it is exactly the
+  metric bundle this sub-phase produces, so it shipped here in 5.3. Only
+  the inter-component (diff) and intra-component (sweep) modes remain,
+  and those are 5.5b.
 - **5.4 — noiseless reference run and fidelity** ◐ The reference-run
   machinery and the **fidelity metric** are **done**: a reference-capable
   provider produces each circuit's exact noiseless ideal
@@ -172,16 +176,37 @@ above once Phase 5 ships:
   through the finished metric to gather numbers — a validation activity on
   DevQ's machinery, not a change to it (QASMBench is workload data, cited
   in [`REFERENCES.md`](REFERENCES.md), not a DevQ component).
-- **5.5a — comparison matrix and α/β sweep** 🔭 the cross-config
-  analysis engine: run the matrix, and answer an α/β weight sweep from one
-  recorded run via the per-candidate route scores (enhancing `explain()`
-  to log the cost decomposition the sweep needs).
-- **5.5b — comparison modes** 🔭 the reading surface over 5.5a: absolute
-  (one session's bundle), inter-component (diff bundles across the
-  matrix's sessions), intra-component (present the sweep). Deferred to
-  after 5.5a deliberately — the modes present comparison results, so
-  building them before the matrix and sweep exist would mean designing a
-  reader for data that is not yet produced.
+- **5.5a — comparison matrix and α/β sweep** ◐ the cross-config
+  analysis engine. Two parts. **The sweep** answers an α/β weight sweep
+  from one recorded run rather than by re-executing every job, and it was
+  built as a *general* capability rather than a router-only one: the
+  `Sweepable` contract (`kernel/sweep.py`) unifies `explain()` (the log's
+  score report) and the sweep into one set of hooks a scoring component
+  supplies once, inherited by `BaseRouter`, `BaseAllocator` and
+  `BaseScheduler` alike. Deciding this seam was general — rather than
+  wiring `explain()`/decomposition into the router alone and retrofitting
+  the other components later — was deliberate: the same "re-weight the
+  recorded raw terms" operation serves any scoring component, and building
+  it router-shaped would have meant tearing it up at the first allocator.
+  **Done so far**: the contract; `NoiseRouter` and `NoiseGraphAllocator`
+  on it, each logging the α/β-free cost decomposition (`route` and the new
+  `allocate` event), sweepable end-to-end from a recorded log with a
+  faithfulness anchor; the scheduler base carries the contract at
+  router-parity though shipped schedulers have no scoring parameter yet
+  and report not-sweepable honestly (the first scored scheduler is the QOS
+  baseline in 5.6). Selectable matrix components (`matrix_configs(select=)`
+  and CLI flags) also landed here. **Remaining**: the matrix comparison
+  bundle assembly and the sweep-driver surface in `benchmark/`
+  (`comparison.py`) that reads a run and produces the swept/assembled
+  result the 5.5b modes present.
+- **5.5b — comparison modes** 🔭 the reading surface over 5.5a, two
+  modes: inter-component (diff bundles across the matrix's sessions) and
+  intra-component (present the sweep). The *absolute* view — one session's
+  own bundle — is not among them: it is the 5.3 metric bundle, already
+  shipped, so 5.5b is the two genuine comparisons that need 5.5a's engine
+  underneath. Deferred to after 5.5a deliberately — the modes present its
+  results, so building them first would mean designing a reader for data
+  not yet produced.
 - **5.6 — baseline plugins** 🔭 published baselines to compare against;
   this is what turns the platform into a result.
 - **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer,

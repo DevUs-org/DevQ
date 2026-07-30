@@ -166,10 +166,21 @@ class Sweepable:
         tagged = self._sweep_terms(decision)
         if tagged is NOT_SCORED:
             return None
+        return self.explain_recorded(tagged)
 
+    def explain_recorded(self, recorded_terms):
+        '''
+        The same report as explain_decision, but from ALREADY-RECORDED
+        terms rather than a live decision — for a component that computed
+        and stashed its candidates during its live decision and must not
+        re-enumerate (e.g. an allocator whose pool state has since changed
+        because it reserved the winning block). `recorded_terms` is
+        [(key, terms_dict), ...]; scoring and ranking run at live params,
+        identical to explain_decision, so the two agree by construction.
+        '''
         params = self.live_params()
         scored = [(key, terms, self._sweep_score(terms, params))
-                  for key, terms in tagged]
+                  for key, terms in recorded_terms]
         ranked = self._sweep_rank(scored, params)
         return [
             {"key": key, "score": final, "terms": terms}

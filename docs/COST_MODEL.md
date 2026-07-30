@@ -140,3 +140,26 @@ lowest-error edge $(1,3) = 0.0068$; qubit-only ($\alpha=1$, $\beta=0$)
 and the $1{:}9$ ratio both still select $\{1, 2\}$, the latter because
 $1{:}9$ normalises to exactly the $0.1 / 0.9$ default. This is the axis
 Phase 5.5 sweeps.
+
+**Answering the sweep from one recorded run (Phase 5.5a).** The sweep
+does not re-execute anything. Both the allocator and the router record,
+per decision, the $\alpha/\beta$-*free* summands of $S$ — $\sum_{q}
+\varepsilon_q$ and $\sum_{(u,v) \in E(B)} \varepsilon_{uv}$ per candidate
+— in the event log (the `allocate` event's per-block `scores` for the
+allocator, the `route` event's per-device `scores` for the router; see
+[`REGISTRY.md`](REGISTRY.md)). Because $S(\alpha') = \alpha' \sum_q
+\varepsilon_q + (1-\alpha') \sum_{uv} \varepsilon_{uv}$ is linear in the
+summands, any $\alpha'$'s decision is recomputed by re-weighting the
+recorded sums and taking the $\arg\min$ afresh — no allocator re-run.
+This is exactly the `Sweepable` contract: the summands are the raw terms,
+$S$ is the per-candidate score, and the $\arg\min$ is the rank.
+
+Two scope notes. The allocator's candidate set is **pool-dependent** — a
+recorded decision is re-weightable among the blocks that were free at
+that placement — so an allocator sweep answers "given the same free-pool
+state, would a different $\alpha/\beta$ have chosen a different block".
+And the shared-scope $\alpha/\beta$ (one key pair feeds both the router
+yardstick and each device's allocator) means a sweep must be explicit
+about **which consumer** it re-weights: the router's device choice, or a
+device's block choice. They are the same weights over two different
+decisions.

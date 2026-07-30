@@ -3528,6 +3528,168 @@ def block_sweepable_contract():
           "the default _sweep_terms returns the NOT_SCORED sentinel")
 
 
+def block_allocator_scoring():
+    '''Allocator decomposition, block sweep, and the allocate event'''
+    # The allocator is the second Sweepable component. It scores connected
+    # BLOCKS (not devices), logs the α/β-free decomposition per block, and
+    # its decision reaches the log as an `allocate` event on dispatch. This
+    # block pins the decomposition and the swept block choice against
+    # independently computed values, proves the faithfulness anchor, and
+    # exercises the two things unique to the allocator: the allocate event
+    # in a real run, and the PER-JOB decision capture a batch scheduler
+    # needs (the allocator's stash is per-instance and would otherwise be
+    # clobbered across jobs allocated before any dispatch).
+    import io, contextlib, json, glob, tempfile, os
+    from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
+    from kernel.memory.allocators.static_allocator import StaticAllocator
+    from kernel.memory.qubit_pool import QubitPool
+    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from frontends.qasm2.parser import parse
+
+    try:
+        p = IBMSimulatedProvider(seed=SEED)
+        with contextlib.redirect_stdout(io.StringIO()):
+            dev = p.get_device(backend_name="FakeNairobiV2")
+    except Exception:
+        check(True, "qiskit not installed - allocator scoring block skipped")
+        return
+
+    circuit = parse(open(GHZ).read(), GHZ)   # 3-qubit, several candidate blocks
+    pool    = QubitPool(dev.num_qubits)
+    alloc   = NoiseGraphAllocator(qubit_error_weight=0.1, edge_error_weight=0.9)
+
+    # PINNED DECOMPOSITION. Independently computed from the pinned
+    # calibration; a swapped or mis-summed decomposition fails here even
+    # though the weighted S might survive. Keyed by block tuple.
+    report = {r["key"]: r for r in alloc.explain_decision(
+        (circuit, dev, pool, None, None))}
+    want = {
+        (0, 1, 2): (0.097200, 0.015577, 0.023739),
+        (1, 3, 5): (0.064700, 0.019363, 0.023897),
+        (3, 4, 5): (0.063100, 0.019577, 0.023929),
+        (3, 5, 6): (0.070600, 0.023232, 0.027969),
+    }
+    for block, (wq, we, ws) in want.items():
+        t = report[block]["terms"]
+        check(round(t["qubit_error_sum"], 6) == wq,
+              f"block {block} qubit_error_sum {wq}, got {round(t['qubit_error_sum'],6)}")
+        check(round(t["edge_error_sum"], 6) == we,
+              f"block {block} edge_error_sum {we}, got {round(t['edge_error_sum'],6)}")
+        check(round(report[block]["score"], 6) == ws,
+              f"block {block} S {ws}, got {round(report[block]['score'],6)}")
+        # The sweep invariant: α·Σq + β·Σe reproduces S.
+        rc = 0.1 * t["qubit_error_sum"] + 0.9 * t["edge_error_sum"]
+        check(abs(rc - report[block]["score"]) < 1e-9,
+              f"block {block}: α·Σq+β·Σe reproduces S")
+
+    # SWEEP from the recorded decomposition flips the chosen block. Pinned
+    # winners, independently computed: edge-heavy favours (0,1,2)'s low
+    # edge cost, qubit weight shifts to (3,4,5)'s lower Σq.
+    recorded = [(r["key"], r["terms"]) for r in report.values()]
+    for a, want_block in ((0.0, (0, 1, 2)), (0.1, (0, 1, 2)),
+                          (0.5, (3, 4, 5)), (1.0, (3, 4, 5))):
+        got = alloc.sweep_decision(
+            recorded, {"qubit_error_weight": a, "edge_error_weight": 1 - a})
+        check(got == want_block,
+              f"block sweep α={a} picks {want_block}, got {got}")
+
+    # FAITHFULNESS ANCHOR: replay at live weights reproduces what allocate()
+    # actually reserves.
+    pool2 = QubitPool(dev.num_qubits)
+    live_map = alloc.allocate(circuit, dev, pool2, None, None)
+    live_block = tuple(sorted(live_map.values()))
+    anchor = alloc.sweep_decision(recorded, alloc.live_params())
+    check(anchor == live_block,
+          f"allocator faithfulness: replay {anchor} == live allocate {live_block}")
+
+    # NOT-SCORED DEFAULT: a cost-oblivious allocator is not sweepable and
+    # derives no explain — the honest silence, no allocate event.
+    check(StaticAllocator().is_sweepable() is False,
+          "a cost-oblivious allocator reports not sweepable")
+    check(alloc.is_sweepable() is True,
+          "the noise-graph allocator reports sweepable")
+
+    # THE ALLOCATE EVENT + PER-JOB CAPTURE, end to end. Run a real workload
+    # whose batch scheduler allocates several jobs before any dispatch, and
+    # confirm each job's allocate event carries ITS OWN decision, not the
+    # last job's (the clobber the per-job pin fixes). smoke.json uses the
+    # default packing scheduler.
+    from benchmark.runner import run
+    with tempfile.TemporaryDirectory() as d:
+        with contextlib.redirect_stdout(io.StringIO()):
+            run("benchmark/workloads/smoke.json", out_dir=d, quiet=True)
+        logf = glob.glob(os.path.join(d, "*.jsonl"))[0]
+        recs   = [json.loads(l) for l in open(logf)]
+        allocs = [r for r in recs if r.get("event") == "allocate"]
+        disp   = [r for r in recs if r.get("event") == "dispatch"]
+
+    check(len(allocs) >= 2,
+          f"a real run emits allocate events, got {len(allocs)}")
+    check(all("scores" in a and a["scores"] for a in allocs),
+          "every allocate event carries per-block scores")
+    check(all("qubit_error_sum" in a["scores"][0]["terms"] for a in allocs),
+          "allocate scores carry the α/β-free decomposition")
+
+    # PARITY: with a scoring allocator, every dispatched job must produce
+    # exactly one allocate event for ITS OWN placement. A stash clobber
+    # (reading the allocator's live _last_decision at dispatch instead of
+    # the job's pinned decision) drops events for jobs whose decision was
+    # overwritten before they dispatched — so the job-id sets diverge.
+    disp_ids  = {r["job_id"] for r in disp}
+    alloc_ids = {a["job_id"] for a in allocs}
+    check(disp_ids == alloc_ids,
+          f"every dispatched job has its own allocate event "
+          f"(dispatched={sorted(disp_ids)}, allocated={sorted(alloc_ids)})")
+
+    # Per-job capture: EACH job's recorded decision must contain the block
+    # that job was placed on. This is the invariant a stash clobber breaks
+    # — a job reading a later job's decision would find its own placement
+    # absent from those candidates. Distinctness of candidate sets alone is
+    # too weak (two jobs with different pool states differ even under a
+    # clobber); "my placement is among my candidates" is the sharp test.
+    for a in allocs:
+        cands  = [tuple(s["block"]) for s in a["scores"]]
+        placed = tuple(a["block"])
+        check(placed in cands,
+              f"job {a['job_id']}'s placement {placed} is among its own "
+              f"recorded candidates (no stash clobber)")
+
+    # The logged decision re-derives the placement from the LOG alone — the
+    # sweep is answerable from a recorded run, not just a live object.
+    a0 = allocs[0]
+    log_recorded = [(tuple(s["block"]), s["terms"]) for s in a0["scores"]]
+    run_params = {
+        "qubit_error_weight": a0["scores"][0]["terms"]["qubit_error_weight"],
+        "edge_error_weight" : a0["scores"][0]["terms"]["edge_error_weight"],
+    }
+    replayed = NoiseGraphAllocator().sweep_decision(log_recorded, run_params)
+    check(replayed == tuple(a0["block"]),
+          f"log-driven replay reproduces placement {tuple(a0['block'])}, "
+          f"got {replayed}")
+
+    # BASE-SCHEDULER PATH capture. smoke.json drives the packing scheduler,
+    # so the FCFS/base path's capture (_attempt_allocation) is otherwise
+    # untested — a batch scheduler and a serial one pin the decision in
+    # different methods. Drive the base path directly and assert the
+    # decision landed on the job.
+    from kernel.scheduler.fcfs_scheduler import FCFSScheduler
+    from kernel.memory.memory_manager import MemoryManager
+    from kernel.process.qcb import QCB
+    from kernel.process.process_table import ProcessTable
+
+    mm = MemoryManager(dev, NoiseGraphAllocator(qubit_error_weight=0.1,
+                                                edge_error_weight=0.9))
+    sched = FCFSScheduler(mm, ProcessTable())
+    job = QCB(job_id=99, circuit=parse(open(BELL).read(), BELL))
+    sched.enqueue(job)
+    sched.schedule()
+    check(job.alloc_decision is not None,
+          "the base scheduler path pins the allocation decision on the job")
+    # And it's the real decision — its blocks carry the decomposition.
+    check(all("qubit_error_sum" in t for _, t in job.alloc_decision),
+          "the base-path captured decision carries the decomposition")
+
+
 def block_provider_registration_enforced():
     '''No device enters DevQ from an unregistered provider'''
     # MUTATION WITNESS. is_registered() returning True unconditionally
@@ -4338,6 +4500,7 @@ BLOCKS = [
     ("fidelity",                 block_fidelity),
     ("router_scoring",           block_router_scoring),
     ("sweepable_contract",       block_sweepable_contract),
+    ("allocator_scoring",        block_allocator_scoring),
     ("provider_registration",    block_provider_registration_enforced),
     ("device_identity",          block_device_identity),
     ("same_kind_isolation",      block_same_kind_device_isolation),

@@ -118,6 +118,11 @@ class PackingScheduler(BaseScheduler):
                 max_qubit_error=qcb.max_qubit_error,
                 max_edge_error=qcb.max_edge_error
             )
+            # Pin this job's allocation decision now, before the next job's
+            # allocate() overwrites the allocator's per-instance stash. See
+            # BaseScheduler._attempt_allocation for the same capture and why.
+            qcb.alloc_decision = getattr(
+                self.memory_manager.allocator, "_last_decision", None)
             return mapping
         except Exception:
             return None

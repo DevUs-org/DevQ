@@ -54,6 +54,14 @@ class BaseScheduler(ABC):
             )
             qcb.v2p_map = mapping
             qcb.state   = JobStates.RUNNING
+            # Capture the allocation decision onto THIS job immediately —
+            # the allocator's stash is per-instance and would be clobbered
+            # by the next job's allocate(), so a batch scheduler that
+            # allocates several jobs before any dispatch must pin each
+            # job's decision here, at the call that produced it. None for a
+            # non-scoring allocator. The kernel reads this on dispatch.
+            qcb.alloc_decision = getattr(
+                self.memory_manager.allocator, "_last_decision", None)
             return True
         except Exception:
             reason = self.memory_manager.unsatisfiable_reason(

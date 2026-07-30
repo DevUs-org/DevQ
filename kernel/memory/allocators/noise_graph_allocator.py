@@ -28,51 +28,97 @@ class NoiseGraphAllocator(BaseAllocator):
 
     def allocate(self, circuit, device, pool,
                  max_qubit_error=None, max_edge_error=None):
-        ALPHA = self.qubit_error_weight  # node cost factor
-        BETA  = self.edge_error_weight   # edge cost factor
-        best_score = float("inf")
+        '''
+        Choose the minimum-S connected block and reserve it. The block
+        CHOICE funnels through the same Sweepable hooks a weight sweep
+        replays — _sweep_terms enumerates and decomposes the candidates,
+        _sweep_rank scores and ranks them — so live allocation, explain()
+        and a sweep cannot drift. The pool RESERVATION is the one
+        side-effect and stays strictly outside the pure scoring contract.
+        '''
+        decision = (circuit, device, pool, max_qubit_error, max_edge_error)
+        tagged   = self._sweep_terms(decision)      # [(block, terms), ...]
 
+        if not tagged:
+            # No candidates: record nothing to explain, and let the caller
+            # classify the failure (WAITING/REJECTED) as before.
+            self._last_decision = None
+            raise Exception(
+                "No connected qubit block available"
+                if circuit.num_qubits != 2
+                else "No connected qubit pair available"
+            )
+
+        best_block = self.sweep_decision(tagged, self.live_params())
+
+        # Stash the decision that placed this job so the kernel can emit an
+        # `allocate` event (per-block scores) on dispatch, mirroring how the
+        # router's `route` event is emitted. Recorded, not emitted, here —
+        # the allocator never touches the sink; the kernel reads this back
+        # via explain_decision. Overwritten each allocation; a retried
+        # WAITING job that later dispatches carries the decision that
+        # actually placed it, which is the one worth logging.
+        self._last_decision = tagged
+
+        pool.allocate(list(best_block))
+        return {v: p for v, p in enumerate(best_block)}
+
+    # ── Sweepable hooks ───────────────────────────────────────────────────────
+
+    def live_params(self):
+        '''This allocator's live cost weights — the sweep anchor.'''
+        return {
+            "qubit_error_weight": self.qubit_error_weight,
+            "edge_error_weight" : self.edge_error_weight,
+        }
+
+    def _sweep_terms(self, decision):
+        '''
+        Enumerate every candidate connected block and decompose its cost
+        into the α/β-free sums the sweep re-weights: qubit_error_sum
+        (Σ readout error over the block) and edge_error_sum (Σ two-qubit
+        error over the block's INTERNAL edges — edges with one endpoint
+        outside are not charged, since the circuit never uses them).
+
+        The block itself (a sorted tuple of physical qubits) is the stable
+        candidate key, the allocator's analog of the router's device
+        index. Candidacy is pool-dependent — only blocks free right now
+        are enumerated — so a recorded allocation decision is re-weightable
+        among exactly the blocks that were real candidates at that
+        placement, which is the honest scope of an allocator sweep.
+
+        Pure: reads pool/device state, reserves nothing.
+        '''
+        circuit, device, pool, max_qubit_error, max_edge_error = decision
         required = circuit.num_qubits
         usable   = eligible_qubits(device, pool.free_qubits, max_qubit_error)
         G        = device.graph
 
-        if required == 2:
-            best_edge = None
+        tagged = []
 
+        if required == 2:
+            # Connected pairs enumerated directly from the edge map — the
+            # same fast path allocate() used before the refactor.
             for (u, v) in device.edge_error_map.keys():
                 if (u in usable and v in usable
                         and edge_allowed(device, u, v, max_edge_error)):
+                    block = (u, v) if u < v else (v, u)
+                    tagged.append((block, {
+                        "qubit_error_sum": device.qubit_error(u)
+                                           + device.qubit_error(v),
+                        "edge_error_sum" : device.edge_error(u, v),
+                    }))
+            return tagged
 
-                    node_cost = device.qubit_error(u) + device.qubit_error(v)
-                    edge_cost = device.edge_error(u, v)
-
-                    score = ALPHA * node_cost + BETA * edge_cost
-
-                    if score < best_score:
-                        best_score = score
-                        best_edge = (u, v)
-
-            if best_edge is None:
-                raise Exception("No connected qubit pair available")
-
-            pool.allocate(list(best_edge))
-
-            return {0: best_edge[0], 1: best_edge[1]}
-
-        best_block = None
-
+        seen_blocks = set()
         for start in sorted(usable):
-
             visited = []
             queue = deque([start])
 
             while queue and len(visited) < required:
-
                 q = queue.popleft()
-
                 if q not in visited and q in usable:
                     visited.append(q)
-
                     for neighbor in G.neighbors(q):
                         if (neighbor in usable
                                 and neighbor not in visited
@@ -81,32 +127,56 @@ class NoiseGraphAllocator(BaseAllocator):
                             queue.append(neighbor)
 
             if len(visited) >= required:
+                block = tuple(sorted(visited[:required]))
+                if block in seen_blocks:
+                    continue
+                seen_blocks.add(block)
 
-                candidate = visited[:required]
-                score = 0
-
-                # Node cost
-                for q in candidate:
-                    score += ALPHA * device.qubit_error(q)
-
-                # Edge cost
-                for u in candidate:
+                qubit_sum = sum(device.qubit_error(q) for q in block)
+                edge_sum  = 0.0
+                for u in block:
                     for v in G.neighbors(u):
-                        if v in candidate and u < v:
-                            score += BETA * device.edge_error(u, v)
+                        if v in block and u < v:
+                            edge_sum += device.edge_error(u, v)
 
-                # Block Choosing
-                if score < best_score:
-                    best_score = score
-                    best_block = sorted(candidate)
+                tagged.append((block, {
+                    "qubit_error_sum": qubit_sum,
+                    "edge_error_sum" : edge_sum,
+                }))
+        return tagged
 
-        if best_block is None:
-            raise Exception("No connected qubit block available")
+    def _sweep_score(self, terms, params):
+        '''
+        One block's cost S = α·Σq + β·Σe from its decomposition and the
+        cost weights. No inf case here: every enumerated block has a real
+        decomposition (enumeration already excluded ineligible qubits and
+        disallowed edges), unlike the router, whose candidate may have no
+        mapping at all.
+        '''
+        return (params["qubit_error_weight"] * terms["qubit_error_sum"]
+                + params["edge_error_weight"] * terms["edge_error_sum"])
 
-        pool.allocate(best_block)
+    def _sweep_rank(self, scored, params):
+        '''
+        Rank the blocks by S. Unlike the router there is NO across-candidate
+        normalisation — S is directly comparable across blocks on one
+        device — so the final score is the raw S and the enriched terms
+        carry the decomposition plus the weights used. Selection is the
+        base's argmin over (S, block); the block-key tuple gives a
+        deterministic tie-break (lower qubits first), matching the old
+        allocate()'s sorted-candidate preference.
+        '''
+        ranked = []
+        for key, terms, s in scored:
+            ranked.append((key, s, {
+                "qubit_error_sum"   : terms["qubit_error_sum"],
+                "edge_error_sum"    : terms["edge_error_sum"],
+                "block_cost"        : s,
+                "qubit_error_weight": params["qubit_error_weight"],
+                "edge_error_weight" : params["edge_error_weight"],
+            }))
+        return ranked
 
-        return {v: p for v, p in enumerate(best_block)}
-    
     def feasible(self, circuit, device,
                  max_qubit_error=None, max_edge_error=None):
         reason = super().feasible(circuit, device,

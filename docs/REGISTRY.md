@@ -467,15 +467,28 @@ then ignored.
 
 ### Records
 
-Six kinds: `submit`, `route`, `reject`, `dispatch`, `resolve`,
-`cycle_end`. Every record carries `event`, `cycle` and `seq`, stamped
-centrally in `_emit` so no call site can forget them or disagree about
-the current cycle.
+Seven kinds: `submit`, `route`, `allocate`, `reject`, `dispatch`,
+`resolve`, `cycle_end`. Every record carries `event`, `cycle` and `seq`,
+stamped centrally in `_emit` so no call site can forget them or disagree
+about the current cycle.
 
-`route` records **all candidate scores**, not just the winner's, via the
-router's `explain()`. The winner alone cannot answer how close the
-decision was, so a weight sweep would need re-running; with scores, it
-is answerable from one recorded run.
+`route` records **all candidate device scores**, not just the winner's,
+via the router's `explain()`. The winner alone cannot answer how close
+the decision was, so a weight sweep would need re-running; with scores,
+it is answerable from one recorded run.
+
+`allocate` does the same for the *allocation* decision — all candidate
+**blocks** a scoring allocator considered, with the α/β-free cost
+decomposition of each, so an allocator weight sweep is likewise
+answerable from one recorded run. It is emitted on **dispatch**, once per
+placement, carrying the placing job's `block` and the per-block `scores`.
+A cost-oblivious allocator (Static, Graph) is not sweepable and emits no
+`allocate` record — the same honest silence as a non-scoring router
+producing no scores on `route`. Because a batch scheduler allocates
+several jobs before any dispatch, each job's allocation decision is
+pinned on the job at allocation time (`qcb.alloc_decision`) rather than
+read from the allocator at dispatch, where it would already have been
+overwritten by the next job's allocation.
 
 `cycle_end` is emitted even when a cycle did nothing, so a consumer can
 distinguish an idle cycle from a cycle missing from the log.
@@ -549,47 +562,72 @@ must not be reported as device timings.
 
 ---
 
-### Reporting scores: `explain()`
+### Reporting scores and sweeping weights: the `Sweepable` contract
 
-`select()` returns a winner; the margin behind it is discarded. Phase
-5.5 sweeps the cost weights and asks how routing responds, and decisions
-alone cannot answer that — every point where routing did not flip looks
-identical to one where it nearly did. `explain(qcb, candidates)` is the
-optional reporting hook the event log calls:
+`select()` (router) and `allocate()` (allocator) each return a winner; the
+margin behind it is discarded. Phase 5.5 sweeps the cost weights and asks
+how the decision responds, and the winner alone cannot answer that — every
+point where the choice did not flip looks identical to one where it nearly
+did. Worse, a naive "re-run at new weights" would re-execute the whole
+workload once per weight point.
+
+`explain()` (the log's per-decision score report) and a weight sweep are
+the *same operation* seen from two angles: explain reports the raw terms
+behind the decision just made at the live weights; a sweep replays that
+decision from those same raw terms under different weights. DevQ unifies
+them in one contract, `Sweepable` (`kernel/sweep.py`), which
+`BaseRouter`, `BaseAllocator` and `BaseScheduler` all inherit. A scoring
+component supplies three small hooks and gets both explain and sweep
+support, derived so they cannot drift:
 
 ```python
-def explain(self, qcb, candidates):
-    scored = self._score_all(qcb, candidates, with_terms=True)
-    return [{"device": ctx.index, "score": s, "terms": t}
-            for s, _, ctx, t in scored]
+class MyRouter(BaseRouter):
+    def live_params(self):                 # the weights it scores with now
+        return {"router_queue_weight": self.router_queue_weight, ...}
+    def _sweep_terms(self, decision):      # per-candidate RAW terms, tagged
+        return [(key, {...raw, weight-free inputs...}), ...]
+    def _sweep_score(self, terms, params): # one candidate's score at params
+        return ...
+    def _sweep_rank(self, scored, params): # across-candidate: normalise,
+        return [(key, final_score, enriched_terms), ...]   # combine, rank
 ```
 
-It returns `None` by default, so a router with nothing to report — a
-round-robin policy has no scores — needs no implementation, and
-inventing numbers would be worse than reporting none.
+The base derives the rest: `explain_decision` (the log report at live
+params), `sweep_decision` (re-decide from recorded terms at any params),
+`explain_recorded` (the report from already-recorded terms, for a
+component whose state has since changed — an allocator that reserved its
+block), and the argmin selection with the deterministic lower-key
+tie-break. `select()`/`allocate()` route their live choice through the
+same hooks, so the logged scores are exactly the ones that caused the
+decision.
 
-Two requirements. **Share one scoring path with `select()`.** Two
-parallel implementations drift, and a log that reports scores which did
-not cause the decision is worse than no log. **Record raw terms, not
-just totals.** `NoiseRouter` min-max normalises across the candidate
-set, so a score is meaningful only relative to its peers in that one
-decision; the raw pressure and cost are what allow a different weighting
-to be re-derived from a recorded run instead of by re-executing.
+Three rules the contract enforces:
 
-Recomputation is cheap — roughly 0.05 ms per candidate, one allocator
-dry-run — so `explain()` recomputes rather than caching. Caching would
-buy nothing measurable and add a staleness failure mode where a
-rejection logs the previous job's scores.
+- **Record raw, weight-free terms, not just totals.** `NoiseRouter`
+  min-max normalises across the candidate set, so a score is meaningful
+  only relative to its peers in that one decision; the raw queue pressure
+  and the α/β-free cost decomposition (`qubit_error_sum`,
+  `edge_error_sum`) are what let a different weighting be re-derived from
+  a recorded run instead of by re-executing. `NoiseGraphAllocator` records
+  the same decomposition per block.
+- **Purity.** The hooks must not mutate state and must be a pure function
+  of `(terms, params)` — the sweep's validity rests on it. A component
+  whose decision depends on anything not in its terms (a sampled or
+  stateful ML policy) is not faithfully sweepable and must leave the
+  hooks unimplemented, so it is skipped honestly rather than swept into
+  fiction. The default hooks report "not scored", so a non-scoring policy
+  (round-robin routing, FCFS scheduling, a cost-oblivious allocator)
+  needs no implementation and is neither explained nor swept.
+- **Faithfulness.** Replaying the recorded terms at the recorded params
+  must reproduce the recorded decision; a sweep driver checks this as an
+  anchor and refuses a session that fails it. This is the same
+  decision-determinism contract the rest of the benchmark layer requires
+  (seed the providers, or nothing is comparable).
 
-`explain()` must not mutate state: it runs only when logging is enabled,
-so anything it changed would make logged runs diverge from unlogged ones.
-
----
-
-base class handles rejection-reason aggregation. Keep `select()`
-deterministic (break ties by lower device index). `RoundRobinRouter` is the
-minimal reference; `NoiseRouter` shows how to reuse the per-device allocator
-machinery for scoring.
+`RoundRobinRouter` is the minimal non-scoring reference; `NoiseRouter`
+and `NoiseGraphAllocator` show the scoring hooks, the latter with no
+across-candidate normalisation (block cost S is directly comparable, so
+`_sweep_rank` ranks on raw S).
 
 ---
 
