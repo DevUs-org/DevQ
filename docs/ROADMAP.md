@@ -203,14 +203,16 @@ above once Phase 5 ships:
   with opt-in bisection to localise flips, guarded by the faithfulness
   anchor and skipping a non-scoring component with a reason. Both artifacts
   are what the 5.5b modes read.
-- **5.5b — comparison modes** 🔭 the reading surface over 5.5a, two
-  modes: inter-component (diff bundles across the matrix's sessions) and
-  intra-component (present the sweep). The *absolute* view — one session's
-  own bundle — is not among them: it is the 5.3 metric bundle, already
-  shipped, so 5.5b is the two genuine comparisons that need 5.5a's engine
-  underneath. Deferred to after 5.5a deliberately — the modes present its
-  results, so building them first would mean designing a reader for data
-  not yet produced.
+- **5.5b — comparison modes** ✅ the reading surface over 5.5a, two
+  modes in `benchmark/comparison_modes.py`: inter-component
+  (`rank_sessions` orders the matrix's sessions by a metric) and
+  intra-component (`present_sweep` reads out one session's α/β sweep — its
+  flips, or a refusal with its reason). Each returns structured data with
+  a `render_text` view over it that can write a `.txt`, so the qbench
+  shell (5.7) renders the same modes its own way rather than re-deriving
+  them. The *absolute* view — one session's own bundle — is not among
+  them: it is the 5.3 metric bundle, already shipped, so 5.5b is the two
+  genuine comparisons that need 5.5a's engine underneath.
 - **5.6 — baseline plugins** 🔭 published baselines to compare against;
   this is what turns the platform into a result.
 - **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer,

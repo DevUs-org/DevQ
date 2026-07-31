@@ -3165,6 +3165,131 @@ def block_comparison():
         check(True, "qiskit not installed - fidelity-through-bundle check skipped")
 
 
+def block_comparison_modes():
+    '''The 5.5b reading surfaces: session ranking and sweep presentation'''
+    # comparison_modes.py is pure presentation over what comparison.py
+    # computed — it derives no numbers. This block builds small fixtures
+    # with KNOWN values so ranking order, direction, missing-metric
+    # handling and the sweep read-out are checked against hand-computed
+    # answers, not against whatever a live run happens to produce.
+    from benchmark import comparison_modes as M
+
+    # ── Ranking ───────────────────────────────────────────────────────────
+    bundle = {
+        "a__x__p": {"config": {"router": "x"},
+                    "metrics": {"rejection_rate": {"rate": 0.4},
+                                "utilisation": {"system": 0.5}}},
+        "b__y__q": {"config": {"router": "y"},
+                    "metrics": {"rejection_rate": {"rate": 0.1},
+                                "utilisation": {"system": 0.9}}},
+        "c__z__r": {"config": {"router": "z"},
+                    "metrics": {"rejection_rate": {"rate": 0.2},
+                                "utilisation": {"system": 0.7}}},
+        "d__w__s": {"config": {"router": "w"},
+                    "metrics": {"rejection_rate": {"rate": None},   # unmeasured
+                                "utilisation": {"system": 0.6}}},
+    }
+
+    # Ascending (lowest rejection first): b(0.1) < c(0.2) < a(0.4); d is
+    # null so it is not ranked.
+    rank = M.rank_sessions(bundle, "rejection_rate.rate")
+    order = [r["session_id"] for r in rank["rows"]]
+    check(order == ["b__y__q", "c__z__r", "a__x__p"],
+          f"ranking orders by the metric ascending, got {order}")
+    check(rank["rows"][0]["rank"] == 1 and rank["rows"][0]["value"] == 0.1,
+          "the top row carries rank 1 and the true value")
+    check(rank["missing"] == ["d__w__s"],
+          f"a null-metric session is listed missing, not ranked, got "
+          f"{rank['missing']}")
+
+    # descending flips the order.
+    desc = M.rank_sessions(bundle, "rejection_rate.rate", descending=True)
+    check([r["session_id"] for r in desc["rows"]] == ["a__x__p", "c__z__r", "b__y__q"],
+          "descending ranks highest first")
+
+    # a nested path resolves; a bogus path ranks nothing (all missing).
+    util = M.rank_sessions(bundle, "utilisation.system", descending=True)
+    check(util["rows"][0]["session_id"] == "b__y__q",
+          "a nested dotted path resolves to the right leaf")
+    bogus = M.rank_sessions(bundle, "nope.not.here")
+    check(bogus["rows"] == [] and len(bogus["missing"]) == 4,
+          "an unknown metric path ranks nothing rather than crashing")
+
+    # A path landing on a non-numeric leaf (a dict, not a scalar) is not
+    # rankable and must be treated as missing — pointing at "rejection_rate"
+    # instead of "rejection_rate.rate" gives a dict, which cannot be sorted.
+    nonscalar = M.rank_sessions(bundle, "rejection_rate")
+    check(nonscalar["rows"] == [],
+          "a path landing on a non-numeric leaf ranks nothing, not the dict")
+
+    # tie-break is deterministic on session id.
+    tied = {
+        "z__a__a": {"config": {}, "metrics": {"m": {"v": 1.0}}},
+        "a__a__a": {"config": {}, "metrics": {"m": {"v": 1.0}}},
+    }
+    tb = M.rank_sessions(tied, "m.v")
+    check([r["session_id"] for r in tb["rows"]] == ["a__a__a", "z__a__a"],
+          "equal values break ties by session id, deterministically")
+
+    # ── Sweep presentation ────────────────────────────────────────────────
+    # Refused sweep: presented as a refusal carrying its reason.
+    refused = {"session_id": "s", "axis": "allocator", "faithful": False,
+               "reason": "not a scoring component", "grid": [0.0, 1.0],
+               "bisect": False}
+    pr = M.present_sweep(refused)
+    check(pr["sweepable"] is False and "scoring" in pr["reason"],
+          "a refused sweep is presented as not sweepable, with its reason")
+
+    # Faithful, stable (no flips): reported stable.
+    stable = {"session_id": "s", "axis": "router", "faithful": True,
+              "grid": [0.0, 0.5, 1.0], "bisect": True,
+              "aggregate": {"flips": [],
+                            "winner_distribution": {"0.0": {"1": 5}}}}
+    ps = M.present_sweep(stable)
+    check(ps["sweepable"] and ps["stable"] and ps["flips"] == [],
+          "a faithful sweep with no flips is reported stable")
+
+    # Faithful with a flip: the flip is surfaced.
+    flipped = {"session_id": "s", "axis": "allocator", "faithful": True,
+               "grid": [0.0, 0.5], "bisect": True,
+               "aggregate": {
+                   "flips": [{"between": [0.0, 0.5], "at": 0.003,
+                              "from": {"[2, 4]": 2}, "to": {"[0, 1]": 2}}],
+                   "winner_distribution": {"0.0": {"[2, 4]": 2},
+                                           "0.5": {"[0, 1]": 2}}}}
+    pf = M.present_sweep(flipped)
+    check(pf["sweepable"] and not pf["stable"] and len(pf["flips"]) == 1,
+          "a faithful sweep with a flip surfaces it and is not stable")
+    check(pf["flips"][0]["at"] == 0.003,
+          "the presented flip carries its localised α")
+
+    # ── Text renderer + file write ────────────────────────────────────────
+    import tempfile
+    txt = M.render_text(rank)
+    check("rejection_rate.rate" in txt and "b__y__q" in txt,
+          "the ranking renders to text naming the metric and the top session")
+    check("d__w__s" in txt and "not ranked" in txt,
+          "the text names the missing session so it is not silently dropped")
+
+    sweep_txt = M.render_text(pf)
+    check("flip" in sweep_txt and "α" in sweep_txt,
+          "the sweep renders to text naming its flip")
+
+    # detection: rows -> ranking, else sweep; both from one renderer.
+    stable_txt = M.render_text(ps)
+    check("stable" in stable_txt,
+          "the renderer detects a sweep result and reads out stability")
+
+    # writing to a path produces a file with exactly the returned text.
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "ranking.txt")
+        returned = M.render_text(rank, to=path)
+        check(os.path.exists(path), "render_text writes a .txt when given a path")
+        with open(path) as h:
+            check(h.read() == returned,
+                  "the file holds exactly the returned text")
+
+
 def block_fidelity():
     '''Fidelity: hand-computed distances, marginalisation, population rule'''
     import json, math, os, tempfile
@@ -4733,6 +4858,7 @@ BLOCKS = [
     ("event_log",                block_event_log),
     ("metrics",                  block_metrics),
     ("comparison",               block_comparison),
+    ("comparison_modes",         block_comparison_modes),
     ("fidelity",                 block_fidelity),
     ("router_scoring",           block_router_scoring),
     ("sweepable_contract",       block_sweepable_contract),

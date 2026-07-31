@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 59 sanity blocks in `run_tests.py`, covering
+Specification for the 60 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 59 blocks, one line each
+python run_tests.py              # all 60 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -1413,6 +1413,30 @@ matrix — a density-matrix reference per circuit across 18 cells on every
 suite run would be needlessly expensive) and asserts `assemble_matrix`
 surfaces populated fidelity, every job with a number. It skips cleanly
 where qiskit is absent.
+
+
+### `comparison_modes`
+
+Covers `benchmark/comparison_modes.py`, the 5.5b reading surface. Pure
+presentation over what the engine computed, so the block uses small
+fixtures with hand-computed values rather than a live run. **Ranking**:
+sessions ordered by a dotted metric path, checked for order, direction
+(`descending` flips it), rank numbering, deterministic tie-break on
+session id, and — the honest cases — a null-metric session listed under
+`missing` not sorted as zero, an unknown path ranking nothing, and a path
+landing on a non-scalar leaf (a dict) treated as missing rather than
+crashing the sort. **Sweep presentation**: a refused sweep read out as a
+refusal carrying its reason, a faithful sweep with no flips reported
+stable, and one with a flip surfacing it with its localised α. **Text
+renderer**: one renderer serving both modes (detected from the result
+shape), naming the metric and top session for a ranking and the flip for a
+sweep, listing the missing session so nothing is silently dropped, and
+writing exactly the returned text when given a path.
+
+Two mutation survivors sharpened it. Ranking by a non-scalar leaf and the
+tie-break both needed a case that forced the discriminating behaviour —
+without the non-scalar path the numeric guard in `_dig` could be removed
+undetected, and without equal-valued sessions the tie-break key was free.
 
 
 ### `fidelity`

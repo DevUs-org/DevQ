@@ -482,3 +482,32 @@ cost-oblivious allocator) is refused the same way, named as non-scoring.
 This is the decision-determinism the whole benchmark layer rests on: the
 sweep's claim to answer other weights from one recorded run is only valid
 if the recorded run is itself a faithful function of what it logged.
+
+### The comparison modes — reading the results (Phase 5.5b)
+
+`benchmark/comparison_modes.py` is the reading surface over the two
+artifacts above — pure presentation, deriving no new numbers. Each mode
+returns structured data; `render_text(result, to=path)` turns it into a
+plain-text table or report and, given a path, writes a `.txt`. The split
+is deliberate: the mode returns data so a second consumer — a test, a
+notebook, the `qbench` shell (5.7) — renders it its own way without
+parsing a string, and the text renderer is one view over that data rather
+than the data itself.
+
+**Inter-component — `rank_sessions(bundle, metric, descending)`.** Orders
+the matrix's sessions by one metric, named as a dotted path into a
+session's metrics (`"rejection_rate.rate"`, `"utilisation.system"`,
+`"load_imbalance.by_busy_time.load_balance"`). It does not presume which
+end is good — lower is better for rejection rate, higher for utilisation —
+so it ranks by the number and the caller sets `descending`. A session
+whose metric is absent, null, or not a scalar is listed under `missing`
+rather than sorted as a zero, the same honesty metrics.py gives an
+unmeasured population; ties break on session id for a deterministic order.
+
+**Intra-component — `present_sweep(sweep_result)`.** Reads out one
+session's α/β sweep: a refused sweep (`faithful: false`) is presented as a
+refusal carrying its reason, not dropped; a faithful sweep is presented as
+its flips — the α values where the winning distribution changes, the
+actionable output — plus the per-α distribution, with a `stable` flag when
+nothing flips across the whole grid. The *absolute* view (one session's
+own metric bundle) is not a mode: it is the 5.3 bundle, already shipped.

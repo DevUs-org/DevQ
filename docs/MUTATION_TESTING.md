@@ -43,15 +43,15 @@ cannot.
 
 ## Results
 
-**140 distinct mutants, 137 killed, 3 excluded** (M10 equivalent, P7 and
+**144 distinct mutants, 141 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 136/133/3 from the prior
-state plus the 4 new comparison-engine mutants below (all killed — MC-c
-and MC-d after `comparison` was strengthened for them). The 136/133/3
-itself was 135/132/3 plus the 1 new allocator-sweep-and-capture mutants below (all
+The total is delta-consistent, not recounted: 140/137/3 from the prior
+state plus the 4 new comparison-modes mutants below (all killed — MM-b
+after `comparison_modes` was strengthened for a non-scalar metric leaf).
+The 140/137/3 itself was 136/133/3 plus the 4 new allocator-sweep-and-capture mutants below (all
 killed — MA-b and MA-c after `allocator_scoring` was strengthened for
 them), each verified by running the mutant against the affected block,
 not assumed. The 131/128/3 itself was 125/122/3 plus the 6
@@ -618,6 +618,26 @@ Two survived first and drove the block's refusal assertions:
   contradicts its own scores, which the anchor must refuse. A guard that
   only acts on bad input needs bad input to be tested — no honest run can
   witness it.
+
+### Comparison modes — `benchmark/comparison_modes.py`
+
+Phase 5.5b. The presentation surface: session ranking and sweep read-out.
+Four mutants, all killed; block `comparison_modes`.
+
+- **MM-a — ranking ignores `descending`.** Killed by the descending-order
+  assertion.
+- **MM-c — `present_sweep` treats a refused sweep as sweepable.** Killed by
+  the refusal assertion (a non-faithful result must present as not
+  sweepable with its reason).
+- **MM-d — the ranking tie-break drops its session-id key.** Killed by two
+  equal-valued sessions whose order must be deterministic.
+- **MM-b SURVIVED first.** Removing the numeric guard in `_dig` (so a
+  metric path returns whatever it lands on, not only a number) survived
+  because every fixture path resolved to a number or `None` — both
+  unaffected. Killed after adding a path that lands on a non-scalar leaf (a
+  dict): without the guard the sort then raises on comparing dicts. The
+  guard only matters for a non-numeric non-None leaf, so only a fixture
+  with one could witness its removal.
 
 ---
 
