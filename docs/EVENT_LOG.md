@@ -35,31 +35,110 @@ then ignored.
 
 ## Records
 
-Seven kinds: `submit`, `route`, `allocate`, `reject`, `dispatch`,
-`resolve`, `cycle_end`. Every record carries `event`, `cycle` and `seq`,
-stamped centrally in `_emit` so no call site can forget them or disagree
-about the current cycle.
+A log is a JSON-lines file: one record per line, in the order things
+happened. It opens with a `header`, carries a chronological body of
+per-event records, and closes with a `summary`. Every **body** record
+carries three fields stamped centrally in `_emit`, so no call site can
+forget them or disagree:
 
-`route` records **all candidate device scores**, not just the winner's,
-via the router's `explain()`. The winner alone cannot answer how close
-the decision was, so a weight sweep would need re-running; with scores,
-it is answerable from one recorded run.
+- `event` — the record kind (below).
+- `seq` — a monotonic counter, incremented once per emitted record. It is
+  deterministic: identical seeded runs produce identical records in
+  identical `seq` order, so `seq` is the axis to compare runs on.
+- `cycle` — the kernel scheduling cycle the record was emitted in. Many
+  records share a cycle; `cycle` groups them, `seq` orders them.
 
-`allocate` does the same for the *allocation* decision — all candidate
-**blocks** a scoring allocator considered, with the α/β-free cost
-decomposition of each, so an allocator weight sweep is likewise
-answerable from one recorded run. It is emitted on **dispatch**, once per
-placement, carrying the placing job's `block` and the per-block `scores`.
-A cost-oblivious allocator (Static, Graph) is not sweepable and emits no
-`allocate` record — the same honest silence as a non-scoring router
-producing no scores on `route`. Because a batch scheduler allocates
-several jobs before any dispatch, each job's allocation decision is
-pinned on the job at allocation time (`qcb.alloc_decision`) rather than
-read from the allocator at dispatch, where it would already have been
-overwritten by the next job's allocation.
+The `header` and `summary` are framing records and carry their own fields
+instead (no `cycle`/`seq`) — they bracket the run rather than belonging to
+a cycle.
 
-`cycle_end` is emitted even when a cycle did nothing, so a consumer can
-distinguish an idle cycle from a cycle missing from the log.
+### The framing records
+
+**`header`** — written once, first. Carries `spec` (the workload spec
+verbatim, so a log is self-describing — the devices, jobs, arrival pattern
+and seed that produced it are all present) and the device table. A reader
+never needs the original spec file; the log contains it.
+
+**`summary`** — written once, last. Carries `jobs` (total submitted),
+`cycles` (how many the run took), `states` (a terminal-state histogram,
+e.g. `{"FINISHED": 25}`), `devices_attached` (an index→id roster of
+*every* attached device, including any that ran nothing — a fleet-spread
+metric needs to see idle devices, and this keeps that a one-record read),
+and `per_job` — a derived per-job table with each job's terminal `state`,
+`device`, `circuit_hash`, the three `*_at` timestamps, and the
+`queue_latency`/`execution_time`/`turnaround` derived from them. The body
+is chronological because it records what happened; `per_job` is the
+by-job view a metrics pass reads.
+
+### The body records
+
+Seven kinds, in the order a job moves through them:
+
+**`submit`** — a job entered the system. Fields: `job_id`, `num_qubits`,
+and the per-job constraints as declared — `max_qubit_error`,
+`max_edge_error` (noise thresholds, `null` if unset), `exec_on`/`no_exec_on`
+(device allow/deny lists, `null` if unset).
+
+**`route`** — the router bound a job to a device. Fields: `job_id`,
+`device` (the chosen device index — the winner), `candidates` (the
+feasible device indices it chose among), and `scores`. `scores` records
+**all** candidates, not just the winner — one entry per candidate,
+`{device, score, terms}`, where `terms` carries the raw, weight-free
+inputs to the score (see *Score terms* below). Recording every candidate
+and its raw terms is what lets a weight sweep re-derive routing from one
+run instead of re-executing; the winner alone could not. A non-scoring
+router (round-robin) records `scores: null` — honest silence, not invented
+numbers.
+
+**`allocate`** — a scoring allocator's block choice for the job now being
+dispatched. Fields: `job_id`, `device`, `block` (the chosen physical-qubit
+block — the winner), and `scores` (one `{block, score, terms}` per
+candidate block considered). It is emitted on **dispatch**, once per
+placement, and only by a scoring allocator — a cost-oblivious one (Static,
+Graph) emits no `allocate` record, the same silence as a non-scoring
+router. Because a batch scheduler allocates several jobs before any
+dispatch, each job's decision is pinned on the job at allocation time
+(`qcb.alloc_decision`) rather than read from the allocator at dispatch,
+where the next job's allocation would already have overwritten it.
+
+**`reject`** — a job was refused (terminal). Fields: `job_id`,
+`candidates`, `scores` (as for `route` — present when a router scored
+before the rejection), and `reason`, a human-readable string naming why
+each allowed device could not satisfy the job (e.g. no qubit meets the
+error threshold). A rejected job never dispatches, so it produces no
+`dispatch`/`resolve`.
+
+**`dispatch`** — a job was sent to its device for execution. Fields:
+`job_id`, `device`, `device_label` (the human name, e.g. `alpha (d0)`),
+`v2p_map` (the virtual→physical qubit map the allocator produced — the
+placement actually applied), and `shots`.
+
+**`resolve`** — execution finished. Fields: `job_id`, `device`, `state`
+(terminal state, e.g. `FINISHED`), `success`, `counts` (the measured
+bitstring→shot-count distribution), `circuit_hash` (identifies the circuit,
+and keys a job to its noiseless reference for fidelity), and `error`
+(`null` on success).
+
+**`cycle_end`** — a scheduling cycle completed. Fields: `processed` (how
+many jobs it acted on). Emitted **even for an idle cycle** (`processed: 0`),
+so a consumer can tell an idle cycle from a cycle missing from the log.
+
+### Score terms
+
+Inside a `route` or `allocate` record, each candidate's `terms` carries the
+**raw, weight-free** inputs to its score — not just the final number. For
+the noise router: `queue_pressure` and the cost decomposition
+`qubit_error_sum`/`edge_error_sum`, plus their normalised forms and the
+weights in force (`router_queue_weight`, `router_noise_weight`,
+`qubit_error_weight`, `edge_error_weight`). For the noise-graph allocator:
+`qubit_error_sum`/`edge_error_sum`, the weighted `block_cost`, and the
+`qubit_error_weight`/`edge_error_weight`. Because the summands are logged
+separately from the weighting, a sweep recomputes the score at any α/β from
+one recorded run — this is the `Sweepable` contract, documented in
+[`EXTENDING.md`](EXTENDING.md#reporting-scores-and-sweeping-weights-the-sweepable-contract),
+and the raw terms are exactly what
+[`COST_MODEL.md`](COST_MODEL.md#answering-the-sweep-from-one-recorded-run-phase-55a)
+re-weights.
 
 ## Running a workload
 
@@ -89,6 +168,15 @@ The manifest distinguishes `completed`, `completed_with_failures` and
 `crashed`. The middle one is a result rather than an error: a threshold
 sweep is *meant* to reject jobs, and a metrics pass must not treat that
 as a broken run.
+
+Beside the logs and manifest sit the **derived artifacts**, each written
+by an offline pass that reads the logs and computes — never by the run
+itself: `metrics.json` (per-session metrics), `comparison.json` (the
+matrix bundle — every session's config, metrics and sweepable axes), and
+`sweep_comp.<axis>.json` (an α/β weight sweep of one axis, written when a
+sweep is run). These are the reading surface the comparison modes and a
+future `qbench` present; see
+[`METRICS.md`](METRICS.md#cross-config-comparison-and-the-αβ-sweep).
 
 `--resume` skips sessions the manifest records as completed. It is
 session-level only: seeding is sequential, so a session restarted

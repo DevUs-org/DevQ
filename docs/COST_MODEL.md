@@ -141,7 +141,9 @@ and the $1{:}9$ ratio both still select $\{1, 2\}$, the latter because
 $1{:}9$ normalises to exactly the $0.1 / 0.9$ default. This is the axis
 Phase 5.5 sweeps.
 
-**Answering the sweep from one recorded run (Phase 5.5a).** The sweep
+### Answering the sweep from one recorded run (Phase 5.5a)
+
+The sweep
 does not re-execute anything. Both the allocator and the router record,
 per decision, the $\alpha/\beta$-*free* summands of $S$ — $\sum_{q}
 \varepsilon_q$ and $\sum_{(u,v) \in E(B)} \varepsilon_{uv}$ per candidate

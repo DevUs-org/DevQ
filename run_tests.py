@@ -2979,6 +2979,192 @@ def block_metrics():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def block_comparison():
+    '''Matrix assembly, the α/β sweep, and its faithfulness anchor'''
+    # comparison.py is the 5.5a analysis engine: assemble_matrix bundles a
+    # matrix run's per-session config+metrics, and sweep() re-derives one
+    # session's routing/allocation decisions across an α/β grid FROM THE
+    # RECORDED SCORES — no re-execution. This block runs a real matrix,
+    # assembles it, sweeps both scored axes, and checks the invariant the
+    # whole feature rests on: the faithfulness anchor (replay at the run's
+    # own weights reproduces the recorded winner) and the skip-with-reason
+    # for a non-scoring component. Output is kept under test_results/ for
+    # inspection, like the shipped-workloads block.
+    import shutil
+    import json
+    from benchmark import runner as R
+    from benchmark.metrics import write_metrics
+    from benchmark import comparison as C
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    run_dir = os.path.join(root, "test_results", "smoke", "comparisons")
+    shutil.rmtree(run_dir, ignore_errors=True)
+
+    # A real matrix run over a small shipped spec. smoke.json uses
+    # devq.simulated, so no provider registration is needed and it does not
+    # depend on qiskit being installed.
+    with contextlib.redirect_stdout(io.StringIO()):
+        manifest = R.run(os.path.join(WORKLOADS, "smoke.json"),
+                         out_dir=run_dir, matrix=True, quiet=True)
+        write_metrics(run_dir)
+
+    # ── Matrix assembly ───────────────────────────────────────────────────
+    bundle = C.assemble_matrix(run_dir)
+    n_sessions = len(manifest["sessions"])
+    check(len(bundle) == n_sessions,
+          f"the bundle has one row per session ({n_sessions}), got {len(bundle)}")
+    a_row = next(iter(bundle.values()))
+    check(set(a_row) >= {"config", "metrics", "sweepable_axes"},
+          "each bundle row carries config, metrics and sweepable_axes")
+    check(all(r["config"] is not None for r in bundle.values()),
+          "every row records its scheduler/allocator/router config")
+    check(os.path.exists(os.path.join(run_dir, "comparison.json")),
+          "assemble_matrix writes comparison.json")
+
+    # sweepable_axes reflects which components score: the noise router is
+    # sweepable everywhere; the allocator axis appears only where a
+    # noise_graph (scoring) allocator ran, not a cost-oblivious one.
+    router_sessions = [sid for sid, r in bundle.items()
+                       if "router" in r["sweepable_axes"]]
+    check(router_sessions,
+          "the noise-router sessions report the router axis sweepable")
+    ng_sessions = [sid for sid, r in bundle.items()
+                   if "noise_graph" in str(r["config"].get("allocator"))]
+    for sid in ng_sessions:
+        check("allocator" in bundle[sid]["sweepable_axes"],
+              f"{sid} (noise_graph allocator) reports the allocator axis")
+    graph_sessions = [sid for sid, r in bundle.items()
+                      if r["config"].get("allocator") == "graph"]
+    for sid in graph_sessions:
+        check("allocator" not in bundle[sid]["sweepable_axes"],
+              f"{sid} (cost-oblivious graph allocator) is not allocator-sweepable")
+
+    # ── Router sweep + faithfulness anchor ────────────────────────────────
+    rs = C.sweep(run_dir, router_sessions[0], "router",
+                 grid=[0.0, 0.25, 0.5, 0.75, 1.0], bisect=True)
+    check(rs["faithful"] is True,
+          "the router sweep's faithfulness anchor holds (replay reproduces "
+          "the recorded winner)")
+    check(len(rs["decisions"]) >= 1,
+          "the router sweep re-derives per-decision winners")
+    check("aggregate" in rs and "flips" in rs["aggregate"],
+          "the router sweep produces the aggregate/flip view")
+    # The primitive covers every grid point for every decision.
+    check(all(len(d["winner_by_alpha"]) == 5 for d in rs["decisions"]),
+          "each decision has a winner at every grid point")
+    check(os.path.exists(os.path.join(run_dir, "sweep_comp.router.json")),
+          "the router sweep writes sweep_comp.router.json")
+
+    # ── Allocator sweep: a real flip, localised by bisection ──────────────
+    if ng_sessions:
+        as_ = C.sweep(run_dir, ng_sessions[0], "allocator",
+                      grid=[0.0, 0.5, 1.0], bisect=True)
+        check(as_["faithful"] is True,
+              "the allocator sweep's faithfulness anchor holds")
+        # The allocator's block choice is weight-sensitive on these
+        # devices, so the sweep must surface at least one flip, and
+        # bisection must localise it to an α in [0, 1].
+        flips = as_["aggregate"]["flips"]
+        check(len(flips) >= 1,
+              "the allocator sweep surfaces a weight-driven block-choice flip")
+        check(all(f["at"] is not None and 0.0 <= f["at"] <= 1.0
+                  for f in flips),
+              "bisection localises each flip to an α in [0, 1]")
+        check(os.path.exists(os.path.join(run_dir, "sweep_comp.allocator.json")),
+              "the allocator sweep writes sweep_comp.allocator.json")
+
+    # ── Skip-with-reason for a non-scoring component ──────────────────────
+    if graph_sessions:
+        skip = C.sweep(run_dir, graph_sessions[0], "allocator", grid=[0.0, 1.0])
+        check(skip["faithful"] is False,
+              "sweeping a non-scoring allocator is refused, not faked")
+        check("decisions" not in skip,
+              "a refused sweep emits no decisions")
+        # Pin the NOT-SCORING path specifically, distinct from the
+        # no-decisions path: a cost-oblivious allocator must be caught by
+        # is_sweepable() (its reason names it a non-scoring component),
+        # not merely by finding zero events. Without this the is_sweepable
+        # guard could be removed and the block would still pass via the
+        # empty-decisions branch.
+        check("not a scoring component" in skip.get("reason", ""),
+              "the refusal names the component non-scoring, not just empty")
+
+    # ── Unknown axis is an error, not a silent empty result ───────────────
+    raised = False
+    try:
+        C.sweep(run_dir, router_sessions[0], "provider")
+    except ValueError:
+        raised = True
+    check(raised, "an unknown sweep axis raises rather than returning empty")
+
+    # ── The faithfulness anchor has teeth ─────────────────────────────────
+    # A faithful run never triggers the anchor, so the checks above cannot
+    # tell a working guard from a defanged one. Plant a log whose recorded
+    # winner CONTRADICTS its scores (winner marked as the worse device) and
+    # require the sweep to refuse it — this is the only thing that pins the
+    # anchor as load-bearing rather than decorative.
+    bad_dir = os.path.join(root, "test_results", "_anchor_tamper_fixture")
+    shutil.rmtree(bad_dir, ignore_errors=True)
+    os.makedirs(bad_dir)
+    # A one-session manifest naming a noise router, and a log with a single
+    # route event whose scores clearly favour device 0 but whose recorded
+    # winner is device 1.
+    with open(os.path.join(bad_dir, "manifest.json"), "w") as h:
+        json.dump({"sessions": [{
+            "session_id": "bad", "log": "bad.jsonl",
+            "config": {"scheduler": "fcfs", "allocator": "graph",
+                       "router": "noise"}}]}, h)
+    terms0 = {"queue_pressure": 0, "qubit_error_sum": 0.01, "edge_error_sum": 0.0,
+              "router_queue_weight": 0.5, "router_noise_weight": 0.5,
+              "qubit_error_weight": 0.1, "edge_error_weight": 0.9}
+    terms1 = dict(terms0, qubit_error_sum=0.99)   # device 1 is clearly worse
+    with open(os.path.join(bad_dir, "bad.jsonl"), "w") as h:
+        h.write(json.dumps({
+            "event": "route", "job_id": 1, "device": 1,   # winner: the WORSE one
+            "candidates": [0, 1],
+            "scores": [{"device": 0, "score": 0.0, "terms": terms0},
+                       {"device": 1, "score": 1.0, "terms": terms1}]}) + "\n")
+    tampered = C.sweep(bad_dir, "bad", "router", grid=[0.0, 0.5, 1.0])
+    check(tampered["faithful"] is False,
+          "the anchor refuses a session whose recorded winner contradicts "
+          "its own scores")
+    check("did not reproduce" in tampered.get("reason", ""),
+          "the anchor's refusal explains the winner mismatch")
+    shutil.rmtree(bad_dir, ignore_errors=True)
+
+
+    # ── Real fidelity flows through the bundle ────────────────────────────
+    # The smoke matrix above runs on devq.simulated, a uniform mock with no
+    # noiseless reference, so its fidelity is null by design — correct, but
+    # it does not exercise fidelity reaching the bundle. Run ONE
+    # ibm.simulated session (not a full matrix — that would run an Aer
+    # density-matrix reference per circuit across 18 cells on every suite
+    # run) and assert assemble_matrix surfaces populated fidelity. Skips
+    # cleanly where qiskit is absent.
+    try:
+        from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+        fdir = os.path.join(root, "test_results", "ibm_federation", "comparisons")
+        shutil.rmtree(fdir, ignore_errors=True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            R.run(os.path.join(WORKLOADS, "ibm_federation.json"), out_dir=fdir,
+                  register_providers={"ibm.simulated": IBMSimulatedProvider},
+                  quiet=True)
+            write_metrics(fdir)
+        fbundle = C.assemble_matrix(fdir)
+        frow = next(iter(fbundle.values()))
+        fid = frow["metrics"]["fidelity"]
+        check(fid["hellinger"]["median"] is not None,
+              "an ibm.simulated session surfaces populated fidelity through "
+              "the bundle (not null as a mock provider would give)")
+        populated = [j for j, v in fid["per_job"].items()
+                     if v["hellinger"] is not None]
+        check(len(populated) == len(fid["per_job"]),
+              f"every job in the ibm session has a fidelity number, got "
+              f"{len(populated)}/{len(fid['per_job'])}")
+    except ImportError:
+        check(True, "qiskit not installed - fidelity-through-bundle check skipped")
+
+
 def block_fidelity():
     '''Fidelity: hand-computed distances, marginalisation, population rule'''
     import json, math, os, tempfile
@@ -4546,6 +4732,7 @@ BLOCKS = [
     ("placeholder_resolution",   block_placeholder_resolution),
     ("event_log",                block_event_log),
     ("metrics",                  block_metrics),
+    ("comparison",               block_comparison),
     ("fidelity",                 block_fidelity),
     ("router_scoring",           block_router_scoring),
     ("sweepable_contract",       block_sweepable_contract),

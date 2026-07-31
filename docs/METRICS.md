@@ -417,3 +417,68 @@ Reported like the other distributional metrics — **per job** (each job's
 **session distribution** (`min`, `median`, `mean`, `max`, `p95`) over the
 qualifying jobs, using the same nearest-rank p95 convention as queue
 latency. When no job qualifies, every aggregate field is `None`.
+---
+
+## Cross-config comparison and the α/β sweep
+
+`benchmark/comparison.py` reads a finished matrix run and produces two
+views, both offline and pure in the same sense as the metrics above — they
+read logs and the manifest and compute, executing nothing. Each is written
+as an artifact beside the manifest, because a computed view worth reading
+is worth persisting: a user who ran a sweep and disconnected would
+otherwise lose it, exactly as `metrics.json` exists so a run's numbers
+survive the process that made them.
+
+### The matrix bundle — `comparison.json`
+
+`assemble_matrix(run_dir)` collects every session's config, metrics and
+sweepable axes into one map keyed by session id. It recomputes nothing —
+it reads each session's `metrics.json` entry and the manifest's per-session
+config — so `write_metrics` runs first. This is the inter-component
+surface: a reader diffs config A against config B (does packing beat FCFS
+on rejection rate; does the noise router lower load imbalance) from one
+file rather than re-reading logs. Each row also records `sweepable_axes` —
+which of `router`/`allocator` left scores-bearing decisions in that
+session — so a reader knows where an intra-component sweep is available
+without opening the log.
+
+### The weight sweep — `sweep_comp.<axis>.json`
+
+`sweep(run_dir, session, axis, grid, bisect)` re-derives one session's
+decisions on one axis (`router` or `allocator`) across an α/β grid, **from
+the recorded scores**, and writes `sweep_comp.router.json` or
+`sweep_comp.allocator.json` (one artifact per axis, so a router sweep and
+an allocator sweep coexist). One axis at a time, because the shared-scope
+α/β feeds both the router yardstick and each device's allocator, so "sweep
+α/β" is ambiguous about which consumer — the axis argument disambiguates,
+as [`COST_MODEL.md`](COST_MODEL.md) describes.
+
+The result carries two layers. The **primitive** is per recorded decision,
+the winner at each grid point — the honest raw result. The **aggregate**,
+derived in the same pass, is per grid point the distribution of winners
+across decisions, plus the α values where that distribution flips; with
+`bisect`, each flip is localised between its bracketing grid points by
+binary search to a small tolerance, so the reported flip is exact rather
+than grid-limited. Bisection uses only the same sweep hooks, so it stays
+component-agnostic — no closed-form per-component breakpoint math, which
+could not generalise to a third-party scoring component.
+
+The sweep borrows the session's component purely as a scoring engine: it
+reconstructs the registered class by name (from the session config) and
+calls its `Sweepable` hooks on the logged terms, computing no score
+itself. A registered third-party scoring component sweeps identically —
+see the `Sweepable` contract in
+[`EXTENDING.md`](EXTENDING.md#reporting-scores-and-sweeping-weights-the-sweepable-contract).
+
+### Faithfulness is guarded, not assumed
+
+Before emitting any swept result, the driver replays each decision at the
+run's **own** recorded weights (read from the logged terms) and requires
+the winner the log recorded. A component whose decision is not a pure
+function of its logged terms — a stochastic or stateful policy — fails
+this, and the session is refused with a reason (`faithful: false`) rather
+than emitting fiction. A non-scoring component (a round-robin router, a
+cost-oblivious allocator) is refused the same way, named as non-scoring.
+This is the decision-determinism the whole benchmark layer rests on: the
+sweep's claim to answer other weights from one recorded run is only valid
+if the recorded run is itself a faithful function of what it logged.

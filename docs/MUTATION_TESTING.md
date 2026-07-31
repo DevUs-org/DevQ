@@ -43,15 +43,15 @@ cannot.
 
 ## Results
 
-**136 distinct mutants, 133 killed, 3 excluded** (M10 equivalent, P7 and
+**140 distinct mutants, 137 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 135/132/3 from the prior
-state plus the 1 scheduler-contract mutant (MSch, killed — `BaseScheduler`
-stripped of `Sweepable` fails the scheduler-parity assertions in
-`sweepable_contract`). The 135/132/3 itself was 131/128/3 plus the 4 new allocator-sweep-and-capture mutants below (all
+The total is delta-consistent, not recounted: 136/133/3 from the prior
+state plus the 4 new comparison-engine mutants below (all killed — MC-c
+and MC-d after `comparison` was strengthened for them). The 136/133/3
+itself was 135/132/3 plus the 1 new allocator-sweep-and-capture mutants below (all
 killed — MA-b and MA-c after `allocator_scoring` was strengthened for
 them), each verified by running the mutant against the affected block,
 not assumed. The 131/128/3 itself was 125/122/3 plus the 6
@@ -589,6 +589,35 @@ scheduler loses `is_sweepable`/`explain_decision` and the block fails.
 This pins the third component onto the shared contract — the scheduler
 inherits the same sweep machinery as the router and allocator, so the QOS
 baseline in 5.6 is sweepable with no base-class change.
+
+### Comparison engine — `benchmark/comparison.py`
+
+Phase 5.5a. The cross-config engine: matrix assembly and the α/β sweep
+driver. Four mutants, all killed; block `comparison`.
+
+- **MC-a — `_cost_params` ignores α** (constant 0.5/0.5 weights). Killed:
+  a sweep that does not vary weights produces no block-choice flip, so the
+  allocator-flip assertion fails.
+- **MC-b — `_sweepable_axes` returns every axis** regardless of the log.
+  Killed: a cost-oblivious `graph` allocator would be reported sweepable,
+  failing the axis-detection assertion.
+
+Two survived first and drove the block's refusal assertions:
+
+- **MC-c — the `is_sweepable()` guard removed** from `sweep`. It SURVIVED
+  because a non-scoring allocator, allowed past the guard, then hits the
+  empty-decisions branch and is refused anyway — so a refusal still
+  happened, just via the wrong path. The killing assertion pins the
+  *reason*: the refusal must name the component non-scoring, distinct from
+  "no decisions found". Two refusal paths that a coarse `faithful is False`
+  check cannot tell apart.
+- **MC-d — the faithfulness anchor defanged** (`if replayed != winner`
+  became `if False`). It SURVIVED because every faithful run reproduces
+  its recorded winner, so the anchor never fires and removing its teeth is
+  invisible. Killed by a planted fixture: a log whose recorded winner
+  contradicts its own scores, which the anchor must refuse. A guard that
+  only acts on bad input needs bad input to be tested — no honest run can
+  witness it.
 
 ---
 

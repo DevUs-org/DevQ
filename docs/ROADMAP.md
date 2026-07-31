@@ -176,7 +176,7 @@ above once Phase 5 ships:
   through the finished metric to gather numbers — a validation activity on
   DevQ's machinery, not a change to it (QASMBench is workload data, cited
   in [`REFERENCES.md`](REFERENCES.md), not a DevQ component).
-- **5.5a — comparison matrix and α/β sweep** ◐ the cross-config
+- **5.5a — comparison matrix and α/β sweep** ✅ the cross-config
   analysis engine. Two parts. **The sweep** answers an α/β weight sweep
   from one recorded run rather than by re-executing every job, and it was
   built as a *general* capability rather than a router-only one: the
@@ -188,17 +188,21 @@ above once Phase 5 ships:
   the other components later — was deliberate: the same "re-weight the
   recorded raw terms" operation serves any scoring component, and building
   it router-shaped would have meant tearing it up at the first allocator.
-  **Done so far**: the contract; `NoiseRouter` and `NoiseGraphAllocator`
-  on it, each logging the α/β-free cost decomposition (`route` and the new
-  `allocate` event), sweepable end-to-end from a recorded log with a
-  faithfulness anchor; the scheduler base carries the contract at
-  router-parity though shipped schedulers have no scoring parameter yet
-  and report not-sweepable honestly (the first scored scheduler is the QOS
-  baseline in 5.6). Selectable matrix components (`matrix_configs(select=)`
-  and CLI flags) also landed here. **Remaining**: the matrix comparison
-  bundle assembly and the sweep-driver surface in `benchmark/`
-  (`comparison.py`) that reads a run and produces the swept/assembled
-  result the 5.5b modes present.
+  `NoiseRouter` and `NoiseGraphAllocator` sit on the contract, each logging
+  the α/β-free cost decomposition (`route` and the new `allocate` event)
+  and sweepable end-to-end from a recorded log with a faithfulness anchor;
+  the scheduler base carries the contract at router-parity though shipped
+  schedulers have no scoring parameter yet and report not-sweepable
+  honestly (the first scored scheduler is the QOS baseline in 5.6).
+  Selectable matrix components (`matrix_configs(select=)` and CLI flags)
+  landed here too. **The engine** is `benchmark/comparison.py`:
+  `assemble_matrix` bundles every session's config, metrics and sweepable
+  axes into `comparison.json` (the inter-component surface), and `sweep`
+  re-derives one session's router or allocator decisions across an α/β grid
+  from the recorded scores into `sweep_comp.<axis>.json` — grid sampling
+  with opt-in bisection to localise flips, guarded by the faithfulness
+  anchor and skipping a non-scoring component with a reason. Both artifacts
+  are what the 5.5b modes read.
 - **5.5b — comparison modes** 🔭 the reading surface over 5.5a, two
   modes: inter-component (diff bundles across the matrix's sessions) and
   intra-component (present the sweep). The *absolute* view — one session's

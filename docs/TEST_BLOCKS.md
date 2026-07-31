@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 58 sanity blocks in `run_tests.py`, covering
+Specification for the 59 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 58 blocks, one line each
+python run_tests.py              # all 59 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -1373,6 +1373,46 @@ from both. Finally the writer is checked: `write_metrics` drops
 value equals the file byte-for-byte — the round-trip matters because
 JSON has no integer keys, so per-device maps carry **string** device
 keys on disk and a caller must see the same.
+
+
+### `comparison`
+
+Covers `benchmark/comparison.py`, the 5.5a cross-config engine. It runs a
+real matrix over `smoke.json`, then exercises both halves. **Matrix
+assembly**: the bundle has one row per session carrying config, metrics
+and `sweepable_axes`, and that last field is checked against the config —
+the noise router is sweepable everywhere, the allocator axis appears only
+where a scoring `noise_graph` allocator ran and not where the
+cost-oblivious `graph` allocator did. **The sweep**: a router sweep and a
+`noise_graph` allocator sweep are re-derived from the recorded scores
+across an α/β grid; the allocator sweep must surface at least one
+weight-driven block-choice flip and bisection must localise it to an α in
+[0, 1], and each axis writes its own `sweep_comp.<axis>.json`. Output is
+kept under `test_results/comparison/` for inspection.
+
+Two refusal paths are pinned separately, because a survivor showed they
+are not interchangeable. Sweeping a non-scoring allocator must be refused
+with a reason that names the component non-scoring — not merely because no
+events were found — so the `is_sweepable()` guard cannot be removed and
+pass via the empty-decisions branch. And an unknown axis raises rather
+than returning an empty result.
+
+The **faithfulness anchor** gets its own fixture, because a faithful run
+never triggers it and so cannot witness whether the guard works. The block
+plants a log whose recorded winner contradicts its own scores (the worse
+device marked as chosen) and requires the sweep to refuse it. This is the
+only assertion that pins the anchor as load-bearing rather than
+decorative — the sweep's entire claim to answer weights from one recorded
+run rests on it, so it is tested against a run engineered to break it.
+
+The smoke matrix runs on `devq.simulated`, a uniform mock with no
+noiseless reference, so its fidelity is null by design — correct, but it
+does not exercise fidelity reaching the bundle. A separate check runs one
+`ibm.simulated` session (`ibm_federation`, a single session, not a full
+matrix — a density-matrix reference per circuit across 18 cells on every
+suite run would be needlessly expensive) and asserts `assemble_matrix`
+surfaces populated fidelity, every job with a number. It skips cleanly
+where qiskit is absent.
 
 
 ### `fidelity`
