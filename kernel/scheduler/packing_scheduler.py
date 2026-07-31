@@ -54,7 +54,8 @@ class PackingScheduler(BaseScheduler):
                 reason = self.memory_manager.unsatisfiable_reason(
                     qcb.circuit,
                     max_qubit_error=qcb.max_qubit_error,
-                    max_edge_error=qcb.max_edge_error
+                    max_edge_error=qcb.max_edge_error,
+                    max_1q_gate_error=qcb.max_1q_gate_error
                 )
                 if reason:
                     qcb.state         = JobStates.REJECTED
@@ -116,7 +117,8 @@ class PackingScheduler(BaseScheduler):
                 self.memory_manager.device,
                 temp_pool,
                 max_qubit_error=qcb.max_qubit_error,
-                max_edge_error=qcb.max_edge_error
+                max_edge_error=qcb.max_edge_error,
+                max_1q_gate_error=qcb.max_1q_gate_error
             )
             # Pin this job's allocation decision now, before the next job's
             # allocate() overwrites the allocator's per-instance stash. See

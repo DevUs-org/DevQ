@@ -79,6 +79,10 @@ class DevQSimulatedProvider(BaseProvider):
             basis_gates    = backend["basis_gates"],
             error_map      = backend["error_map"],
             edge_error_map = backend["edge_error_map"],
+            gate_error_map = backend["gate_error_map"],
+            t2_map         = backend["t2_map"],
+            gate_1q_duration = backend["gate_1q_duration"],
+            gate_2q_duration = backend["gate_2q_duration"],
             provider       = self
         )
 

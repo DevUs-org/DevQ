@@ -53,6 +53,10 @@ class JobSpec:
     file_path:       str
     max_qubit_error: float | None = None  # None = no qubit-error filtering
     max_edge_error:  float | None = None  # None = no edge-error filtering
+    # Single-qubit gate-error threshold. None = no 1q-gate filtering. ANDed
+    # with max_qubit_error per qubit — a qubit passes only if BOTH its
+    # readout and its 1-qubit gate error are within their thresholds.
+    max_1q_gate_error: float | None = None
     # Device references as WRITTEN by the user — "d0" or a device name.
     # The parser cannot resolve these (it does not know what is
     # attached); the shell resolves them to indices at submit time.
@@ -72,11 +76,12 @@ class JobSpec:
     def __repr__(self):
         return (f"JobSpec(file={self.file_path}, "
                 f"qe={self.max_qubit_error}, ee={self.max_edge_error}, "
+                f"g1q={self.max_1q_gate_error}, "
                 f"exec={self.exec_on}, no_exec={self.no_exec_on}, "
                 f"frontend={self.frontend}, shots={self.shots})")
 
 
-_THRESHOLD_FLAGS = ('max-qubit-error', 'max-edge-error')
+_THRESHOLD_FLAGS = ('max-qubit-error', 'max-edge-error', 'max-1q-gate-error')
 _DEVICE_FLAGS    = ('exec', 'no-exec')
 _STRING_FLAGS    = ('frontend',)
 _INT_FLAGS       = ('shots',)
@@ -181,6 +186,7 @@ def _extract_files_and_flags(tokens: list) -> tuple:
     flags = {
         "max_qubit_error": None,
         "max_edge_error":  None,
+        "max_1q_gate_error": None,
         "exec_on":         None,
         "no_exec_on":      None,
         "frontend":        None,
@@ -194,6 +200,8 @@ def _extract_files_and_flags(tokens: list) -> tuple:
                 flags["max_qubit_error"] = val
             elif key == 'max-edge-error':
                 flags["max_edge_error"] = val
+            elif key == 'max-1q-gate-error':
+                flags["max_1q_gate_error"] = val
             elif key == 'exec':
                 flags["exec_on"] = val
             elif key == 'no-exec':

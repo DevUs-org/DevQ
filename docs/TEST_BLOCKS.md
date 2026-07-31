@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 61 sanity blocks in `run_tests.py`, covering
+Specification for the 63 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 61 blocks, one line each
+python run_tests.py              # all 63 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -295,6 +295,28 @@ Thresholds are **ANDed, never traded off**. Two cases:
   rejected, and the reason cites the *qubit* threshold. A satisfiable
   edge constraint must not rescue an impossible qubit one.
 
+### `max_1q_gate_error_filter`
+
+*`--max-1q-gate-error` excludes noisy single-qubit-gate qubits, ANDed with readout.*
+
+The single-qubit-gate-error threshold is the third hard filter, parallel to
+readout (`max_qubit_error`) and two-qubit-edge (`max_edge_error`). On a
+hand-built device where one qubit has a bad 1q gate and another a bad
+readout, `eligible_qubits` is checked directly:
+
+- the 1q-gate filter alone excludes only the noisy-gate qubit, independent
+  of readout;
+- readout and 1q-gate filters **AND** — a qubit must clear both, so a device
+  with one bad-readout and one bad-gate qubit leaves the intersection;
+- the conjunction is pinned against an OR mutation (which would leave a
+  strictly larger set).
+
+End to end, a threshold below the synthesised 1q-error band REJECTS a
+2-qubit job (no eligible qubit — permanent, not transient WAITING), and the
+rejection reason names the 1q-gate threshold; a generous threshold places
+the job normally. Malformed values are rejected by both the shell parser and
+the spec validator.
+
 ### `packing_across_devices`
 
 *Bracket groups, batch packing and cross-device concurrency.*
@@ -535,6 +557,30 @@ so a topology that builds but cannot host a circuit still fails.
 The block additionally checks that error maps cover every qubit and every
 edge — a topology whose error map disagrees with its coupling map would
 make allocator scoring silently wrong.
+
+### `device_calibration`
+
+*The five-term calibration model: synthesis ranges, accessors, extraction.*
+
+A `QuantumDevice` carries five calibration terms — readout error, 1-qubit
+gate error, 2-qubit edge error, T2, and gate duration — read through
+accessors (`qubit_error`, `gate_error`, `edge_error`, `t2`,
+`gate_duration`). The block covers three layers:
+
+- **DevQ-simulated synthesis** lands every new field in its real-world band
+  (1q error 1e-4..1e-3, T2 50..300 µs, 1q duration 20..60 ns, 2q duration
+  200..660 ns), seeded for determinism, with 1q gate error a *distinct* map
+  from readout.
+- **Accessors and fallbacks** — a populated device returns its values; a
+  device built by older code (no extended calibration) returns typical
+  fallbacks from every accessor rather than crashing, which is what keeps
+  the fields additive. `gate_duration` is per-arity and rejects any arity
+  other than 1 or 2.
+- **IBM extraction** (skipped when qiskit is absent) pulls all five terms
+  from a real Target. Asserted on shape and plausibility, not exact numbers
+  — those are pinned-calibration-bound and belong to the fidelity
+  references — including that the extracted 2q duration exceeds the 1q one
+  (a cheap check the arities were not swapped).
 
 ### `backend_factory_errors`
 

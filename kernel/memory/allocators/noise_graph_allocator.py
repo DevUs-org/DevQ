@@ -27,7 +27,8 @@ class NoiseGraphAllocator(BaseAllocator):
     LABEL = "Noise Aware Graph Allocator"
 
     def allocate(self, circuit, device, pool,
-                 max_qubit_error=None, max_edge_error=None):
+                 max_qubit_error=None, max_edge_error=None,
+                 max_1q_gate_error=None):
         '''
         Choose the minimum-S connected block and reserve it. The block
         CHOICE funnels through the same Sweepable hooks a weight sweep
@@ -36,7 +37,8 @@ class NoiseGraphAllocator(BaseAllocator):
         and a sweep cannot drift. The pool RESERVATION is the one
         side-effect and stays strictly outside the pure scoring contract.
         '''
-        decision = (circuit, device, pool, max_qubit_error, max_edge_error)
+        decision = (circuit, device, pool, max_qubit_error, max_edge_error,
+                    max_1q_gate_error)
         tagged   = self._sweep_terms(decision)      # [(block, terms), ...]
 
         if not tagged:
@@ -89,9 +91,11 @@ class NoiseGraphAllocator(BaseAllocator):
 
         Pure: reads pool/device state, reserves nothing.
         '''
-        circuit, device, pool, max_qubit_error, max_edge_error = decision
+        (circuit, device, pool, max_qubit_error, max_edge_error,
+         max_1q_gate_error) = decision
         required = circuit.num_qubits
-        usable   = eligible_qubits(device, pool.free_qubits, max_qubit_error)
+        usable   = eligible_qubits(device, pool.free_qubits, max_qubit_error,
+                                   max_1q_gate_error)
         G        = device.graph
 
         tagged = []
@@ -178,14 +182,17 @@ class NoiseGraphAllocator(BaseAllocator):
         return ranked
 
     def feasible(self, circuit, device,
-                 max_qubit_error=None, max_edge_error=None):
+                 max_qubit_error=None, max_edge_error=None,
+                 max_1q_gate_error=None):
         reason = super().feasible(circuit, device,
-                                  max_qubit_error, max_edge_error)
+                                  max_qubit_error, max_edge_error,
+                                  max_1q_gate_error)
         if reason:
             return reason
 
         eligible = eligible_qubits(
-            device, range(device.num_qubits), max_qubit_error
+            device, range(device.num_qubits), max_qubit_error,
+            max_1q_gate_error
         )
 
         if not has_connected_block(device, eligible,
@@ -193,6 +200,7 @@ class NoiseGraphAllocator(BaseAllocator):
             return (f"no connected block of {circuit.num_qubits} qubits "
                     f"exists on this device under "
                     f"max_qubit_error={max_qubit_error}, "
+                    f"max_1q_gate_error={max_1q_gate_error}, "
                     f"max_edge_error={max_edge_error}")
 
         return None

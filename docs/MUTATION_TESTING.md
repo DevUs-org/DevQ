@@ -666,6 +666,29 @@ each arm gets its own witness (an overriding job and a defaulting job on
 the same device — the fixture forces the discriminating case, parity of
 setup with distinctness of outcome).
 
+### Device calibration + 1q-gate filter — `hardware/device.py`, `kernel/memory/allocators/filtering.py`
+
+Feature extension (post-5.5): the five-term calibration model and the
+`--max-1q-gate-error` placement filter. Three mutants, all killed; blocks
+`device_calibration` and `max_1q_gate_error_filter`.
+
+- **GC-a — the per-qubit filter conjunction `and` becomes `or`.** Killed by
+  the AND-composition check: a qubit with a clean readout but a noisy 1q
+  gate (or vice versa) then passes when it should be excluded, so the
+  intersection `{1,3}` grows. The block pins this from both sides — an
+  explicit "== {1,3}" and an explicit "!= {1,2,3}" — because a disjunction
+  can produce different wrong sets depending on which arm leaks.
+- **GC-b — the 1q-gate comparison `<=` becomes `>=`.** Killed by the
+  exclusion check: the filter then keeps exactly the noisy-gate qubit it is
+  meant to drop and drops the clean ones. Inverting the comparison is the
+  classic off-by-direction mutation; only a fixture with a qubit on each
+  side of the threshold witnesses it.
+- **GC-c — `gate_duration`'s arity guard returns a value instead of
+  raising.** Killed by the arity check: a nonsensical arity (3) then yields
+  a silent duration instead of the loud `ValueError`. The guard exists so a
+  higher-arity gate that failed to decompose surfaces as an error rather
+  than a plausible-looking wrong number; only a bad-arity fixture forces it.
+
 ---
 
 ## The five that survived first time

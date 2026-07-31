@@ -51,6 +51,9 @@ def create_backend(kind="fully_connected", num_qubits=5, rng=None) -> dict:
 
     error_map      = _generate_qubit_errors(num_qubits, rng)
     edge_error_map = _generate_edge_errors(coupling_map, rng)
+    gate_error_map = _generate_gate_errors(num_qubits, rng)
+    t2_map         = _generate_t2_times(num_qubits, rng)
+    gate_1q_dur, gate_2q_dur = _generate_gate_durations(rng)
 
     return {
         "name"         : f"{kind}_backend",
@@ -58,7 +61,11 @@ def create_backend(kind="fully_connected", num_qubits=5, rng=None) -> dict:
         "coupling_map" : coupling_map,
         "basis_gates"  : BASIS_GATES,
         "error_map"    : error_map,
-        "edge_error_map": edge_error_map
+        "edge_error_map": edge_error_map,
+        "gate_error_map": gate_error_map,
+        "t2_map"        : t2_map,
+        "gate_1q_duration": gate_1q_dur,
+        "gate_2q_duration": gate_2q_dur,
     }
 
 
@@ -133,3 +140,42 @@ def _generate_edge_errors(coupling_map, rng=random) -> dict:
         (u, v): rng.uniform(0.005, 0.05)
         for (u, v) in coupling_map
     }
+
+
+def _generate_gate_errors(num_qubits, rng=random) -> dict:
+    '''
+    Simulate per-qubit single-qubit gate error rates.
+    Range 1e-4 to 1e-3 — real superconducting 1-qubit gate errors sit
+    around 2–3e-4 (e.g. IBM Eagle ~2.8e-4), well below readout error.
+    Distinct from readout error (error_map): a qubit can have a clean
+    1-qubit gate yet a noisy measurement, or vice versa.
+    '''
+    return {
+        q: rng.uniform(1e-4, 1e-3)
+        for q in range(num_qubits)
+    }
+
+
+def _generate_t2_times(num_qubits, rng=random) -> dict:
+    '''
+    Simulate per-qubit T2 coherence times, in microseconds.
+    Range 50–300 µs — real superconducting T2 spans roughly this band
+    (IBM devices report median T2 around 100–150 µs, up to a few hundred
+    for the best qubits).
+    '''
+    return {
+        q: rng.uniform(50.0, 300.0)
+        for q in range(num_qubits)
+    }
+
+
+def _generate_gate_durations(rng=random) -> tuple:
+    '''
+    Simulate gate durations in nanoseconds, per ARITY (not per qubit) —
+    one 1-qubit duration and one 2-qubit duration for the whole device,
+    the granularity execution-time estimation consumes.
+    Ranges: 1-qubit ~20–60 ns, 2-qubit ~200–660 ns — real superconducting
+    values (e.g. IBM Eagle: 1q 60 ns, 2q ECR 660 ns; Falcon CNOTs
+    ~235–420 ns). Returns (gate_1q_duration, gate_2q_duration).
+    '''
+    return rng.uniform(20.0, 60.0), rng.uniform(200.0, 660.0)

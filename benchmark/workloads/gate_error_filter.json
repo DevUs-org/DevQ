@@ -1,0 +1,26 @@
+{
+    "name": "gate_error_filter",
+    "seed": 42,
+    "devices": [
+        {
+            "id": "sim",
+            "provider": "devq.simulated",
+            "backend": {
+                "kind": "fully_connected",
+                "num_qubits": 7
+            }
+        }
+    ],
+    "arrival": {
+        "pattern": "batch"
+    },
+    "jobs": [
+        {
+            "circuit": "test_circuits/bell.qasm",
+            "max_1q_gate_error": 0.01
+        },
+        {
+            "circuit": "test_circuits/bell.qasm"
+        }
+    ]
+}

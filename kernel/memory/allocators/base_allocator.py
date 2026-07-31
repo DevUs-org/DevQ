@@ -12,18 +12,23 @@ weights (qubit_error_weight, edge_error_weight), normalised to sum to 1.
 Cost-based allocators use them for scoring; others ignore them.
 
 Contract:
-    allocate(circuit, device, pool, max_qubit_error=None, max_edge_error=None)
+    allocate(circuit, device, pool, max_qubit_error=None, max_edge_error=None,
+             max_1q_gate_error=None)
         -> v2p_map (dict: virtual qubit index -> physical qubit index)
 
     - Thresholds are hard constraints: qubits/edges exceeding them must
       be excluded from consideration entirely (None = no filtering).
+      The per-qubit thresholds (max_qubit_error on readout,
+      max_1q_gate_error on single-qubit gate error) are ANDed; max_edge_error
+      filters two-qubit-gate edges.
     - On success: the allocator MUST call pool.allocate() on the selected
       physical qubits before returning the mapping.
     - On failure: raise an Exception — callers translate this into a
       WAITING or REJECTED job state. Never return None or a partial
       mapping.
 
-    feasible(circuit, device, max_qubit_error=None, max_edge_error=None)
+    feasible(circuit, device, max_qubit_error=None, max_edge_error=None,
+             max_1q_gate_error=None)
         -> None | str
 
     - Answers: could this job EVER be allocated on this device under
@@ -59,7 +64,8 @@ class BaseAllocator(Sweepable, ABC):
 
     @abstractmethod
     def allocate(self, circuit, device, pool,
-                 max_qubit_error=None, max_edge_error=None):
+                 max_qubit_error=None, max_edge_error=None,
+                 max_1q_gate_error=None):
         '''
         Select physical qubits for the circuit and reserve them in the pool.
 
@@ -73,7 +79,8 @@ class BaseAllocator(Sweepable, ABC):
         pass
 
     def feasible(self, circuit, device,
-                 max_qubit_error=None, max_edge_error=None):
+                 max_qubit_error=None, max_edge_error=None,
+                 max_1q_gate_error=None):
         '''
         Default feasibility check: the device must have enough
         threshold-eligible qubits, pool state aside.
@@ -83,15 +90,21 @@ class BaseAllocator(Sweepable, ABC):
         '''
         required = circuit.num_qubits
         eligible = eligible_qubits(
-            device, range(device.num_qubits), max_qubit_error
+            device, range(device.num_qubits), max_qubit_error,
+            max_1q_gate_error
         )
 
         if len(eligible) < required:
-            if max_qubit_error is None:
+            active = []
+            if max_qubit_error is not None:
+                active.append(f"max_qubit_error={max_qubit_error}")
+            if max_1q_gate_error is not None:
+                active.append(f"max_1q_gate_error={max_1q_gate_error}")
+
+            if not active:
                 return (f"circuit needs {required} qubits, "
                         f"device has {device.num_qubits}")
             return (f"circuit needs {required} qubits, only {len(eligible)} "
-                    f"on this device satisfy "
-                    f"max_qubit_error={max_qubit_error}")
+                    f"on this device satisfy {' and '.join(active)}")
 
         return None

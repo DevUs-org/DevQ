@@ -68,7 +68,8 @@ class BaseScheduler(Sweepable, ABC):
             mapping     = self.memory_manager.allocate(
                 qcb.circuit,
                 max_qubit_error=qcb.max_qubit_error,
-                max_edge_error=qcb.max_edge_error
+                max_edge_error=qcb.max_edge_error,
+                max_1q_gate_error=qcb.max_1q_gate_error
             )
             qcb.v2p_map = mapping
             qcb.state   = JobStates.RUNNING
@@ -85,7 +86,8 @@ class BaseScheduler(Sweepable, ABC):
             reason = self.memory_manager.unsatisfiable_reason(
                 qcb.circuit,
                 max_qubit_error=qcb.max_qubit_error,
-                max_edge_error=qcb.max_edge_error
+                max_edge_error=qcb.max_edge_error,
+                max_1q_gate_error=qcb.max_1q_gate_error
             )
             if reason:
                 qcb.state         = JobStates.REJECTED

@@ -21,13 +21,15 @@ class StaticAllocator(BaseAllocator):
     LABEL = "Static Allocator"
 
     def allocate(self, circuit, device, pool,
-                 max_qubit_error=None, max_edge_error=None):
+                 max_qubit_error=None, max_edge_error=None,
+                 max_1q_gate_error=None):
         # Static allocation has no topology concept — the edge threshold
         # is not applicable here and is ignored by design. Suitable for
         # fully-connected hardware (e.g. IonQ) where edges are uniform.
         required = circuit.num_qubits
         free     = pool.available()
-        allowed  = eligible_qubits(device, free, max_qubit_error)
+        allowed  = eligible_qubits(device, free, max_qubit_error,
+                                   max_1q_gate_error)
         usable   = [q for q in free if q in allowed]  # preserve pool order
 
         if len(usable) < required:

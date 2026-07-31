@@ -22,10 +22,12 @@ class GraphAllocator(BaseAllocator):
     LABEL = "Graph Allocator"
 
     def allocate(self, circuit, device, pool,
-                 max_qubit_error=None, max_edge_error=None):
+                 max_qubit_error=None, max_edge_error=None,
+                 max_1q_gate_error=None):
 
         required = circuit.num_qubits
-        usable   = eligible_qubits(device, pool.free_qubits, max_qubit_error)
+        usable   = eligible_qubits(device, pool.free_qubits, max_qubit_error,
+                                   max_1q_gate_error)
         G        = device.graph
 
         for start in usable:
@@ -54,14 +56,17 @@ class GraphAllocator(BaseAllocator):
         raise Exception("No connected qubit block available")
     
     def feasible(self, circuit, device,
-                 max_qubit_error=None, max_edge_error=None):
+                 max_qubit_error=None, max_edge_error=None,
+                 max_1q_gate_error=None):
         reason = super().feasible(circuit, device,
-                                  max_qubit_error, max_edge_error)
+                                  max_qubit_error, max_edge_error,
+                                  max_1q_gate_error)
         if reason:
             return reason
 
         eligible = eligible_qubits(
-            device, range(device.num_qubits), max_qubit_error
+            device, range(device.num_qubits), max_qubit_error,
+            max_1q_gate_error
         )
 
         if not has_connected_block(device, eligible,
@@ -69,6 +74,7 @@ class GraphAllocator(BaseAllocator):
             return (f"no connected block of {circuit.num_qubits} qubits "
                     f"exists on this device under "
                     f"max_qubit_error={max_qubit_error}, "
+                    f"max_1q_gate_error={max_1q_gate_error}, "
                     f"max_edge_error={max_edge_error}")
 
         return None

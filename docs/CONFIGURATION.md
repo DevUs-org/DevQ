@@ -77,6 +77,21 @@ The exact scoring formulas — the block cost `S`, the router's device
 score, and the normalisation rules — are stated formally, with worked
 values, in [`docs/COST_MODEL.md`](docs/COST_MODEL.md).
 
+**Calibration is not configuration.** A device's five calibration terms —
+readout error, 1-qubit gate error, 2-qubit edge error, T2, and gate
+duration — are **not** config keys and never appear in `qconfig`. They are
+physical properties the *provider* supplies at construction (extracted from
+the Target for IBM, synthesised from real-world ranges for DevQ-simulated),
+read through device accessors (see
+[`docs/EXTENDING.md`](docs/EXTENDING.md)). Config keys tune *policy*
+(which scheduler, which weights); calibration describes the *hardware* the
+policy runs on. The one place a user touches calibration is as a **job-level
+placement filter** — `--max-qubit-error`, `--max-1q-gate-error`,
+`--max-edge-error` exclude qubits/edges whose calibrated error exceeds the
+threshold — and those are job constraints (see [`docs/SHELL.md`](docs/SHELL.md)),
+not device config either. T2 and gate duration have no filter: they are
+scoring/estimation inputs, not eligibility knobs.
+
 One JSON file may freely mix both scopes; each loader reads only its own
 keys:
 

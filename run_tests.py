@@ -382,7 +382,8 @@ class MockAllocator(BaseAllocator):
     LABEL = "Mock Allocator"
 
     def allocate(self, circuit, device, pool,
-                 max_qubit_error=None, max_edge_error=None):
+                 max_qubit_error=None, max_edge_error=None,
+                 max_1q_gate_error=None):
         need = circuit.num_qubits
         free = sorted(pool.available())
         if len(free) < need:
@@ -1144,6 +1145,100 @@ def block_edge_threshold_semantics():
           f"got {mapping_of(out, 3)}")
 
 
+def block_max_1q_gate_error_filter():
+    '''--max-1q-gate-error excludes noisy-1q qubits; ANDs with readout'''
+    from kernel.memory.allocators.filtering import eligible_qubits
+    from benchmark.spec import validate_spec, SpecError
+    from hardware.device import QuantumDevice
+
+    # A hand-built device so the calibration is known exactly: q2 has a bad
+    # 1-qubit gate, q0 a bad readout, the rest are clean. Filtering is the
+    # unit under test, so we call it directly rather than routing a job —
+    # the allocators all funnel through eligible_qubits.
+    dev = QuantumDevice(
+        kind="filt", num_qubits=4,
+        coupling_map=[(0, 1), (1, 2), (2, 3)], basis_gates=["sx"],
+        error_map={0: 0.5, 1: 0.01, 2: 0.01, 3: 0.01},          # q0 bad readout
+        edge_error_map={(0, 1): 0.02, (1, 2): 0.02, (2, 3): 0.02},
+        gate_error_map={0: 1e-4, 1: 2e-4, 2: 5e-3, 3: 1e-4},    # q2 bad 1q gate
+        provider=None)
+
+    allq = range(4)
+
+    check(sorted(eligible_qubits(dev, allq)) == [0, 1, 2, 3],
+          "no thresholds -> every qubit eligible")
+
+    # The 1q-gate filter alone excludes ONLY the noisy-gate qubit (q2),
+    # independent of readout — q0 (bad readout) still passes here.
+    check(sorted(eligible_qubits(dev, allq, max_1q_gate_error=1e-3)) == [0, 1, 3],
+          "1q-gate filter excludes the noisy-gate qubit, ignores readout")
+
+    # The two per-qubit filters AND: a qubit must clear BOTH. q0 fails
+    # readout, q2 fails the gate — both are excluded, leaving {1, 3}.
+    check(sorted(eligible_qubits(dev, allq,
+                                 max_qubit_error=0.1,
+                                 max_1q_gate_error=1e-3)) == [1, 3],
+          "readout AND 1q-gate filters compose — a qubit needs to clear both")
+
+    # OR-instead-of-AND would leave {1,2,3} or {0,1,3}; NEITHER is {1,3}.
+    # This pins the conjunction against the most likely mutation.
+    check(sorted(eligible_qubits(dev, allq,
+                                 max_qubit_error=0.1,
+                                 max_1q_gate_error=1e-3)) != [1, 2, 3],
+          "the filter is a conjunction, not a disjunction (readout arm live)")
+
+    # ── End to end: a too-strict 1q-gate threshold REJECTS a job ──────────────
+    #
+    # devq.simulated with a seed gives reproducible synthesised 1q errors in
+    # 1e-4..1e-3. A threshold BELOW that band leaves no eligible qubit, so a
+    # 2-qubit circuit can never be placed — a permanent, REJECTED outcome
+    # (not WAITING, which is transient contention).
+    sh  = session(None, [("devq.simulated", "fully_connected", 5, None, None)])
+    out = run(sh, [f"qrun {BELL} --max-1q-gate-error=0.00001", "qps"])
+    expect(out, "REJECTED")
+    check("max_1q_gate_error" in out or "1q" in out.lower(),
+          "rejection reason references the 1q-gate threshold")
+
+    # A generous threshold above the whole band places the job normally —
+    # proof the rejection above was the threshold, not a broken device.
+    sh2  = session(None, [("devq.simulated", "fully_connected", 5, None, None)])
+    out2 = run(sh2, [f"qrun {BELL} --max-1q-gate-error=0.01", "qps"])
+    check("FINISHED" in out2,
+          "a generous 1q-gate threshold places the job — device is fine")
+
+    # ── Parser + spec reject malformed thresholds ─────────────────────────────
+    from shell.parser import parse_job_args
+    for bad in (f"{BELL} --max-1q-gate-error=abc",
+                f"{BELL} --max-1q-gate-error="):
+        raised = False
+        try:
+            parse_job_args(bad)
+        except ValueError:
+            raised = True
+        check(raised, f"parser rejects malformed {bad.split('--')[1][:20]!r}")
+
+    def spec_with(g1q):
+        return {
+            "name": "g1q_probe", "config": "c.json",
+            "jobs": [{"circuit": "a.qasm", "max_1q_gate_error": g1q}],
+            "devices": [{"id": "d0", "provider": "devq.simulated",
+                         "backend": {"kind": "random", "qubits": 5}}],
+        }
+
+    ok = spec_with(0.0005)
+    validate_spec(ok)
+    check(ok["jobs"][0]["max_1q_gate_error"] == 0.0005,
+          "spec validator accepts a valid 1q-gate threshold")
+
+    for bad in ("abc", True):
+        raised = False
+        try:
+            validate_spec(spec_with(bad))
+        except SpecError:
+            raised = True
+        check(raised, f"spec validator rejects max_1q_gate_error={bad!r}")
+
+
 def block_combined_thresholds():
     '''Qubit and edge thresholds compose as independent hard filters'''
     sh  = three_device()
@@ -1352,6 +1447,110 @@ def block_provider_global_key_rejected():
     # And the global key it was not entitled to set did not take effect.
     check("round_robin" not in out,
           "the illegal global key was ignored, router stays 'noise'")
+
+
+def block_device_calibration():
+    '''The five-term calibration model: synthesis ranges, accessors, extraction'''
+    from providers.devq.backend_factory import create_backend
+    from hardware.device import QuantumDevice
+    import random
+
+    # ── DevQ-simulated synthesis lands in real-world ranges ───────────────────
+    #
+    # Seeded so the check is deterministic. The ranges are the ones the
+    # generators promise (and that real superconducting hardware occupies):
+    # 1q gate error 1e-4..1e-3, T2 50..300 µs, 1q duration 20..60 ns,
+    # 2q duration 200..660 ns.
+    backend = create_backend("fully_connected", 7, rng=random.Random(42))
+
+    check(len(backend["gate_error_map"]) == 7,
+          "synthesised a 1q gate error for every qubit")
+    check(all(1e-4 <= e <= 1e-3 for e in backend["gate_error_map"].values()),
+          "every synthesised 1q gate error is in the real-world band 1e-4..1e-3")
+    check(len(backend["t2_map"]) == 7,
+          "synthesised a T2 for every qubit")
+    check(all(50.0 <= t <= 300.0 for t in backend["t2_map"].values()),
+          "every synthesised T2 is in the real-world band 50..300 µs")
+    check(20.0 <= backend["gate_1q_duration"] <= 60.0,
+          "1q gate duration is in the real-world band 20..60 ns")
+    check(200.0 <= backend["gate_2q_duration"] <= 660.0,
+          "2q gate duration is in the real-world band 200..660 ns")
+
+    # 1q gate error is a DISTINCT axis from readout error — a device is not
+    # allowed to conflate them (they filter independently).
+    check(backend["gate_error_map"] != backend["error_map"],
+          "1q gate error and readout error are distinct per-qubit maps")
+
+    # ── Accessors return the populated values ─────────────────────────────────
+    dev = QuantumDevice(
+        kind="cal", num_qubits=7,
+        coupling_map=backend["coupling_map"], basis_gates=backend["basis_gates"],
+        error_map=backend["error_map"], edge_error_map=backend["edge_error_map"],
+        gate_error_map=backend["gate_error_map"], t2_map=backend["t2_map"],
+        gate_1q_duration=backend["gate_1q_duration"],
+        gate_2q_duration=backend["gate_2q_duration"], provider=None)
+
+    check(dev.gate_error(0) == backend["gate_error_map"][0],
+          "gate_error(q) returns the populated per-qubit value")
+    check(dev.t2(0) == backend["t2_map"][0],
+          "t2(q) returns the populated per-qubit value")
+    check(dev.gate_duration(1) == backend["gate_1q_duration"]
+          and dev.gate_duration(2) == backend["gate_2q_duration"],
+          "gate_duration(arity) returns the per-arity value")
+
+    # ── Fallbacks on an unpopulated device ────────────────────────────────────
+    #
+    # A device built by older code (no extended calibration) still answers
+    # every accessor — with a typical fallback, never a crash. This is what
+    # keeps the field additive: existing construction paths are untouched.
+    bare = QuantumDevice(
+        kind="bare", num_qubits=3, coupling_map=[(0, 1)], basis_gates=["sx"],
+        error_map={0: 0.01}, edge_error_map={(0, 1): 0.02}, provider=None)
+
+    check(bare.gate_error(0) == 5e-4,
+          "gate_error falls back to a typical 5e-4 when unpopulated")
+    check(bare.t2(0) == 100.0,
+          "t2 falls back to a typical 100 µs when unpopulated")
+    check(bare.gate_duration(1) == 40.0 and bare.gate_duration(2) == 400.0,
+          "gate_duration falls back to typical 40/400 ns when unpopulated")
+
+    # Duration is per-ARITY (1 or 2); a nonsensical arity is a loud error,
+    # not a silent zero.
+    bad_arity = False
+    try:
+        bare.gate_duration(3)
+    except ValueError:
+        bad_arity = True
+    check(bad_arity, "gate_duration rejects an arity other than 1 or 2")
+
+    # ── IBM extraction pulls the same five terms from a real Target ───────────
+    #
+    # Guarded: skipped when qiskit is absent (same pattern as other
+    # IBM-dependent blocks). Values come from the PINNED fake-backend
+    # calibration, so this asserts on SHAPE and PLAUSIBILITY, not exact
+    # numbers — exact numbers are version-bound and belong to the fidelity
+    # references, not here.
+    try:
+        ibmdev = ibm_provider().get_device("FakeNairobiV2")
+    except Exception as e:
+        check(True, f"(IBM extraction skipped — provider unavailable: "
+                    f"{type(e).__name__})")
+        return
+
+    nq = ibmdev.num_qubits
+    check(all(ibmdev.gate_error(q) is not None for q in range(nq)),
+          "IBM extraction populates a 1q gate error for every qubit")
+    check(all(0 < ibmdev.gate_error(q) < 0.01 for q in range(nq)),
+          "extracted IBM 1q gate errors are gate-magnitude (0 < e < 0.01), "
+          "not readout error — guards against picking up measure error")
+    check(all(ibmdev.t2(q) > 0 for q in range(nq)),
+          "IBM extraction populates a positive T2 (µs) for every qubit")
+    check(ibmdev.gate_duration(1) > 0 and ibmdev.gate_duration(2) > 0,
+          "IBM extraction populates positive per-arity gate durations")
+    # 2q gates take longer than 1q gates on superconducting hardware — a
+    # cheap sanity check the extraction didn't swap arities.
+    check(ibmdev.gate_duration(2) > ibmdev.gate_duration(1),
+          "extracted 2q gate duration exceeds 1q (arity not swapped)")
 
 
 # ── Backend factory ──────────────────────────────────────────────────────────
@@ -1817,6 +2016,7 @@ def block_shipped_workloads():
         "rejection.json"      : 4,
         "contention.json"     : 25,
         "per_job_shots.json"  : 2,
+        "gate_error_filter.json" : 2,
     }
 
     # KEPT, not deleted. block_benchmark_runner runs 19 sessions into a
@@ -4023,7 +4223,7 @@ def block_allocator_scoring():
     # calibration; a swapped or mis-summed decomposition fails here even
     # though the weighted S might survive. Keyed by block tuple.
     report = {r["key"]: r for r in alloc.explain_decision(
-        (circuit, dev, pool, None, None))}
+        (circuit, dev, pool, None, None, None))}
     want = {
         (0, 1, 2): (0.097200, 0.015577, 0.023739),
         (1, 3, 5): (0.064700, 0.019363, 0.023897),
@@ -4915,6 +5115,7 @@ BLOCKS = [
     ("unrunnable_circuits",      block_unrunnable_circuits),
     ("edge_threshold_semantics", block_edge_threshold_semantics),
     ("combined_thresholds",      block_combined_thresholds),
+    ("max_1q_gate_error_filter", block_max_1q_gate_error_filter),
     ("packing_across_devices",   block_packing_across_devices),
     ("parser_errors",            block_parser_errors),
     ("per_job_shots",            block_per_job_shots),
@@ -4928,6 +5129,7 @@ BLOCKS = [
     ("lifecycle_failed",         block_lifecycle_failed),
     ("wedged_provider_timeout",  block_wedged_provider_timeout),
     ("mock_topologies",          block_mock_topologies),
+    ("device_calibration",       block_device_calibration),
     ("backend_factory_errors",   block_backend_factory_errors),
     ("shell_input_handling",     block_shell_input_handling),
     ("many_device_federation",   block_many_device_federation),

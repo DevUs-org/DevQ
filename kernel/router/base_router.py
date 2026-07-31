@@ -122,7 +122,8 @@ class BaseRouter(Sweepable, ABC):
             reason = ctx.memory_manager.unsatisfiable_reason(
                 qcb.circuit,
                 max_qubit_error=qcb.max_qubit_error,
-                max_edge_error=qcb.max_edge_error
+                max_edge_error=qcb.max_edge_error,
+                max_1q_gate_error=qcb.max_1q_gate_error
             )
             if reason is None:
                 feasible.append(ctx)

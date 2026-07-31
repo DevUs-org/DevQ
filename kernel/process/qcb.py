@@ -14,15 +14,21 @@ from .lifecycle import JobStates
 class QCB:
     def __init__(self, job_id, circuit, v2p_map=None,
                  max_qubit_error=None, max_edge_error=None,
-                 exec_on=None, no_exec_on=None, shots=None):
+                 exec_on=None, no_exec_on=None, shots=None,
+                 max_1q_gate_error=None):
         self.job_id  = job_id
         self.circuit = circuit
         self.v2p_map = v2p_map or {}
         self.state   = JobStates.READY
 
-        # Job-level noise thresholds (None = no filtering)
-        self.max_qubit_error = max_qubit_error
-        self.max_edge_error  = max_edge_error
+        # Job-level noise thresholds (None = no filtering). The two
+        # per-qubit thresholds are ANDed at allocation: a qubit passes only
+        # if its readout error <= max_qubit_error AND its single-qubit gate
+        # error <= max_1q_gate_error. max_edge_error filters two-qubit-gate
+        # edges. See kernel/memory/allocators/filtering.py.
+        self.max_qubit_error   = max_qubit_error
+        self.max_edge_error    = max_edge_error
+        self.max_1q_gate_error = max_1q_gate_error
 
         # Job-level shot count (None = defer to the device-resolved
         # `shots` config). A job that names its own shot count sits ABOVE

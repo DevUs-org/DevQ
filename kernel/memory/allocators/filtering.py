@@ -13,17 +13,26 @@ A threshold of None means no filtering on that dimension.
 from collections import deque
 
 
-def eligible_qubits(device, free_qubits, max_qubit_error=None):
+def eligible_qubits(device, free_qubits, max_qubit_error=None,
+                    max_1q_gate_error=None):
     '''
-    Return the subset of free_qubits whose readout error does not
-    exceed max_qubit_error. None threshold -> all free qubits pass.
+    Return the subset of free_qubits passing every per-qubit threshold.
+
+    A qubit is eligible only if it satisfies ALL supplied thresholds:
+      - readout error <= max_qubit_error       (None -> no readout filter)
+      - 1-qubit gate error <= max_1q_gate_error (None -> no gate filter)
+
+    The two are ANDed: a qubit with a clean readout but a noisy 1-qubit
+    gate (or vice versa) is excluded if it fails either. A qubit passes
+    trivially on any dimension whose threshold is None.
     '''
-    if max_qubit_error is None:
+    if max_qubit_error is None and max_1q_gate_error is None:
         return set(free_qubits)
 
     return {
         q for q in free_qubits
-        if device.qubit_error(q) <= max_qubit_error
+        if (max_qubit_error is None or device.qubit_error(q) <= max_qubit_error)
+        and (max_1q_gate_error is None or device.gate_error(q) <= max_1q_gate_error)
     }
 
 

@@ -76,11 +76,13 @@ Seven kinds, in the order a job moves through them:
 
 **`submit`** — a job entered the system. Fields: `job_id`, `num_qubits`,
 and the per-job constraints as declared — `max_qubit_error`,
-`max_edge_error` (noise thresholds, `null` if unset), `exec_on`/`no_exec_on`
-(device allow/deny lists, `null` if unset), and `shots` (the per-job shot
-count as *asked for* — `null` when the job named none and will defer to the
-device-resolved value). This is the raw request; the value actually run is
-on `dispatch`, and the two differ exactly when a job left `shots` unset.
+`max_1q_gate_error` (per-qubit readout and single-qubit-gate thresholds,
+ANDed at allocation; `null` if unset), `max_edge_error` (two-qubit-gate
+threshold, `null` if unset), `exec_on`/`no_exec_on` (device allow/deny
+lists, `null` if unset), and `shots` (the per-job shot count as *asked
+for* — `null` when the job named none and will defer to the device-resolved
+value). This is the raw request; the value actually run is on `dispatch`,
+and the two differ exactly when a job left `shots` unset.
 
 **`route`** — the router bound a job to a device. Fields: `job_id`,
 `device` (the chosen device index — the winner), `candidates` (the

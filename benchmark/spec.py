@@ -63,7 +63,8 @@ from devq import DevQError
 _TOP_KEYS    = frozenset({"name", "seed", "config", "devices", "arrival", "jobs"})
 _DEVICE_KEYS = frozenset({"id", "provider", "backend", "config"})
 _JOB_KEYS    = frozenset({"circuit", "repeat", "max_qubit_error",
-                          "max_edge_error", "exec_on", "no_exec_on",
+                          "max_edge_error", "max_1q_gate_error",
+                          "exec_on", "no_exec_on",
                           "frontend", "shots"})
 _ARRIVAL_KEYS = frozenset({"pattern"})
 
@@ -307,7 +308,8 @@ def validate_spec(spec, source="<spec>"):
                 )
             job["shots"] = shots
 
-        for key in ("max_qubit_error", "max_edge_error"):
+        for key in ("max_qubit_error", "max_edge_error",
+                    "max_1q_gate_error"):
             if key in job and job[key] is not None:
                 job[key] = _coerce_float(job[key], key, where)
 
@@ -572,6 +574,7 @@ def submit_jobs(shell, spec, source="<spec>"):
                 circuit,
                 max_qubit_error = job.get("max_qubit_error"),
                 max_edge_error  = job.get("max_edge_error"),
+                max_1q_gate_error = job.get("max_1q_gate_error"),
                 exec_on         = indices("exec_on"),
                 no_exec_on      = indices("no_exec_on"),
                 shots           = job.get("shots"),

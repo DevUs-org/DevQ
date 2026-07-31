@@ -108,18 +108,26 @@ costs enormous amounts of memory.
 
 ```python
 JobSpec(file_path, max_qubit_error=None, max_edge_error=None,
-        exec_on=None, no_exec_on=None)
+        max_1q_gate_error=None, exec_on=None, no_exec_on=None)
 ```
 
 **Noise thresholds** are **hard constraints**: any qubit whose readout error
-exceeds `max_qubit_error`, or edge whose gate error exceeds
-`max_edge_error`, is excluded from allocation for that job. `None` means no
-filtering on that dimension. Thresholds are **job-level only** — a
-deliberate design decision. Error filtering is a per-job user intent, not a
-platform property, so it is expressed at submission time; bracket groups
-cover applying one threshold across many jobs.
-(StaticAllocator applies the qubit threshold only — it has no topology
+exceeds `max_qubit_error`, any qubit whose single-qubit gate error exceeds
+`max_1q_gate_error`, or any edge whose two-qubit gate error exceeds
+`max_edge_error`, is excluded from allocation for that job. The two
+per-qubit thresholds are **ANDed** — a qubit must clear both its readout and
+its 1-qubit-gate threshold to be eligible. `None` means no filtering on that
+dimension. Thresholds are **job-level only** — a deliberate design decision.
+Error filtering is a per-job user intent, not a platform property, so it is
+expressed at submission time; bracket groups cover applying one threshold
+across many jobs.
+(StaticAllocator applies the qubit thresholds only — it has no topology
 concept, so the edge threshold is ignored there by design.)
+
+Note that DevQ's device model also carries T2 coherence and gate duration,
+but these are **not** job-level filters — they are scoring/estimation inputs
+a scheduler or router reads, not eligibility knobs a user imposes. Only the
+three error terms have `--max-*` filters.
 
 **Device constraints** bind jobs to devices:
 - `--exec=d0,d2` — allow-list: the job may **only** run on the listed
@@ -173,6 +181,7 @@ qsubmit bell.qasm ghz.qasm
 # Trailing flags — bind ONLY to the job immediately before them
 qsubmit bell.qasm --max-qubit-error=0.05
 qsubmit bell.qasm --max-edge-error=0.1 --no-exec=d0
+qsubmit bell.qasm --max-1q-gate-error=0.0005
 qsubmit bell.qasm --exec=d1,d2
 qsubmit bell.qasm --shots=8192
 

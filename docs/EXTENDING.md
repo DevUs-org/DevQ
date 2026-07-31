@@ -116,7 +116,8 @@ failure; honour thresholds as hard constraints). Every allocator is
 constructed with the device's resolved cost weights
 (`self.qubit_error_weight` / `self.edge_error_weight`, normalised to sum
 to 1) — use them for cost scoring or ignore them freely. Optionally override
-`feasible(circuit, device, max_qubit_error, max_edge_error) → None | reason`
+`feasible(circuit, device, max_qubit_error, max_edge_error, max_1q_gate_error)
+→ None | reason`
 — the base default checks eligible-qubit count; override it if your
 allocator has stricter existence requirements (see the graph allocators'
 connected-block check). `feasible()` powers both scheduler-level
@@ -236,6 +237,58 @@ across-candidate normalisation (block cost S is directly comparable, so
 ---
 
 ---
+
+## Device calibration model
+
+A `QuantumDevice` carries the five calibration terms that characterise a
+NISQ backend — the standard set an IBM Target publishes. A component reads
+them through accessors, never by reaching into the raw maps, so the storage
+can change without touching consumers:
+
+| Term                    | Accessor              | Unit | Granularity     |
+|-------------------------|-----------------------|------|-----------------|
+| readout error           | `qubit_error(q)`      | prob | per qubit       |
+| single-qubit gate error | `gate_error(q)`       | prob | per qubit       |
+| two-qubit gate error    | `edge_error(u, v)`    | prob | per edge        |
+| T2 coherence            | `t2(q)`               | µs   | per qubit       |
+| gate duration           | `gate_duration(arity)`| ns   | per arity (1/2) |
+
+Each accessor returns a **typical fallback** when its backing map is
+unpopulated (a device built by older code, or a provider that could not
+resolve a term), so every device answers every accessor and no consumer
+has to special-case a missing term. Durations are **per-arity** scalars,
+not per-qubit maps: execution-time estimation sums along a circuit's
+critical path by gate arity, which is the granularity consumers actually
+use. `gate_duration` accepts only arity 1 or 2 and raises otherwise —
+higher-arity gates decompose to these before scheduling.
+
+Providers populate these terms at construction: the IBM-simulated provider
+extracts them from the Qiskit Target; the DevQ-simulated provider
+synthesises them from real-world superconducting ranges, seeded for
+determinism. **⚠ The extracted IBM values are bound to the pinned
+qiskit-ibm-runtime calibration** — a version bump changes them, exactly as
+it does the fidelity references.
+
+### Adding a calibration term
+
+This model is deliberately extensible along one uniform path. When a new
+component needs a term DevQ does not yet carry (crosstalk, temporal drift,
+leakage), add it the same way the existing five were added — do **not**
+reach into device internals from the plugin:
+
+1. Add a `<term>_map` field to `QuantumDevice.__init__` (defaulted, so
+   existing construction is untouched).
+2. Add a `<term>(...)` accessor mirroring `qubit_error`/`edge_error`, with
+   a typical fallback.
+3. Extract it in the IBM provider (from the Target) and synthesise it in
+   the DevQ backend factory (from real-world ranges).
+4. If it is a placement constraint a user should be able to impose, thread
+   a `--max-<term>` filter through `eligible_qubits`/`edge_allowed` and the
+   JobSpec path; if it is only a scoring/estimation input, leave it
+   accessor-only (durations and T2 are accessor-only for this reason).
+
+The five terms above are the ones the platform needed; the seam is what
+makes the next one a bounded, additive change rather than a redesign.
 
 ## Device identity: index, name, kind
 

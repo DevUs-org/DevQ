@@ -22,17 +22,20 @@ class MemoryManager:
         self.pool      = QubitPool(device.num_qubits)
         self.allocator = allocator
 
-    def allocate(self, circuit, max_qubit_error=None, max_edge_error=None):
+    def allocate(self, circuit, max_qubit_error=None, max_edge_error=None,
+                 max_1q_gate_error=None):
         return self.allocator.allocate(
             circuit,
             self.device,
             self.pool,
             max_qubit_error=max_qubit_error,
-            max_edge_error=max_edge_error
+            max_edge_error=max_edge_error,
+            max_1q_gate_error=max_1q_gate_error
         )
 
     def unsatisfiable_reason(self, circuit,
-                             max_qubit_error=None, max_edge_error=None):
+                             max_qubit_error=None, max_edge_error=None,
+                             max_1q_gate_error=None):
         '''
         None if the job is satisfiable on a fully free device,
         else the allocator's human-readable reason it never can be.
@@ -41,7 +44,8 @@ class MemoryManager:
             circuit,
             self.device,
             max_qubit_error=max_qubit_error,
-            max_edge_error=max_edge_error
+            max_edge_error=max_edge_error,
+            max_1q_gate_error=max_1q_gate_error
         )
 
     def free(self, qubits):

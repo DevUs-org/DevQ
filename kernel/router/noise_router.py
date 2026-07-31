@@ -195,7 +195,8 @@ class NoiseRouter(BaseRouter):
                 ctx.device,
                 temp_pool,
                 max_qubit_error=qcb.max_qubit_error,
-                max_edge_error=qcb.max_edge_error
+                max_edge_error=qcb.max_edge_error,
+                max_1q_gate_error=qcb.max_1q_gate_error
             )
         except Exception:
             return float("inf"), None, None

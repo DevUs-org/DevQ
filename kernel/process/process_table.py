@@ -20,14 +20,16 @@ class ProcessTable:
         self.next_pid = 1
 
     def create_job(self, circuit, max_qubit_error=None, max_edge_error=None,
-                   exec_on=None, no_exec_on=None, shots=None):
+                   exec_on=None, no_exec_on=None, shots=None,
+                   max_1q_gate_error=None):
         pid = self.next_pid
         job = QCB(pid, circuit,
                   max_qubit_error=max_qubit_error,
                   max_edge_error=max_edge_error,
                   exec_on=exec_on,
                   no_exec_on=no_exec_on,
-                  shots=shots)
+                  shots=shots,
+                  max_1q_gate_error=max_1q_gate_error)
         self.jobs[pid] = job
         self.next_pid += 1
 

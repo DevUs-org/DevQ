@@ -75,7 +75,8 @@ class Kernel:
     # ── Job submission ────────────────────────────────────────────────────────
 
     def submit_job(self, circuit, max_qubit_error=None, max_edge_error=None,
-                   exec_on=None, no_exec_on=None, shots=None):
+                   exec_on=None, no_exec_on=None, shots=None,
+                   max_1q_gate_error=None):
         '''
         Create a QCB and place it in the router queue. Does not route
         and does not execute — the job stays READY until a scheduling
@@ -93,17 +94,19 @@ class Kernel:
             max_edge_error=max_edge_error,
             exec_on=exec_on,
             no_exec_on=no_exec_on,
-            shots=shots
+            shots=shots,
+            max_1q_gate_error=max_1q_gate_error
         )
         self.router_queue.append(qcb)
         self._emit("submit",
-                   job_id          = qcb.job_id,
-                   num_qubits      = circuit.num_qubits,
-                   max_qubit_error = max_qubit_error,
-                   max_edge_error  = max_edge_error,
-                   exec_on         = exec_on,
-                   no_exec_on      = no_exec_on,
-                   shots           = shots)
+                   job_id            = qcb.job_id,
+                   num_qubits        = circuit.num_qubits,
+                   max_qubit_error   = max_qubit_error,
+                   max_edge_error    = max_edge_error,
+                   max_1q_gate_error = max_1q_gate_error,
+                   exec_on           = exec_on,
+                   no_exec_on        = no_exec_on,
+                   shots             = shots)
         qcb.submitted_seq = self._seq - 1
         qcb.submitted_at  = time.time()
         return qcb
@@ -222,7 +225,8 @@ class Kernel:
             mapping = ctx.memory_manager.allocate(
                 qcb.circuit,
                 max_qubit_error=qcb.max_qubit_error,
-                max_edge_error=qcb.max_edge_error
+                max_edge_error=qcb.max_edge_error,
+                max_1q_gate_error=qcb.max_1q_gate_error
             )
             qcb.v2p_map = mapping
         except Exception:
