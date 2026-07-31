@@ -43,13 +43,15 @@ cannot.
 
 ## Results
 
-**135 distinct mutants, 132 killed, 3 excluded** (M10 equivalent, P7 and
+**136 distinct mutants, 133 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 131/128/3 from the prior
-state plus the 4 new allocator-sweep-and-capture mutants below (all
+The total is delta-consistent, not recounted: 135/132/3 from the prior
+state plus the 1 scheduler-contract mutant (MSch, killed — `BaseScheduler`
+stripped of `Sweepable` fails the scheduler-parity assertions in
+`sweepable_contract`). The 135/132/3 itself was 131/128/3 plus the 4 new allocator-sweep-and-capture mutants below (all
 killed — MA-b and MA-c after `allocator_scoring` was strengthened for
 them), each verified by running the mutant against the affected block,
 not assumed. The 131/128/3 itself was 125/122/3 plus the 6
@@ -580,6 +582,13 @@ Two survived first and drove the block's per-job assertions:
 Both are the same lesson: a witness workload that does not force the
 discriminating case leaves an assertion decorative. The clobber needed a
 parity check, and the serial-path capture needed a serial scheduler.
+
+**MSch — `BaseScheduler` stripped of `Sweepable`.** Killed by the
+scheduler-parity assertions in `sweepable_contract`: a scoring mock
+scheduler loses `is_sweepable`/`explain_decision` and the block fails.
+This pins the third component onto the shared contract — the scheduler
+inherits the same sweep machinery as the router and allocator, so the QOS
+baseline in 5.6 is sweepable with no base-class change.
 
 ---
 

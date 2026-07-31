@@ -13,8 +13,26 @@ WAITING; unsatisfiable per the allocator's feasible() → REJECTED
 from abc import ABC, abstractmethod
 from kernel.process.lifecycle import JobStates
 
+from kernel.sweep import Sweepable
 
-class BaseScheduler(ABC):
+
+class BaseScheduler(Sweepable, ABC):
+    '''
+    Base for all schedulers. Inherits the Sweepable contract at the same
+    scope as routers and allocators: a scheduler that scores its queue on a
+    tunable parameter (dispatch order, a cost-aware policy) implements the
+    three sweep hooks and becomes explainable and weight-sweepable for
+    free, exactly like NoiseRouter.
+
+    The shipped schedulers (FCFS, SDF, Packing) have no scoring parameter —
+    FCFS is arrival order, SDF is circuit depth, Packing is greedy
+    geometry — so they DO NOT implement the hooks and report not-sweepable
+    honestly, the same silence as RoundRobinRouter. The contract is present
+    so the first scored scheduler (the QOS baseline, Phase 5.6) is
+    sweepable without any base-class change; nothing here fakes a parameter
+    to exercise it.
+    '''
+
     def __init__(self, memory_manager, process_table):
         self.memory_manager = memory_manager
         self.process_table  = process_table

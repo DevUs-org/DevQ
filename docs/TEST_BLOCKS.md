@@ -1491,6 +1491,16 @@ separate "the contract is right" from "that component is right". The
 double tests the seam, so components inheriting it inherit proven
 machinery.
 
+It also covers the **scheduler** side of the contract. `BaseScheduler`
+inherits `Sweepable` at router parity, so a scheduler that scores its
+queue is sweepable through the identical derived machinery. A mock
+`ToyScoringScheduler` (scoring queued jobs by `w · urgency`, keyed by job
+id) proves explain and the sweep work for a scheduler subclass, while the
+three shipped schedulers — FCFS, ShortestDepth, Packing, none of which
+score — are asserted not-sweepable, the honest silence. The real scored
+consumer is the QOS baseline in Phase 5.6; nothing here fakes a scheduling
+parameter to exercise the seam.
+
 
 ### `allocator_scoring`
 

@@ -3527,6 +3527,55 @@ def block_sweepable_contract():
     check(Sweepable._sweep_terms(blind, decision) is NOT_SCORED,
           "the default _sweep_terms returns the NOT_SCORED sentinel")
 
+    # SCHEDULER PARITY. BaseScheduler inherits the same contract at router
+    # parity, so a scheduler that scores its queue is sweepable through the
+    # identical derived machinery — proven here with a mock scheduler,
+    # while the real scored consumer (QOS) waits for 5.6. A scheduler's
+    # decision is a choice among queued jobs, so the candidate keys are job
+    # ids; otherwise the hooks are the same shape.
+    from kernel.scheduler.base_scheduler import BaseScheduler
+
+    class ToyScoringScheduler(BaseScheduler):
+        # Scores queued jobs by w · urgency, lowest wins. Overrides only
+        # the sweep hooks and a trivial schedule(); the point is the
+        # contract, not the scheduling. Distinct from any shipped scheduler
+        # (none score), so a pass cannot come from matching one.
+        def __init__(self, w):
+            self.w = w
+        def schedule(self):
+            return []
+        def live_params(self):
+            return {"w": self.w}
+        def _sweep_terms(self, decision):
+            return [(jid, {"urgency": u}) for jid, u in decision.items()]
+        def _sweep_score(self, terms, params):
+            return params["w"] * terms["urgency"]
+        def _sweep_rank(self, scored, params):
+            return [(k, s, dict(t, final=s)) for k, t, s in scored]
+
+    sched_decision = {10: 5.0, 20: 2.0, 30: 8.0}
+    toy_sched = ToyScoringScheduler(w=1.0)
+    check(toy_sched.is_sweepable() is True,
+          "a scoring scheduler reports sweepable through the shared contract")
+    srep = toy_sched.explain_decision(sched_decision)
+    check({r["key"]: r["score"] for r in srep} == {10: 5.0, 20: 2.0, 30: 8.0},
+          "the scheduler derives explain from the same hooks")
+    srec = [(r["key"], r["terms"]) for r in srep]
+    check(toy_sched.sweep_decision(srec, {"w": 1.0}) == 20,
+          "the scheduler sweep picks argmin job from recorded terms")
+    check(toy_sched.sweep_decision(srec, {"w": -1.0}) == 30,
+          "the scheduler sweep re-derives a different job at other params")
+
+    # Shipped schedulers have no scoring parameter and must report
+    # not-sweepable — the honest silence, same as RoundRobinRouter.
+    from kernel.scheduler.fcfs_scheduler import FCFSScheduler
+    from kernel.scheduler.shortest_depth_scheduler import ShortestDepthScheduler
+    from kernel.scheduler.packing_scheduler import PackingScheduler
+    for cls in (FCFSScheduler, ShortestDepthScheduler, PackingScheduler):
+        inst = cls.__new__(cls)
+        check(inst.is_sweepable() is False,
+              f"{cls.__name__} reports not sweepable (no scoring parameter)")
+
 
 def block_allocator_scoring():
     '''Allocator decomposition, block sweep, and the allocate event'''
