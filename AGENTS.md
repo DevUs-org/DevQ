@@ -61,7 +61,9 @@ Documentation, all under `docs/`:
 |---|---|
 | `SHELL.md` | Driving a session; every command and the JobSpec grammar |
 | `CONFIGURATION.md` | Config keys, the cascade, scopes, seeding |
-| `REGISTRY.md` | Writing a plugin — contracts, `KeySpec`, validation |
+| `REGISTRY.md` | Registering a plugin — naming, what is checked, `KeySpec`, config keys |
+| `EXTENDING.md` | Building a plugin — the contract each kind implements, what is optional, `Sweepable` |
+| `EVENT_LOG.md` | What a run emits — record kinds, running a workload, the two-clock model |
 | `COST_MODEL.md` | The maths behind routing and allocation scores |
 | `METRICS.md` | Reading a run's results — the metric definitions |
 | `TEST_BLOCKS.md` | What each test block proves and why |
@@ -198,8 +200,9 @@ Rules worth stating outright:
 
 ## Task: write a plugin
 
-Full contract in [`docs/REGISTRY.md`](docs/REGISTRY.md) — read it before
-writing a component. The essentials:
+Full contract in [`docs/EXTENDING.md`](docs/EXTENDING.md); registration
+and config-key declaration in [`docs/REGISTRY.md`](docs/REGISTRY.md) —
+read them before writing a component. The essentials:
 
 ```python
 from registry.keyspec import KeySpec, NormaliseGroup, positive_int
@@ -416,6 +419,6 @@ Blocks record *what they proved*, not merely that they passed. Use
 | `repo_hygiene` reports thousands of untagged files | It is scanning a virtualenv. The scan must walk DevQ's own packages by name, never the repo root with a blocklist |
 | A resumed matrix re-runs everything | The manifest records outcomes; resume matches on session id. A crashed or absent session is always re-run whole — mid-session resume is not offered, since seeding is sequential |
 | A metrics pass crashes on a rejected job | Reading `queue_latency`/`execution_time`/`turnaround_time` without checking for `None` — unfinished jobs have no timestamps |
-| Two same-kind devices behave as one | Provider keyed per-device state by `kind` (shared) instead of `device.index` (unique) — see `on_attach` in docs/REGISTRY.md |
+| Two same-kind devices behave as one | Provider keyed per-device state by `kind` (shared) instead of `device.index` (unique) — see `on_attach` in docs/EXTENDING.md |
 | `device.index` is `None` | Device not attached yet; `get_device()` runs before the kernel assigns identity |
 | Device shows `-` where hardware should be | `kind` unresolved — provider has not called `set_kind()` |

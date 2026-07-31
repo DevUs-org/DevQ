@@ -9,7 +9,7 @@ allocation scores.
 
 Notation follows [`COST_MODEL.md`](COST_MODEL.md). The two-clock model
 (`seq` vs `*_at`) and the event-log structure it refers to are defined in
-[`REGISTRY.md`](REGISTRY.md).
+[`EVENT_LOG.md`](EVENT_LOG.md).
 
 **Status.** Throughput, queue latency, utilisation, rejection rate and
 load imbalance are specified below and implemented in

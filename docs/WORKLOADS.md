@@ -75,4 +75,4 @@ does not name constructs the provider themselves and attaches its device
 with `add_device()` instead.
 
 Full schema, seed resolution and the strictness rules:
-[`REGISTRY.md`](REGISTRY.md).
+[`EVENT_LOG.md`](EVENT_LOG.md).

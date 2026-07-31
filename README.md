@@ -182,8 +182,10 @@ the methods the kernel invokes, and any declared configuration. DevQ's own
 components register through this same path, so the extension path cannot
 rot while the shipped system keeps working.
 
-Full reference — the contract for each kind, config scopes, validators and
-normalisation groups: [`docs/REGISTRY.md`](docs/REGISTRY.md).
+Full reference — the contract each kind implements and what is optional:
+[`docs/EXTENDING.md`](docs/EXTENDING.md); registration, config scopes,
+validators and normalisation groups:
+[`docs/REGISTRY.md`](docs/REGISTRY.md).
 
 ---
 
@@ -196,7 +198,9 @@ together they are the authoritative description of DevQ.
 |---|---|
 | [`docs/SHELL.md`](docs/SHELL.md) | Every QShell command, and the JobSpec syntax for per-job noise thresholds and device constraints |
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | The four-level config cascade, key scopes, seeding and reproducibility, and the components DevQ ships with |
-| [`docs/REGISTRY.md`](docs/REGISTRY.md) | Plugin author reference — registering your own scheduler, allocator, router or provider, and declaring its configuration |
+| [`docs/REGISTRY.md`](docs/REGISTRY.md) | Registering a plugin — naming your scheduler, allocator, router, provider or frontend, what is validated, and declaring its configuration keys |
+| [`docs/EXTENDING.md`](docs/EXTENDING.md) | Building a plugin — the contract each kind implements, what is required, optional, or opt-in, and the `Sweepable` scoring/sweep contract |
+| [`docs/EVENT_LOG.md`](docs/EVENT_LOG.md) | What a run emits — the record kinds, running a workload, and the two-clock (`seq` vs `*_at`) timing model |
 | [`docs/COST_MODEL.md`](docs/COST_MODEL.md) | Formal statement of the block cost `S` and the router's device score, with notation and worked values |
 | [`docs/METRICS.md`](docs/METRICS.md) | Metrics computed from a completed run — throughput, queue latency, utilisation, rejection rate, load imbalance and fidelity, with definitions and the offline/reproducibility rules |
 | [`docs/TEST_BLOCKS.md`](docs/TEST_BLOCKS.md) | Sanity test plan — what each block checks and why; run it with `python run_tests.py` |

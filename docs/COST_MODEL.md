@@ -147,7 +147,7 @@ per decision, the $\alpha/\beta$-*free* summands of $S$ — $\sum_{q}
 \varepsilon_q$ and $\sum_{(u,v) \in E(B)} \varepsilon_{uv}$ per candidate
 — in the event log (the `allocate` event's per-block `scores` for the
 allocator, the `route` event's per-device `scores` for the router; see
-[`REGISTRY.md`](REGISTRY.md)). Because $S(\alpha') = \alpha' \sum_q
+[`EVENT_LOG.md`](EVENT_LOG.md)). Because $S(\alpha') = \alpha' \sum_q
 \varepsilon_q + (1-\alpha') \sum_{uv} \varepsilon_{uv}$ is linear in the
 summands, any $\alpha'$'s decision is recomputed by re-weighting the
 recorded sums and taking the $\arg\min$ afresh — no allocator re-run.
