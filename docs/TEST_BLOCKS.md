@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 60 sanity blocks in `run_tests.py`, covering
+Specification for the 61 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 60 blocks, one line each
+python run_tests.py              # all 61 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -338,6 +338,30 @@ Five malformed submissions, each producing a specific message:
 The closing `qps` must report `No jobs.` — the atomicity claim. A
 partially-applied batch is worse than a rejected one, since the user
 would have to work out which half landed.
+
+### `per_job_shots`
+
+*Per-job `--shots` overrides the device shot count; absent falls through.*
+
+Per-job shots is the one job-level tier above the four-level device
+`shots` cascade: a job naming its own count overrides the device-resolved
+value whole; a job naming none defers to it. The block proves both halves
+on a **single** device (so the same cascade underlies both jobs, and the
+override-vs-fallthrough contrast is the only thing that can differ), and
+asserts against the **resolved value at dispatch**, not rendered output —
+"absent from the display" is not "ran with the right number".
+
+| Claim | How it is checked |
+|---|---|
+| override reaches execution | job with `--shots=333` → `dispatch` event carries `333` |
+| absent falls through | job with no `--shots` → `dispatch` carries the device-resolved value |
+| raw ask ≠ resolved value | `submit` event records `333` / `None` (what was asked), distinct from the dispatched value (what ran) |
+| malformed rejects atomically | `--shots=` `0` / `-5` / `10.5` / `abc` / *(empty)* → `No jobs.` |
+| spec validator | accepts a positive int (and a numeric string, the `${}`-placeholder form); leaves an absent field untouched; rejects `0`, `-1`, `10.5`, `"abc"` |
+
+The device default (1024) differs from the override (333) by construction,
+so a green result cannot be an accident of the two coinciding — the block
+asserts that inequality first.
 
 ### `round_robin_router`
 

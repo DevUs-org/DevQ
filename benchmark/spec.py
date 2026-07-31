@@ -64,7 +64,7 @@ _TOP_KEYS    = frozenset({"name", "seed", "config", "devices", "arrival", "jobs"
 _DEVICE_KEYS = frozenset({"id", "provider", "backend", "config"})
 _JOB_KEYS    = frozenset({"circuit", "repeat", "max_qubit_error",
                           "max_edge_error", "exec_on", "no_exec_on",
-                          "frontend"})
+                          "frontend", "shots"})
 _ARRIVAL_KEYS = frozenset({"pattern"})
 
 # Phase 5.2 supports batch arrival only. Poisson needs virtual time —
@@ -281,6 +281,31 @@ def validate_spec(spec, source="<spec>"):
                     f"{repeat!r}."
                 )
             job["repeat"] = repeat
+
+        # A per-job shot count overrides the device-resolved `shots` for
+        # this job only (the per-job tier above the device cascade — see
+        # kernel _execute). Absent = defer to the device config. A plain
+        # positive-int literal, not a ${} placeholder: it carries no
+        # secret, so it stays outside the resolved/verbatim split.
+        if "shots" in job and job["shots"] is not None:
+            # A fractional float is a user error, not a roundable value —
+            # reject it before _coerce_int, which would truncate int(10.5)
+            # to 10 silently. (This guards the shots callsite specifically;
+            # _coerce_int keeps its shared repeat/seed behaviour.) A whole
+            # float like 1024.0 is tolerated the way a "1024" string is.
+            raw = job["shots"]
+            if isinstance(raw, float) and not raw.is_integer():
+                raise SpecError(
+                    f"{where}: 'shots' must be a whole number, got "
+                    f"{raw!r}."
+                )
+            shots = _coerce_int(raw, "shots", where)
+            if shots < 1:
+                raise SpecError(
+                    f"{where}: 'shots' must be a positive integer, got "
+                    f"{shots!r}."
+                )
+            job["shots"] = shots
 
         for key in ("max_qubit_error", "max_edge_error"):
             if key in job and job[key] is not None:
@@ -549,6 +574,7 @@ def submit_jobs(shell, spec, source="<spec>"):
                 max_edge_error  = job.get("max_edge_error"),
                 exec_on         = indices("exec_on"),
                 no_exec_on      = indices("no_exec_on"),
+                shots           = job.get("shots"),
             )
             qcb.circuit_hash = chash
             qcb.circuit_label = job["circuit"]

@@ -75,21 +75,25 @@ class Kernel:
     # ── Job submission ────────────────────────────────────────────────────────
 
     def submit_job(self, circuit, max_qubit_error=None, max_edge_error=None,
-                   exec_on=None, no_exec_on=None):
+                   exec_on=None, no_exec_on=None, shots=None):
         '''
         Create a QCB and place it in the router queue. Does not route
         and does not execute — the job stays READY until a scheduling
         cycle binds it to a device.
 
         Job-level noise thresholds and device constraints are stored on
-        the QCB; allocators and the router read them from there.
+        the QCB; allocators and the router read them from there. A
+        job-level `shots` (None = defer to the device config) is likewise
+        stored on the QCB and resolved against the device value at
+        dispatch — see _execute.
         '''
         qcb = self.process_table.create_job(
             circuit,
             max_qubit_error=max_qubit_error,
             max_edge_error=max_edge_error,
             exec_on=exec_on,
-            no_exec_on=no_exec_on
+            no_exec_on=no_exec_on,
+            shots=shots
         )
         self.router_queue.append(qcb)
         self._emit("submit",
@@ -98,7 +102,8 @@ class Kernel:
                    max_qubit_error = max_qubit_error,
                    max_edge_error  = max_edge_error,
                    exec_on         = exec_on,
-                   no_exec_on      = no_exec_on)
+                   no_exec_on      = no_exec_on,
+                   shots           = shots)
         qcb.submitted_seq = self._seq - 1
         qcb.submitted_at  = time.time()
         return qcb
@@ -306,12 +311,20 @@ class Kernel:
         qcb.reject_reason = reason
 
     def _execute(self, qcb, ctx):
+        # Resolve shots once, here, so the logged value and the executed
+        # value cannot diverge. A job that named its own shot count wins
+        # whole over the device-resolved `ctx.shots`; a job that did not
+        # (shots is None) defers to the device cascade exactly as before.
+        # This is the per-job tier sitting above the four-level device
+        # cascade — see QCB.shots.
+        shots = qcb.shots if qcb.shots is not None else ctx.shots
+
         self._emit("dispatch",
                    job_id       = qcb.job_id,
                    device       = ctx.index,
                    device_label = ctx.label,
                    v2p_map      = qcb.v2p_map,
-                   shots        = ctx.shots)
+                   shots        = shots)
 
         # Allocation decision (Phase 5.5a). Mirrors the router's `route`
         # event: the allocator recorded the candidate blocks it scored to
@@ -335,7 +348,7 @@ class Kernel:
         qcb.dispatched_seq = self._seq - 1
         qcb.dispatched_at  = time.time()
         qcb.future = ctx.device.execute(qcb.circuit, qcb.v2p_map,
-                                        shots=ctx.shots)
+                                        shots=shots)
         qcb.state  = JobStates.RUNNING
         ctx.running_jobs += 1
         self._pending.append(qcb)

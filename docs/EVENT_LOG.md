@@ -77,7 +77,10 @@ Seven kinds, in the order a job moves through them:
 **`submit`** — a job entered the system. Fields: `job_id`, `num_qubits`,
 and the per-job constraints as declared — `max_qubit_error`,
 `max_edge_error` (noise thresholds, `null` if unset), `exec_on`/`no_exec_on`
-(device allow/deny lists, `null` if unset).
+(device allow/deny lists, `null` if unset), and `shots` (the per-job shot
+count as *asked for* — `null` when the job named none and will defer to the
+device-resolved value). This is the raw request; the value actually run is
+on `dispatch`, and the two differ exactly when a job left `shots` unset.
 
 **`route`** — the router bound a job to a device. Fields: `job_id`,
 `device` (the chosen device index — the winner), `candidates` (the
@@ -111,7 +114,11 @@ error threshold). A rejected job never dispatches, so it produces no
 **`dispatch`** — a job was sent to its device for execution. Fields:
 `job_id`, `device`, `device_label` (the human name, e.g. `alpha (d0)`),
 `v2p_map` (the virtual→physical qubit map the allocator produced — the
-placement actually applied), and `shots`.
+placement actually applied), and `shots` (the **resolved** shot count the
+job ran with: its own per-job `--shots` if it named one, else the
+device-resolved value — see the per-job tier in
+[`CONFIGURATION.md`](CONFIGURATION.md)). Compare against `submit`'s `shots`
+to see whether a per-job override or the device default was used.
 
 **`resolve`** — execution finished. Fields: `job_id`, `device`, `state`
 (terminal state, e.g. `FINISHED`), `success`, `counts` (the measured

@@ -262,7 +262,8 @@ class QShell(cmd.Cmd):
         try:
             if not arg:
                 print("Usage: qrun <qasm_file> [--max-qubit-error=X] "
-                      "[--max-edge-error=Y] [--exec=d0,d1 | --no-exec=d2]")
+                      "[--max-edge-error=Y] [--exec=d0,d1 | --no-exec=d2] "
+                      "[--shots=N]")
                 return
 
             specs = parse_job_args(arg)
@@ -284,7 +285,8 @@ class QShell(cmd.Cmd):
                 max_qubit_error=spec.max_qubit_error,
                 max_edge_error=spec.max_edge_error,
                 exec_on=spec.exec_on,
-                no_exec_on=spec.no_exec_on
+                no_exec_on=spec.no_exec_on,
+                shots=spec.shots
             )
             print(f"Job {qcb.job_id} submitted to queue.")
 
@@ -308,7 +310,7 @@ class QShell(cmd.Cmd):
             if not arg:
                 print("Usage: qsubmit <qasm_file> [...] "
                       "[--max-qubit-error=X] [--max-edge-error=Y] "
-                      "[--exec=d0,d1 | --no-exec=d2] "
+                      "[--exec=d0,d1 | --no-exec=d2] [--shots=N] "
                       "| [group syntax: [a.qasm b.qasm --flag=X]]")
                 return
 
@@ -331,7 +333,8 @@ class QShell(cmd.Cmd):
                     max_qubit_error=spec.max_qubit_error,
                     max_edge_error=spec.max_edge_error,
                     exec_on=spec.exec_on,
-                    no_exec_on=spec.no_exec_on
+                    no_exec_on=spec.no_exec_on,
+                    shots=spec.shots
                 )
                 print(f"Job {qcb.job_id} submitted to queue.")
 

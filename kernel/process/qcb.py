@@ -14,7 +14,7 @@ from .lifecycle import JobStates
 class QCB:
     def __init__(self, job_id, circuit, v2p_map=None,
                  max_qubit_error=None, max_edge_error=None,
-                 exec_on=None, no_exec_on=None):
+                 exec_on=None, no_exec_on=None, shots=None):
         self.job_id  = job_id
         self.circuit = circuit
         self.v2p_map = v2p_map or {}
@@ -23,6 +23,16 @@ class QCB:
         # Job-level noise thresholds (None = no filtering)
         self.max_qubit_error = max_qubit_error
         self.max_edge_error  = max_edge_error
+
+        # Job-level shot count (None = defer to the device-resolved
+        # `shots` config). A job that names its own shot count sits ABOVE
+        # the four-level device cascade: the kernel resolves shots at
+        # dispatch as `qcb.shots if qcb.shots is not None else ctx.shots`,
+        # so a specified value wins whole (an override, not a blend) and
+        # an unspecified one leaves today's behaviour untouched. Shots is
+        # a per-circuit statistical requirement, not device policy, which
+        # is why the job's number takes precedence over the device's.
+        self.shots = shots
 
         # Job-level device constraints (None = unconstrained):
         #   exec_on    — allow-list: the job may ONLY run on these device

@@ -145,6 +145,17 @@ concept, so the edge threshold is ignored there by design.)
   what is registered. Binds per job and per group exactly like the other
   flags.
 
+**Shot count** overrides how many times the job's circuit is executed:
+- `--shots=<N>` — run this job with `N` shots, a positive integer. Without
+  the flag, the job uses the device-resolved `shots` config value (the
+  four-level cascade — see [`CONFIGURATION.md`](CONFIGURATION.md)). A
+  per-job `--shots` sits **above** that cascade: it overrides the device
+  value for this job only, whole (not blended or capped), because shot
+  count is a statistical requirement of the circuit, not device policy.
+- A non-integer (`--shots=10.5`), non-positive (`--shots=0`), or
+  non-numeric value is rejected, killing the whole batch like any other
+  malformed flag. Binds per job and per group exactly like the other flags.
+
 If constraints or filtering make allocation *temporarily* impossible on the
 routed device (resources busy), the job is set WAITING and retried. If they
 make allocation *permanently* impossible on every allowed device, the job is
@@ -163,6 +174,7 @@ qsubmit bell.qasm ghz.qasm
 qsubmit bell.qasm --max-qubit-error=0.05
 qsubmit bell.qasm --max-edge-error=0.1 --no-exec=d0
 qsubmit bell.qasm --exec=d1,d2
+qsubmit bell.qasm --shots=8192
 
 # Bracket group — flags apply to ALL jobs in the group
 qsubmit [a.qasm b.qasm --max-qubit-error=0.05 --no-exec=d0]

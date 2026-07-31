@@ -711,6 +711,106 @@ def block_parser_errors():
           "no jobs were created — all five batches rejected atomically")
 
 
+def block_per_job_shots():
+    '''Per-job --shots overrides the device shot count; absent falls through'''
+    from kernel.events import RecordSink
+    from benchmark.spec import validate_spec, SpecError
+
+    # ── Shell path: override reaches dispatch, absent falls through ────────────
+    #
+    # Assert against the RESOLVED value the kernel actually dispatched with
+    # (the dispatch event's shots), NOT rendered output — "absent from the
+    # display" is not "used the right number". One device so both jobs land
+    # on the same shot cascade, making the override-vs-fallthrough contrast
+    # the ONLY thing that can differ.
+    sh   = session(devices=[("devq.simulated", "random", 5, None, None)])
+    sink = RecordSink()
+    sh.kernel.sink = sink
+
+    run(sh, [
+        f"qsubmit {BELL} --shots=333",   # job 1: explicit override
+        f"qsubmit {BELL}",               # job 2: defer to device config
+        "qrunpack",
+    ])
+
+    device_shots = sh.kernel.contexts[0].shots
+    dispatched   = {r["job_id"]: r["shots"]
+                    for r in sink.records if r["event"] == "dispatch"}
+
+    check(device_shots != 333,
+          f"test is meaningful — the device default ({device_shots}) "
+          f"differs from the override (333), so a pass cannot be an "
+          f"accident of them coinciding")
+    check(dispatched.get(1) == 333,
+          f"job 1's --shots=333 reached dispatch as 333, overriding the "
+          f"device's {device_shots} (got {dispatched.get(1)})")
+    check(dispatched.get(2) == device_shots,
+          f"job 2 named no shots and fell through to the device-resolved "
+          f"{device_shots} (got {dispatched.get(2)})")
+
+    # The submit event records the RAW per-job value (None when unspecified),
+    # distinct from the resolved dispatch value — the two-clock analogue for
+    # shots: what the job asked for vs. what it ran with.
+    submitted = {r["job_id"]: r.get("shots")
+                 for r in sink.records if r["event"] == "submit"}
+    check(submitted.get(1) == 333 and submitted.get(2) is None,
+          f"submit records the raw ask (333 / None), not the resolved "
+          f"value (got {submitted.get(1)} / {submitted.get(2)})")
+
+    # ── Shell path: malformed --shots rejects the whole command, no job ───────
+    sh2  = session(devices=[("devq.simulated", "random", 5, None, None)])
+    out2 = run(sh2, [
+        f"qsubmit {BELL} --shots=0",
+        f"qsubmit {BELL} --shots=-5",
+        f"qsubmit {BELL} --shots=10.5",
+        f"qsubmit {BELL} --shots=abc",
+        f"qsubmit {BELL} --shots=",
+        "qps",
+    ])
+    check("No jobs." in out2,
+          "all five malformed --shots batches rejected atomically — "
+          "no job created by a bad shot count")
+
+    # ── Spec path: validator coerces valid, rejects malformed ─────────────────
+    def job_spec(shots):
+        job = {"circuit": "a.qasm"}
+        if shots is not _ABSENT:
+            job["shots"] = shots
+        return {
+            "name": "shots_probe", "config": "c.json",
+            "jobs": [job],
+            "devices": [{"id": "d0", "provider": "devq.simulated",
+                         "backend": {"kind": "random", "qubits": 5}}],
+        }
+
+    ok = job_spec(2048)
+    validate_spec(ok)
+    check(ok["jobs"][0]["shots"] == 2048 and isinstance(ok["jobs"][0]["shots"], int),
+          "spec validator accepts a positive-int shots and coerces to int")
+
+    coerced = job_spec("4096")            # ${} placeholders resolve to strings
+    validate_spec(coerced)
+    check(coerced["jobs"][0]["shots"] == 4096,
+          "spec validator coerces a numeric string (placeholder form) to int")
+
+    absent = job_spec(_ABSENT)
+    validate_spec(absent)
+    check("shots" not in absent["jobs"][0],
+          "a spec job without shots is left untouched — defers to the device")
+
+    for bad in (0, -1, 10.5, "abc"):
+        raised = False
+        try:
+            validate_spec(job_spec(bad))
+        except SpecError:
+            raised = True
+        check(raised, f"spec validator rejects shots={bad!r}")
+
+
+# Sentinel for "key not present" distinct from an explicit None value.
+_ABSENT = object()
+
+
 def block_round_robin_router():
     '''Round-robin router cycles devices in index order'''
     sh  = three_device(config="round_robin.config.json")
@@ -1716,6 +1816,7 @@ def block_shipped_workloads():
         "placeholders.json"   : 5,
         "rejection.json"      : 4,
         "contention.json"     : 25,
+        "per_job_shots.json"  : 2,
     }
 
     # KEPT, not deleted. block_benchmark_runner runs 19 sessions into a
@@ -2264,7 +2365,7 @@ def block_workload_spec():
     # refusing is the only alternative to guessing.
     rejects("an unknown top-level key",  lambda s: s.update(sed=1))
     rejects("an unknown device key",     lambda s: s["devices"][0].update(kind="x"))
-    rejects("an unknown job key",        lambda s: s["jobs"][0].update(shots=100))
+    rejects("an unknown job key",        lambda s: s["jobs"][0].update(nonsense=1))
     rejects("a duplicate device id",     lambda s: s["devices"].append(dict(s["devices"][0])))
     rejects("an empty device list",      lambda s: s.update(devices=[]))
     rejects("an empty job list",         lambda s: s.update(jobs=[]))
@@ -4816,6 +4917,7 @@ BLOCKS = [
     ("combined_thresholds",      block_combined_thresholds),
     ("packing_across_devices",   block_packing_across_devices),
     ("parser_errors",            block_parser_errors),
+    ("per_job_shots",            block_per_job_shots),
     ("round_robin_router",       block_round_robin_router),
     ("per_device_config",        block_per_device_config),
     ("weight_normalisation",     block_weight_normalisation),

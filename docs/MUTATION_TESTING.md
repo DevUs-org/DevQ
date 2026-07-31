@@ -639,6 +639,33 @@ Four mutants, all killed; block `comparison_modes`.
   guard only matters for a non-numeric non-None leaf, so only a fixture
   with one could witness its removal.
 
+### Per-job shots — `kernel/kernel.py`, `benchmark/spec.py`
+
+Backlog (post-5.5): the per-job `--shots` tier above the device cascade,
+resolved at dispatch as `qcb.shots if qcb.shots is not None else
+ctx.shots`. Three mutants, all killed; block `per_job_shots`.
+
+- **PS-a — resolution always takes `ctx.shots`** (drops the override). Killed
+  by the override check: the `--shots=333` job then dispatches the device
+  default (1024) instead of 333. The mutant proves the block actually
+  reads the per-job value rather than passing the device value through.
+- **PS-b — resolution always takes `qcb.shots`** (drops the fallthrough).
+  Killed by the fallthrough check: the job that named no shots then
+  dispatches `None` instead of the device-resolved 1024. This is the
+  complementary mutant to PS-a — together they pin BOTH arms of the
+  conditional, so neither the override nor the default can silently
+  collapse into the other.
+- **PS-c — spec shots boundary `< 1` becomes `< 0`.** Killed by the
+  `shots=0` rejection check: zero then validates instead of raising. The
+  guard exists to reject a non-positive shot count, and only a
+  zero-valued fixture forces the boundary it defends.
+
+Note PS-a/PS-b are a deliberate pair: a single mutant on a two-armed
+conditional can hide in the arm the fixtures happen not to exercise, so
+each arm gets its own witness (an overriding job and a defaulting job on
+the same device — the fixture forces the discriminating case, parity of
+setup with distinctness of outcome).
+
 ---
 
 ## The five that survived first time

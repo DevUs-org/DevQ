@@ -1,0 +1,26 @@
+{
+    "name": "per_job_shots",
+    "seed": 42,
+    "devices": [
+        {
+            "id": "sim",
+            "provider": "devq.simulated",
+            "backend": {
+                "kind": "random",
+                "num_qubits": 7
+            }
+        }
+    ],
+    "arrival": {
+        "pattern": "batch"
+    },
+    "jobs": [
+        {
+            "circuit": "test_circuits/bell.qasm",
+            "shots": 333
+        },
+        {
+            "circuit": "test_circuits/bell.qasm"
+        }
+    ]
+}

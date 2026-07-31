@@ -26,6 +26,17 @@ later levels overriding earlier ones:
 3. **Global user config file** — `DevQ(config_path=...)`, applies to all devices
 4. **Per-device user config file** — `add_device(device, config_path)`, this device only
 
+`shots` has one further tier **above** this cascade: a **per-job** shot
+count, set with `--shots=N` in the shell (or a `"shots"` field on a
+workload-spec job). A job that names its own shot count overrides the
+device-resolved `shots` for that job only — whole, not blended — and a job
+that names none defers to the cascade above unchanged. This tier is
+job-scoped, not device-scoped: it never appears in `qconfig` (which
+reports device-level resolution) and is resolved at dispatch as
+`job.shots if job.shots is not None else device.shots`. It exists only for
+`shots`, because shot count is a per-circuit statistical requirement rather
+than device policy; `scheduler` and `allocator` have no per-job form.
+
 **Global keys** (`router`, `router_queue_weight`, `router_noise_weight`)
 are resolved once for the whole system: core defaults ← global user file.
 Providers deliberately **cannot** set global keys — a provider expressing

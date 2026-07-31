@@ -64,18 +64,23 @@ class JobSpec:
     # the shell resolves and validates it at submit time, since the
     # parser has no view of what is registered.
     frontend:        str | None = None
+    # Explicit per-job shot count from --shots=N. None = defer to the
+    # device-resolved `shots` config (the four-level cascade). A specified
+    # value overrides that whole cascade for this job — see QCB.shots.
+    shots:           int | None = None
 
     def __repr__(self):
         return (f"JobSpec(file={self.file_path}, "
                 f"qe={self.max_qubit_error}, ee={self.max_edge_error}, "
                 f"exec={self.exec_on}, no_exec={self.no_exec_on}, "
-                f"frontend={self.frontend})")
+                f"frontend={self.frontend}, shots={self.shots})")
 
 
 _THRESHOLD_FLAGS = ('max-qubit-error', 'max-edge-error')
 _DEVICE_FLAGS    = ('exec', 'no-exec')
 _STRING_FLAGS    = ('frontend',)
-_KNOWN_FLAGS     = _THRESHOLD_FLAGS + _DEVICE_FLAGS + _STRING_FLAGS
+_INT_FLAGS       = ('shots',)
+_KNOWN_FLAGS     = _THRESHOLD_FLAGS + _DEVICE_FLAGS + _STRING_FLAGS + _INT_FLAGS
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -178,7 +183,8 @@ def _extract_files_and_flags(tokens: list) -> tuple:
         "max_edge_error":  None,
         "exec_on":         None,
         "no_exec_on":      None,
-        "frontend":        None
+        "frontend":        None,
+        "shots":           None
     }
 
     for token in tokens:
@@ -194,6 +200,8 @@ def _extract_files_and_flags(tokens: list) -> tuple:
                 flags["no_exec_on"] = val
             elif key == 'frontend':
                 flags["frontend"] = val
+            elif key == 'shots':
+                flags["shots"] = val
         else:
             files.append(token)
 
@@ -242,6 +250,8 @@ def _parse_flag(flag: str) -> tuple:
             example = 'qasm2'
         elif key in _THRESHOLD_FLAGS:
             example = '0.05'
+        elif key in _INT_FLAGS:
+            example = '1024'
         else:
             example = 'd0,d1'
         raise ValueError(
@@ -258,6 +268,25 @@ def _parse_flag(flag: str) -> tuple:
 
     if key in _DEVICE_FLAGS:
         return key, _parse_device_list(key, raw_val)
+
+    if key in _INT_FLAGS:
+        # A shot count is a positive integer. Reject floats outright
+        # (int('10.0') raises) rather than silently truncating — a shot
+        # count with a fractional part is a user error, not a roundable
+        # value.
+        try:
+            val = int(raw_val)
+        except ValueError:
+            raise ValueError(
+                f"Invalid value for '--{key}': '{raw_val}' is not an "
+                f"integer. Expected a positive integer — e.g. --{key}=1024."
+            )
+        if val < 1:
+            raise ValueError(
+                f"Invalid value for '--{key}': {val} is out of range. "
+                f"Expected a positive integer (at least 1)."
+            )
+        return key, val
 
     try:
         val = float(raw_val)
