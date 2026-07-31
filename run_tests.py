@@ -314,7 +314,7 @@ def counts_of(out, job_id):
 
 from kernel.process.lifecycle import JobStates
 from kernel.scheduler.base_scheduler import BaseScheduler
-from kernel.memory.allocators.base_allocator import BaseAllocator
+from kernel.memory.allocators.base_allocator import BaseAllocator, AllocationError
 from kernel.router.base_router import BaseRouter
 from registry.keyspec import (KeySpec, NormaliseGroup, positive_int,
                               non_negative)
@@ -387,8 +387,10 @@ class MockAllocator(BaseAllocator):
         need = circuit.num_qubits
         free = sorted(pool.available())
         if len(free) < need:
-            return None
-        return {v: p for v, p in enumerate(free[:need])}
+            raise AllocationError("Mock: not enough free qubits")
+        chosen = free[:need]
+        pool.allocate(chosen)                      # honour reserve-on-success
+        return {v: p for v, p in enumerate(chosen)}
 
 
 class MockRouter(BaseRouter):
@@ -1834,6 +1836,148 @@ def block_registry_validation():
     except DevQError as e:
         check("already registered" in str(e),
               "duplicate name: rejected")
+
+
+def block_plugin_contract_enforcement():
+    '''Buggy plugins fail loudly at run time, not silently or by hanging'''
+    from kernel.memory.allocators.base_allocator import (
+        BaseAllocator, AllocationError)
+    from kernel.memory.memory_manager import AllocatorContractError
+    from kernel.router.base_router import BaseRouter, RouterContractError
+    from frontends.qasm2.parser import parse
+
+    circuit = parse(open(BELL).read())
+
+    def fresh():
+        sh = DevQ().add_device(
+            DevQSimulatedProvider(seed=SEED).get_device("random", 5)).build()
+        return sh, sh.kernel.contexts[0]
+
+    # ── An allocator BUG propagates; it is NOT mistaken for infeasibility ─────
+    #
+    # The distinction that matters: a legitimate "cannot place" (AllocationError)
+    # is caught and classified; ANY OTHER exception is a bug and must surface,
+    # rather than being swallowed into an endless WAITING retry (the failure
+    # mode that hung the suite when a plugin had the wrong signature).
+    class BuggyAllocator(BaseAllocator):
+        LABEL = "Buggy"
+        def allocate(self, circuit, device, pool, max_qubit_error=None,
+                     max_edge_error=None, max_1q_gate_error=None):
+            return 1 / 0            # a bug, not an infeasibility
+
+    sh, ctx = fresh()
+    ctx.memory_manager.allocator = BuggyAllocator(
+        qubit_error_weight=0.5, edge_error_weight=0.5)
+    raised = None
+    try:
+        ctx.memory_manager.allocate(circuit)
+    except ZeroDivisionError:
+        raised = "propagated"
+    except Exception as e:
+        raised = type(e).__name__
+    check(raised == "propagated",
+          f"an allocator bug (ZeroDivisionError) propagates rather than being "
+          f"swallowed as 'cannot place' (got {raised})")
+
+    # The same bug driven through the SCHEDULER's own catch site
+    # (_attempt_allocation) — the path that hung: its catch, if broad, would
+    # reclassify the bug as transient contention (WAITING) and the kernel
+    # would retry forever. Calling the unit directly reaches its catch
+    # regardless of which router path a job took to get there. (A separate
+    # assertion from the direct memory_manager call above because they are
+    # different catch sites.)
+    shb, ctxb = fresh()
+    ctxb.memory_manager.allocator = BuggyAllocator(
+        qubit_error_weight=0.5, edge_error_weight=0.5)
+    qcbb = shb.kernel.submit_job(circuit)
+    sched_raised = None
+    try:
+        ctxb.scheduler._attempt_allocation(qcbb)
+    except ZeroDivisionError:
+        sched_raised = "propagated"
+    except Exception as e:
+        sched_raised = type(e).__name__
+    check(sched_raised == "propagated",
+          f"the scheduler's own catch lets an allocator bug surface rather "
+          f"than classifying it as WAITING and retrying forever (got "
+          f"{sched_raised})")
+
+    # A LEGITIMATE infeasibility (AllocationError) is still caught downstream —
+    # the narrowing must not have broken normal rejection.
+    class FullAllocator(BaseAllocator):
+        LABEL = "Full"
+        def allocate(self, circuit, device, pool, max_qubit_error=None,
+                     max_edge_error=None, max_1q_gate_error=None):
+            raise AllocationError("nothing free")
+
+    sh2, ctx2 = fresh()
+    ctx2.memory_manager.allocator = FullAllocator(
+        qubit_error_weight=0.5, edge_error_weight=0.5)
+    caught = False
+    try:
+        ctx2.memory_manager.allocate(circuit)
+    except AllocationError:
+        caught = True
+    check(caught,
+          "a legitimate AllocationError still surfaces to the caller "
+          "(narrowing did not swallow the infeasibility signal)")
+
+    # ── An allocator that maps without reserving is rejected, not double-booked ─
+    class LyingAllocator(BaseAllocator):
+        LABEL = "Lying"
+        def allocate(self, circuit, device, pool, max_qubit_error=None,
+                     max_edge_error=None, max_1q_gate_error=None):
+            return {v: v for v in range(circuit.num_qubits)}   # no reserve
+
+    sh3, ctx3 = fresh()
+    ctx3.memory_manager.allocator = LyingAllocator(
+        qubit_error_weight=0.5, edge_error_weight=0.5)
+    raised = False
+    try:
+        ctx3.memory_manager.allocate(circuit)
+    except AllocatorContractError:
+        raised = True
+    check(raised,
+          "an allocator that returns a mapping without reserving its qubits "
+          "is rejected (would otherwise silently double-book)")
+
+    # ── A router returning a non-candidate is rejected, not obeyed ────────────
+    #
+    # The dangerous case is returning a VALID device the router was NOT
+    # offered — that would run a job on a device the user's exec/no-exec
+    # constraints excluded. A non-candidate of any shape must be refused.
+    class RogueRouter(BaseRouter):
+        LABEL = "Rogue"
+        def select(self, qcb, candidates):
+            return "not-a-candidate"
+
+    sh4, ctx4 = fresh()
+    sh4.kernel.router = RogueRouter(
+        qubit_error_weight=0.5, edge_error_weight=0.5)
+    qcb = sh4.kernel.submit_job(circuit)
+    raised = False
+    try:
+        sh4.kernel.router.route(qcb, sh4.kernel.contexts)
+    except RouterContractError:
+        raised = True
+    check(raised,
+          "a router returning a device it was not offered is rejected "
+          "(would otherwise place a job on a forbidden device)")
+
+    # A well-behaved router (returns an actual candidate) still routes fine —
+    # the guard must not reject the normal case.
+    class GoodRouter(BaseRouter):
+        LABEL = "Good"
+        def select(self, qcb, candidates):
+            return candidates[0]
+
+    sh5, ctx5 = fresh()
+    sh5.kernel.router = GoodRouter(
+        qubit_error_weight=0.5, edge_error_weight=0.5)
+    qcb5 = sh5.kernel.submit_job(circuit)
+    chosen, reason = sh5.kernel.router.route(qcb5, sh5.kernel.contexts)
+    check(chosen is not None and reason is None,
+          "a router returning a real candidate still routes normally")
 
 
 def block_registry_frozen():
@@ -5144,6 +5288,7 @@ BLOCKS = [
     ("bug_fix_witnesses",        block_bug_fix_witnesses),
     ("registry_plugin_components", block_registry_plugin_components),
     ("registry_validation",      block_registry_validation),
+    ("plugin_contract_enforcement", block_plugin_contract_enforcement),
     ("registry_frozen",          block_registry_frozen),
     ("plugin_config_keys",       block_plugin_config_keys),
     ("plugin_normalise_group",   block_plugin_normalise_group),

@@ -689,6 +689,32 @@ Feature extension (post-5.5): the five-term calibration model and the
   higher-arity gate that failed to decompose surfaces as an error rather
   than a plausible-looking wrong number; only a bad-arity fixture forces it.
 
+### Plugin contract enforcement — scheduler, router, memory_manager
+
+Post-5.5 hardening: the three run-time guards that make a buggy third-party
+component fail loudly. Three mutants, all killed; block
+`plugin_contract_enforcement`.
+
+- **PE-a — the scheduler's narrowed `except AllocationError` reverts to
+  `except Exception`.** SURVIVED first. The block only exercised the
+  `MemoryManager` catch (via a direct `allocate()` call), not the
+  scheduler's own catch, so broadening the scheduler's catch changed
+  nothing the test observed. Killed after adding an assertion that drives
+  the buggy allocator through `_attempt_allocation` directly — the unit that
+  owns the scheduler catch — where a broad catch reclassifies the bug as
+  WAITING and swallows it. The lesson is the recurring one: a guard is
+  untested until a fixture reaches *that specific* guard, not a sibling on
+  another path.
+- **PE-b — `route()`'s `if chosen not in candidates` never fires.** Killed
+  by the rogue-router check: a router returning a non-candidate is then
+  obeyed instead of rejected. The block pins this with a paired positive (a
+  router returning a real candidate must still route), so the guard cannot
+  pass by rejecting everything.
+- **PE-c — the pool-reservation check treats every mapping as reserved.**
+  Killed by the lying-allocator check: a mapping returned without reserving
+  its qubits then passes, which would silently double-book. Only a fixture
+  whose allocator deliberately skips `pool.allocate()` witnesses the guard.
+
 ---
 
 ## The five that survived first time

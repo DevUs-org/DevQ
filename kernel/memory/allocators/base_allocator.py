@@ -22,10 +22,17 @@ Contract:
       max_1q_gate_error on single-qubit gate error) are ANDed; max_edge_error
       filters two-qubit-gate edges.
     - On success: the allocator MUST call pool.allocate() on the selected
-      physical qubits before returning the mapping.
-    - On failure: raise an Exception — callers translate this into a
-      WAITING or REJECTED job state. Never return None or a partial
-      mapping.
+      physical qubits before returning the mapping. Callers verify this —
+      a mapping whose qubits were not actually reserved is a contract
+      violation and is rejected loudly, not silently double-booked.
+    - On failure (no placement possible under the pool state and
+      thresholds): raise **AllocationError** — callers translate THIS into
+      a WAITING or REJECTED job state. Never return None or a partial
+      mapping. Any OTHER exception is treated as a bug in the allocator and
+      propagates with the allocator's name attached, rather than being
+      silently reclassified as infeasibility (which would spin a buggy
+      plugin in a retry loop forever). This distinction is what lets a
+      third-party allocator's bug surface as an error instead of a hang.
 
     feasible(circuit, device, max_qubit_error=None, max_edge_error=None,
              max_1q_gate_error=None)
@@ -47,6 +54,21 @@ from abc import ABC, abstractmethod
 from kernel.sweep import Sweepable
 
 from .filtering import eligible_qubits
+
+
+class AllocationError(Exception):
+    '''
+    Raised by an allocator to signal that no placement exists under the
+    current pool state and thresholds — a legitimate, expected outcome the
+    scheduler translates into WAITING or REJECTED.
+
+    This is deliberately a DISTINCT type from an ordinary Exception: the
+    scheduler and router catch only AllocationError as "cannot place".
+    Any other exception from an allocator is a bug in that allocator and is
+    allowed to propagate, so a broken third-party component fails loudly
+    instead of being mistaken for an infeasible job and retried forever.
+    '''
+    pass
 
 
 class BaseAllocator(Sweepable, ABC):

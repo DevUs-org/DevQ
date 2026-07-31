@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 63 sanity blocks in `run_tests.py`, covering
+Specification for the 64 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 63 blocks, one line each
+python run_tests.py              # all 64 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -853,6 +853,32 @@ abstract `select()`. Checking only `route()` would pass a plugin whose
 `select()` has the wrong signature, because it inherits a perfectly
 valid `route()`. The same holds for `allocate()`/`feasible()` and
 `schedule()`/`enqueue()`, so both halves of each pair are checked.
+
+### `plugin_contract_enforcement`
+
+*Buggy plugins fail loudly at run time, not silently or by hanging.*
+
+Where `registry_validation` checks the contract at **registration**, this
+checks the runtime post-conditions the kernel enforces on a component's
+*behaviour*, using deliberately-broken plugins:
+
+- An allocator that raises a non-`AllocationError` (a real bug, e.g.
+  `ZeroDivisionError`) has it **propagate** — both through the
+  `MemoryManager` and through the scheduler's own `_attempt_allocation`
+  catch. The scheduler path is asserted separately because its broad catch
+  was the one that reclassified a plugin bug as transient contention and
+  retried forever (the hang). A legitimate `AllocationError` still surfaces
+  as "cannot place", so the narrowing did not swallow the real signal.
+- An allocator that returns a mapping **without reserving** its qubits in
+  the pool raises `AllocatorContractError` rather than letting the next job
+  be double-booked onto the same physical qubits.
+- A router whose `select()` returns a device it was **not** offered (or any
+  non-candidate) raises `RouterContractError` rather than running the job on
+  a constraint-excluded device; a router returning a real candidate still
+  routes normally.
+
+Each negative is paired with the positive it must not break, so the guards
+cannot pass by simply rejecting everything.
 
 ### `registry_frozen`
 

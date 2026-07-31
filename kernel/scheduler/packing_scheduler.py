@@ -17,6 +17,7 @@ REJECTED and removed from the queue entirely.
 
 from kernel.scheduler.base_scheduler import BaseScheduler
 from kernel.process.lifecycle import JobStates
+from kernel.memory.allocators.base_allocator import AllocationError
 
 
 class PackingScheduler(BaseScheduler):
@@ -126,7 +127,9 @@ class PackingScheduler(BaseScheduler):
             qcb.alloc_decision = getattr(
                 self.memory_manager.allocator, "_last_decision", None)
             return mapping
-        except Exception:
+        except AllocationError:
+            # Legitimate "cannot place" for this job in this trial packing.
+            # A non-AllocationError is an allocator bug and propagates.
             return None
 
     def is_batch(self):

@@ -36,6 +36,7 @@ default 0.5 / 0.5). Ties break by lower device index (deterministic).
 
 from kernel.router.base_router import BaseRouter
 from kernel.memory.qubit_pool import QubitPool
+from kernel.memory.allocators.base_allocator import AllocationError
 
 class NoiseRouter(BaseRouter):
 
@@ -198,7 +199,11 @@ class NoiseRouter(BaseRouter):
                 max_edge_error=qcb.max_edge_error,
                 max_1q_gate_error=qcb.max_1q_gate_error
             )
-        except Exception:
+        except AllocationError:
+            # This candidate device cannot host the job — infinite cost, so
+            # the router ranks it last. An allocator BUG (any other
+            # exception) propagates rather than silently making the device
+            # look merely infeasible.
             return float("inf"), None, None
 
         qubits = list(mapping.values())

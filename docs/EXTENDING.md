@@ -111,11 +111,12 @@ no capable provider simply reports fidelity as `None`. See
 [`METRICS.md`](METRICS.md) (fidelity) for how the ideal is used.
 
 **New allocator** — subclass `BaseAllocator`, implement `allocate()` per the
-documented contract (reserve via `pool.allocate()` on success; raise on
-failure; honour thresholds as hard constraints). Every allocator is
-constructed with the device's resolved cost weights
-(`self.qubit_error_weight` / `self.edge_error_weight`, normalised to sum
-to 1) — use them for cost scoring or ignore them freely. Optionally override
+documented contract (reserve via `pool.allocate()` on success; signal "no
+placement possible" by raising `AllocationError`; honour thresholds as hard
+constraints). Every allocator is constructed with the device's resolved cost
+weights (`self.qubit_error_weight` / `self.edge_error_weight`, normalised to
+sum to 1) — use them for cost scoring or ignore them freely. Optionally
+override
 `feasible(circuit, device, max_qubit_error, max_edge_error, max_1q_gate_error)
 → None | reason`
 — the base default checks eligible-qubit count; override it if your
@@ -123,11 +124,31 @@ allocator has stricter existence requirements (see the graph allocators'
 connected-block check). `feasible()` powers both scheduler-level
 classification and router-level candidate filtering.
 
+Two parts of this contract are **enforced at run time**, so a bug in a
+third-party allocator surfaces as a clear, named error rather than silent
+misbehaviour:
+
+- *Signal infeasibility with `AllocationError`, not a bare exception.* The
+  scheduler and router catch **only** `AllocationError` as "cannot place";
+  any other exception is treated as a bug in your allocator and propagates
+  with its name attached. This is deliberate — a broad catch previously
+  meant a wrong-signature or crashing allocator was mistaken for an
+  infeasible job and retried forever. Returning `None` is also not allowed;
+  raise `AllocationError`.
+- *Actually reserve what you map.* If `allocate()` returns a mapping whose
+  physical qubits it did not reserve via `pool.allocate()`, the
+  `MemoryManager` raises `AllocatorContractError` rather than letting the
+  next job be handed the same qubits (a silent double-booking).
+
 **New scheduler** — subclass `BaseScheduler`, implement `schedule()`.
 
 **New router** — subclass `BaseRouter`, implement
 `select(qcb, candidates) → DeviceContext`. Candidates arrive already
-filtered by the job's device constraints and per-device feasibility; the
+filtered by the job's device constraints and per-device feasibility; your
+`select()` **must return one of them** — returning a device it was not
+offered (which would run the job somewhere the user's `--exec`/`--no-exec`
+constraints excluded) or any non-candidate value raises `RouterContractError`.
+
 **New frontend** — subclass `BaseFrontend`, implement
 `parse(source) → CircuitRep`, and declare `EXTENSIONS` (lowercase, dotted)
 for the source files it reads. A frontend takes **no constructor

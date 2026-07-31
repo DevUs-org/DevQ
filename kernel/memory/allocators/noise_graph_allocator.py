@@ -16,7 +16,7 @@ connected block among eligible qubits.
 '''
 from collections import deque
 
-from .base_allocator import BaseAllocator
+from .base_allocator import BaseAllocator, AllocationError
 from .filtering import eligible_qubits, edge_allowed, has_connected_block
 
 
@@ -45,7 +45,7 @@ class NoiseGraphAllocator(BaseAllocator):
             # No candidates: record nothing to explain, and let the caller
             # classify the failure (WAITING/REJECTED) as before.
             self._last_decision = None
-            raise Exception(
+            raise AllocationError(
                 "No connected qubit block available"
                 if circuit.num_qubits != 2
                 else "No connected qubit pair available"

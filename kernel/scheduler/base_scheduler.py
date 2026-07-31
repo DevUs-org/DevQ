@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from kernel.process.lifecycle import JobStates
 
 from kernel.sweep import Sweepable
+from kernel.memory.allocators.base_allocator import AllocationError
 
 
 class BaseScheduler(Sweepable, ABC):
@@ -82,7 +83,12 @@ class BaseScheduler(Sweepable, ABC):
             qcb.alloc_decision = getattr(
                 self.memory_manager.allocator, "_last_decision", None)
             return True
-        except Exception:
+        except AllocationError:
+            # A LEGITIMATE "cannot place" — classify as transient (WAITING)
+            # or terminal (REJECTED) per feasible(). Any OTHER exception is
+            # a bug in the allocator and propagates (see BaseAllocator's
+            # contract), rather than being mistaken for infeasibility and
+            # retried forever.
             reason = self.memory_manager.unsatisfiable_reason(
                 qcb.circuit,
                 max_qubit_error=qcb.max_qubit_error,

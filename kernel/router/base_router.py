@@ -35,6 +35,17 @@ from abc import ABC, abstractmethod
 from kernel.sweep import Sweepable
 
 
+class RouterContractError(Exception):
+    '''
+    Raised when a router violates its select() contract — most importantly,
+    returning a device it was not offered as a candidate. Distinct from a
+    legitimate "no candidates" outcome (which route() reports as a rejection
+    reason, not an exception): this is a bug in the router, surfaced loudly
+    and named rather than allowing a constraint-violating placement.
+    '''
+    pass
+
+
 class BaseRouter(Sweepable, ABC):
 
     def __init__(self, router_queue_weight=0.5, router_noise_weight=0.5, qubit_error_weight=0.1, edge_error_weight=0.9):
@@ -61,7 +72,24 @@ class BaseRouter(Sweepable, ABC):
         if not candidates:
             return None, reason
 
-        return self.select(qcb, candidates), None
+        chosen = self.select(qcb, candidates)
+
+        # Enforce the select() contract: it must return one of the
+        # candidates it was handed. A router that returns None, a device it
+        # was not offered (which would run the job somewhere the user's
+        # exec/no-exec constraints forbade), or non-candidate garbage is a
+        # bug — surface it here, named, rather than letting a forbidden
+        # placement through or crashing deep in dispatch.
+        if chosen not in candidates:
+            raise RouterContractError(
+                f"{type(self).__name__}.select() returned {chosen!r}, which "
+                f"is not among the {len(candidates)} candidate device(s) it "
+                f"was given (indices "
+                f"{[c.index for c in candidates]}). A router must choose one "
+                f"of the feasible candidates it was offered."
+            )
+
+        return chosen, None
 
     def explain(self, qcb, candidates):
         '''

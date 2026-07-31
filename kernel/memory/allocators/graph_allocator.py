@@ -11,7 +11,7 @@ feasible() requires a connected block among eligible qubits.
 '''
 from collections import deque
 
-from .base_allocator import BaseAllocator
+from .base_allocator import BaseAllocator, AllocationError
 from .filtering import eligible_qubits, edge_allowed, has_connected_block
 
 
@@ -53,7 +53,7 @@ class GraphAllocator(BaseAllocator):
                 pool.allocate(selected)
                 return {v: p for v, p in enumerate(selected)}
 
-        raise Exception("No connected qubit block available")
+        raise AllocationError("No connected qubit block available")
     
     def feasible(self, circuit, device,
                  max_qubit_error=None, max_edge_error=None,
