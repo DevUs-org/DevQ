@@ -6,7 +6,8 @@ event kinds, running a workload, and the two-clock timing model.
 
 It is separate from registration ([`REGISTRY.md`](REGISTRY.md)) and from
 the component contracts ([`EXTENDING.md`](EXTENDING.md)). Where an event
-carries per-candidate *scores* (the `route` and `allocate` events), the
+carries per-candidate *scores* (the `route`, `allocate`, and `schedule`
+events), the
 scoring contract that produces them — `explain()` and the `Sweepable`
 hooks — is documented in [`EXTENDING.md`](EXTENDING.md#reporting-scores-and-sweeping-weights-the-sweepable-contract);
 this file describes only what lands in the log.
@@ -106,6 +107,23 @@ dispatch, each job's decision is pinned on the job at allocation time
 (`qcb.alloc_decision`) rather than read from the allocator at dispatch,
 where the next job's allocation would already have overwritten it.
 
+**`schedule`** — a scoring scheduler's dispatch choice for the job now
+being dispatched: the scheduler-layer twin of `allocate`, one level up.
+Fields: `job_id`, `device`, `winner` (the dispatched job — equal to
+`job_id`, named for parity with `route`/`allocate` where the winner is a
+device/block distinct from the job), and `scores` (one `{job_id, score,
+terms}` per queued job the scheduler ranked, `terms` carrying the raw,
+weight-free inputs — see *Score terms*). It is emitted on **dispatch**,
+once per placement, and only by a scoring scheduler (NAQJS): an order-only
+scheduler (FCFS, SDF, Packing) emits no `schedule` record, the same
+silence as a non-scoring router or allocator. As with `allocate`, the
+ranked queue is pinned on the job at the moment it is chosen
+(`qcb.sched_decision`) rather than re-read at dispatch, because a batch
+scheduler dispatching several jobs in one cycle would otherwise have one
+job's ranking overwrite another's; recording every candidate and its raw
+terms is what lets a scheduler weight sweep re-derive the dispatch order
+from one run.
+
 **`reject`** — a job was refused (terminal). Fields: `job_id`,
 `candidates`, `scores` (as for `route` — present when a router scored
 before the rejection), and `reason`, a human-readable string naming why
@@ -134,16 +152,22 @@ so a consumer can tell an idle cycle from a cycle missing from the log.
 
 ### Score terms
 
-Inside a `route` or `allocate` record, each candidate's `terms` carries the
-**raw, weight-free** inputs to its score — not just the final number. For
-the noise router: `queue_pressure` and the cost decomposition
-`qubit_error_sum`/`edge_error_sum`, plus their normalised forms and the
-weights in force (`router_queue_weight`, `router_noise_weight`,
-`qubit_error_weight`, `edge_error_weight`). For the noise-graph allocator:
-`qubit_error_sum`/`edge_error_sum`, the weighted `block_cost`, and the
-`qubit_error_weight`/`edge_error_weight`. Because the summands are logged
-separately from the weighting, a sweep recomputes the score at any α/β from
-one recorded run — this is the `Sweepable` contract, documented in
+Inside a `route`, `allocate`, or `schedule` record, each candidate's
+`terms` carries the **raw, weight-free** inputs to its score — not just the
+final number. For the noise router: `queue_pressure` and the cost
+decomposition `qubit_error_sum`/`edge_error_sum`, plus their normalised
+forms and the weights in force (`router_queue_weight`,
+`router_noise_weight`, `qubit_error_weight`, `edge_error_weight`). For the
+noise-graph allocator: `qubit_error_sum`/`edge_error_sum`, the weighted
+`block_cost`, and the `qubit_error_weight`/`edge_error_weight`. For a
+scoring scheduler such as NAQJS (a `research/` baseline): the per-job
+features `width`/`shots`/`seq`, their normalised forms, and the weights in
+force (`naqjs_width_weight`/`naqjs_shots_weight`/`naqjs_seq_weight`) — note
+these are queue features, not device-calibration terms, so a scheduler's
+`terms` share the raw-summands-plus-weights *shape* without sharing the
+noise-cost vocabulary. Because the summands are logged separately from the
+weighting, a sweep recomputes the score at any weights from one recorded
+run — this is the `Sweepable` contract, documented in
 [`EXTENDING.md`](EXTENDING.md#reporting-scores-and-sweeping-weights-the-sweepable-contract),
 and the raw terms are exactly what
 [`COST_MODEL.md`](COST_MODEL.md#answering-the-sweep-from-one-recorded-run-phase-55a)

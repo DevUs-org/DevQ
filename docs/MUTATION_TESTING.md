@@ -43,13 +43,16 @@ cannot.
 
 ## Results
 
-**144 distinct mutants, 141 killed, 3 excluded** (M10 equivalent, P7 and
+**153 distinct mutants, 150 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 140/137/3 from the prior
-state plus the 4 new comparison-modes mutants below (all killed — MM-b
+The total is delta-consistent, not recounted: 144/141/3 from the prior
+state plus the 9 new scheduler-scoring mutants below (all killed — MS-i
+after `scheduler_scoring` was strengthened to pin score to its terms). The
+144/141/3 itself was 140/137/3 plus the 4 new comparison-modes mutants
+below (all killed — MM-b
 after `comparison_modes` was strengthened for a non-scalar metric leaf).
 The 140/137/3 itself was 136/133/3 plus the 4 new allocator-sweep-and-capture mutants below (all
 killed — MA-b and MA-c after `allocator_scoring` was strengthened for
@@ -589,6 +592,45 @@ scheduler loses `is_sweepable`/`explain_decision` and the block fails.
 This pins the third component onto the shared contract — the scheduler
 inherits the same sweep machinery as the router and allocator, so the QOS
 baseline in 5.6 is sweepable with no base-class change.
+
+### Scheduler scoring and the schedule event — `kernel/kernel.py`, `kernel/process/qcb.py`
+
+Phase 5.6. The scheduler is the third `Sweepable` component to reach the
+log: the kernel's `schedule` event is the twin of `allocate`, one layer
+up, emitted on dispatch from the ranked queue a scoring scheduler pinned on
+the job (`qcb.sched_decision`). Nine mutants, all killed; block
+`scheduler_scoring`. The block drives an in-suite `WidthScoringScheduler`,
+not the `research/` NAQJS baseline — the suite never imports `research/`.
+
+- **MS-a — the `is_sweepable` guard inverted** (`if not ...` → `if ...`):
+  a scoring scheduler yields no scores. Killed — zero `schedule` events.
+- **MS-b — the `sched_decision` stash guard inverted** (`if not recorded`
+  → `if recorded`). Killed — zero `schedule` events.
+- **MS-c — `winner` set to `None`.** Killed by the winner-is-dispatched-job
+  assertion.
+- **MS-d — the emit condition inverted** (`is not None` → `is None`).
+  Killed — zero events.
+- **MS-e — the score-row `job_id` dropped** (`row["key"]` → `None`).
+  Killed by the winner-argmin mapping (the argmin job id becomes `None`).
+- **MS-f — the wrong stash field read** (`sched_decision` →
+  `alloc_decision`). Killed — no scheduling decision is pinned there, so
+  zero events.
+- **MS-g — the score-row `terms` dropped** (`row["terms"]` → `{}`). Killed
+  by the raw-terms-present assertion.
+- **MS-h — `winner` set to `ctx.index`** (a plausible-looking wrong value).
+  Killed by the winner-is-dispatched-job assertion.
+
+One survived first and strengthened the block:
+
+- **MS-i — every logged `score` replaced by the constant `0.0`.** It
+  SURVIVED the winner-argmin and log-replay checks: those compare scores
+  only to each other, and the argmin tie-breaks by job id, so on this
+  workload the narrowest job is also the lowest id — a constant score
+  picks the same winner. The killing assertion pins **`score == weight ·
+  width`** against the recorded terms, so a score that does not derive from
+  its own terms dies. Same lesson as the allocator's MA-b/MA-c: a check
+  that only tests internal consistency leaves a constant-output mutant
+  alive; the score must be pinned to its inputs.
 
 ### Comparison engine — `benchmark/comparison.py`
 

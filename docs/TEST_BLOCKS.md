@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 64 sanity blocks in `run_tests.py`, covering
+Specification for the 65 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 64 blocks, one line each
+python run_tests.py              # all 65 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -1695,6 +1695,31 @@ last job's decision would be reported for all of them. Two mutation
 survivors drove these assertions — distinctness of candidate sets alone
 was too weak to witness the clobber; parity and placement-in-own-candidates
 are the sharp tests.
+
+
+### `scheduler_scoring`
+
+The scheduler as the third `Sweepable` component, and the kernel's
+`schedule` event — the scheduler-layer twin of `allocate`. Uses an
+in-suite `WidthScoringScheduler` (ranks the queue by circuit width,
+narrowest first), NOT the `research/` NAQJS baseline, because the test
+suite never imports `research/`: the kernel feature is proven against a
+mock exactly as the `allocate` event is. The scoring scheduler is
+confirmed sweepable and a shipped order-only scheduler (FCFS) not.
+
+The `schedule` event is exercised end to end against a real run: the
+scoring scheduler is registered and drives a multi-job workload, and every
+dispatched job is shown to emit exactly one `schedule` event carrying its
+own ranked queue's per-job scores with the raw `width` terms — dispatch-to-
+schedule parity that a stash clobber breaks. The logged score is pinned to
+`weight·width` against the recorded terms (a constant-or-dropped score
+survives every check that only compares scores to each other, since argmin
+tie-breaks by job id — this was a mutation survivor that drove the pinned
+assertion). Winner consistency (the dispatched job is the argmin of its
+own scores) and log-driven replay (the winner re-derives from the recorded
+log alone) close it. Finally, a run driven by a shipped order-only
+scheduler emits no `schedule` events — the honest silence a non-scoring
+router or allocator also keeps.
 
 
 ### `provider_registration`

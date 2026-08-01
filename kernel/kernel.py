@@ -349,6 +349,26 @@ class Kernel:
                        block   = list(qcb.v2p_map.values()),
                        scores  = scores)
 
+        # Scheduling decision (Phase 5.6). The scheduler-layer twin of the
+        # `allocate` event above: a scoring scheduler recorded the queued
+        # jobs it ranked to choose THIS cycle's dispatch during its live
+        # schedule(); here, on the dispatch that choice produced, the
+        # kernel reads that decision back and logs the per-job scores, so a
+        # scheduler weight sweep is answerable from the log. The winner is
+        # the dispatched job; the candidates are the jobs the scheduler
+        # ranked. A scoring scheduler (NAQJS) exposes it via
+        # explain_recorded (built from the pinned stash, not a re-read — the
+        # queue has since changed); an order-only scheduler (FCFS/SDF/
+        # Packing) is not sweepable and contributes nothing, the same
+        # honest silence as a non-scoring router or allocator.
+        sched_scores = self._schedule_scores(ctx, qcb)
+        if sched_scores is not None:
+            self._emit("schedule",
+                       job_id  = qcb.job_id,
+                       device  = ctx.index,
+                       winner  = qcb.job_id,
+                       scores  = sched_scores)
+
         qcb.dispatched_seq = self._seq - 1
         qcb.dispatched_at  = time.time()
         qcb.future = ctx.device.execute(qcb.circuit, qcb.v2p_map,
@@ -376,6 +396,30 @@ class Kernel:
         report = allocator.explain_recorded(recorded)
         return [
             {"block": list(row["key"]), "score": row["score"],
+             "terms": row["terms"]}
+            for row in report
+        ]
+
+    def _schedule_scores(self, ctx, qcb):
+        '''
+        Per-job scores for the scheduling decision that dispatched THIS
+        job, or None if the context's scheduler does not score. Reads the
+        decision the scheduler pinned on the job at dispatch
+        (qcb.sched_decision) — per-job, so a batch scheduler that
+        dispatched several jobs in one cycle reports each its own ranked
+        queue, not the last one's. Mirrors _allocation_scores exactly, one
+        layer up: the candidate keys are job ids (already JSON-friendly,
+        unlike the allocator's tuple block keys, so no conversion).
+        '''
+        scheduler = ctx.scheduler
+        if not getattr(scheduler, "is_sweepable", lambda: False)():
+            return None
+        recorded = getattr(qcb, "sched_decision", None)
+        if not recorded:
+            return None
+        report = scheduler.explain_recorded(recorded)
+        return [
+            {"job_id": row["key"], "score": row["score"],
              "terms": row["terms"]}
             for row in report
         ]

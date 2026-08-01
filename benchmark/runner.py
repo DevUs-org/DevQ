@@ -90,13 +90,23 @@ def _session_id(config):
 
 
 def _run_one(spec, config, out_dir, session_id, register_providers=None,
-             verbatim=None):
+             verbatim=None, register_schedulers=None, register_allocators=None,
+             register_routers=None, register_frontends=None):
     '''
     Run one session to completion and write its event log.
 
     Returns a manifest entry. Never raises for an in-session failure —
     a crashed session is recorded and the matrix continues, because
     losing seventeen good sessions to one bad one helps nobody.
+
+    The four register_* component maps (name -> class) are applied to this
+    session's own fresh DevQ before build, exactly as register_providers
+    is. A matrix session names components by string in its config, so any
+    non-built-in component (a research/ baseline like NAQJS) must be
+    registered here or build_session cannot resolve the name. Each session
+    gets a fresh DevQ and re-applies the maps, so the per-session isolation
+    the matrix relies on is preserved — the maps are class references, not
+    shared instances.
     '''
     log_path     = os.path.join(out_dir, f"{session_id}.jsonl")
     partial_path = log_path + ".partial"
@@ -132,6 +142,18 @@ def _run_one(spec, config, out_dir, session_id, register_providers=None,
             if register_providers:
                 for name, provider in register_providers.items():
                     dq.register_provider(name, provider)
+            if register_schedulers:
+                for name, scheduler in register_schedulers.items():
+                    dq.register_scheduler(name, scheduler)
+            if register_allocators:
+                for name, allocator in register_allocators.items():
+                    dq.register_allocator(name, allocator)
+            if register_routers:
+                for name, router in register_routers.items():
+                    dq.register_router(name, router)
+            if register_frontends:
+                for name, frontend in register_frontends.items():
+                    dq.register_frontend(name, frontend)
 
             shell, meta = build_session(spec, dq, session_id,
                                         verbatim=verbatim)
@@ -319,7 +341,9 @@ def matrix_configs(dq=None, select=None):
 
 
 def run(spec_path, out_dir=None, matrix=False, resume=False,
-        register_providers=None, quiet=False, select=None):
+        register_providers=None, quiet=False, select=None,
+        register_schedulers=None, register_allocators=None,
+        register_routers=None, register_frontends=None):
     '''
     Run a workload spec, optionally across the full component matrix.
 
@@ -327,6 +351,15 @@ def run(spec_path, out_dir=None, matrix=False, resume=False,
     matrix_configs(). It only applies to a matrix run; naming components
     implies a matrix, so a non-None select turns one on even if `matrix`
     was not set explicitly.
+
+    The four register_* maps (name -> class) register non-built-in
+    components — a research/ baseline scheduler, allocator, router or
+    frontend — so they are addressable by name in a spec's config and
+    JOIN THE MATRIX cross-product automatically (matrix_configs derives
+    its axes from the registry, so a registered plugin fans out over the
+    other axes with no further wiring). This is the same public path
+    register_providers uses for providers; providers stay a separate
+    argument because they are the device axis, not a matrix-varied kind.
 
     Returns the manifest dict. Writes one JSONL log per session plus
     manifest.json into out_dir.
@@ -341,7 +374,28 @@ def run(spec_path, out_dir=None, matrix=False, resume=False,
     # Naming components is a matrix intent, so a select implies --matrix
     # without the caller having to pass both.
     matrix = matrix or select is not None
-    configs = matrix_configs(select=select) if matrix else [None]
+
+    # The matrix cross-product is derived from a registry, so a registered
+    # plugin only joins it if matrix_configs sees a DevQ that knows the
+    # plugin. Build a throwaway probe carrying the same registrations each
+    # session will get, purely to enumerate the axes. It is discarded
+    # immediately and never becomes a session's DevQ — each session builds
+    # its own fresh instance in _run_one, so isolation is untouched. (A
+    # non-matrix run has no cross-product to enumerate, so it skips this.)
+    if matrix:
+        probe = DevQ()
+        for reg, method in (
+            (register_schedulers, "register_scheduler"),
+            (register_allocators, "register_allocator"),
+            (register_routers,    "register_router"),
+            (register_frontends,  "register_frontend"),
+        ):
+            if reg:
+                for name, cls in reg.items():
+                    getattr(probe, method)(name, cls)
+        configs = matrix_configs(dq=probe, select=select)
+    else:
+        configs = [None]
 
     manifest_path = os.path.join(out_dir, "manifest.json")
     previous = {}
@@ -381,7 +435,11 @@ def run(spec_path, out_dir=None, matrix=False, resume=False,
             print(f"  [{i}/{len(configs)}] {session_id} ...", end="", flush=True)
 
         entry = _run_one(spec, config, out_dir, session_id,
-                         register_providers, verbatim)
+                         register_providers, verbatim,
+                         register_schedulers=register_schedulers,
+                         register_allocators=register_allocators,
+                         register_routers=register_routers,
+                         register_frontends=register_frontends)
         manifest["sessions"].append(entry)
 
         # Written after EVERY session, not once at the end: an

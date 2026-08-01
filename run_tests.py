@@ -4495,6 +4495,167 @@ def block_allocator_scoring():
           "the base-path captured decision carries the decomposition")
 
 
+def block_scheduler_scoring():
+    '''Scheduler decision capture and the schedule event'''
+    # The scheduler is the third Sweepable component (after router and
+    # allocator). A scoring scheduler ranks QUEUED JOBS (not devices or
+    # blocks), and its decision reaches the log as a `schedule` event on
+    # dispatch — the scheduler-layer twin of `allocate`. This block proves
+    # the two things the kernel's schedule emit must get right: that a
+    # scoring scheduler's decision is captured per-job and logged with
+    # scores, and that a non-scoring scheduler stays silent. It uses an
+    # in-suite scoring scheduler, NOT the research/ NAQJS baseline — the
+    # test suite never imports research/, so the kernel feature is proven
+    # against a mock exactly as the allocate event is.
+    import io, contextlib, json, glob, tempfile, os
+    from kernel.scheduler.base_scheduler import BaseScheduler
+    from kernel.scheduler.fcfs_scheduler import FCFSScheduler
+    from kernel.process.lifecycle import JobStates
+
+    # A scoring scheduler that ranks the queue by circuit WIDTH, narrowest
+    # first — sweepable through the shared hooks, and OBSERVABLE (it scores
+    # on a real job feature, so its schedule events carry checkable terms).
+    # Distinct from every shipped scheduler (none score), so a pass cannot
+    # come from matching a built-in. Mirrors the live schedule() shape:
+    # rank the queue, pin the ranked decision on the dispatched job, so the
+    # kernel's schedule emit has something to read.
+    class WidthScoringScheduler(BaseScheduler):
+        LABEL = "Width Scoring Scheduler"
+
+        def schedule(self):
+            if not self.queue:
+                return None
+            tagged = self._sweep_terms(self.queue)
+            report = self.explain_recorded(tagged)
+            score_by_id = {r["key"]: r["score"] for r in report}
+            self.queue = sorted(
+                self.queue, key=lambda q: (score_by_id[q.job_id], q.job_id))
+            decision = self._sweep_terms(self.queue)
+            processed = []
+            while self.queue:
+                qcb = self.queue[0]
+                if self._attempt_allocation(qcb):
+                    qcb.sched_decision = decision
+                    processed.append(self.queue.pop(0))
+                    return processed
+                if qcb.state == JobStates.REJECTED:
+                    processed.append(self.queue.pop(0))
+                    continue
+                break
+            return processed or None
+
+        def live_params(self):
+            return {"width_weight": 1.0}
+
+        def _sweep_terms(self, decision):
+            return [(q.job_id, {"width": q.circuit.num_qubits})
+                    for q in decision]
+
+        def _sweep_score(self, terms, params):
+            return terms["width"]
+
+        def _sweep_rank(self, scored, params):
+            return [(k, params["width_weight"] * raw,
+                     dict(t, width_weight=params["width_weight"]))
+                    for k, t, raw in scored]
+
+    # CONTRACT: the scoring scheduler is sweepable; a shipped one is not.
+    from kernel.memory.memory_manager import MemoryManager
+    from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
+    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from kernel.process.process_table import ProcessTable
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        dev = DevQSimulatedProvider(seed=SEED).get_device("linear", 7)
+    mm = MemoryManager(dev, NoiseGraphAllocator())
+    scoring = WidthScoringScheduler(mm, ProcessTable())
+    check(scoring.is_sweepable() is True,
+          "a scoring scheduler reports sweepable through the shared contract")
+    check(FCFSScheduler(mm, ProcessTable()).is_sweepable() is False,
+          "a shipped order-only scheduler reports not sweepable")
+
+    # THE SCHEDULE EVENT + PER-JOB CAPTURE, end to end. Register the scoring
+    # scheduler and run a real multi-job workload; confirm each dispatched
+    # job produces its own schedule event carrying per-job scores. This is
+    # the kernel's schedule emit — the feature under test.
+    from benchmark.runner import run
+    with tempfile.TemporaryDirectory() as d:
+        with contextlib.redirect_stdout(io.StringIO()):
+            run("benchmark/workloads/smoke.json", out_dir=d, quiet=True,
+                register_schedulers={"width_scoring": WidthScoringScheduler},
+                select={"scheduler": ["width_scoring"]})
+        logf = glob.glob(os.path.join(d, "*.jsonl"))[0]
+        recs  = [json.loads(l) for l in open(logf)]
+
+    scheds = [r for r in recs if r.get("event") == "schedule"]
+    disp   = [r for r in recs if r.get("event") == "dispatch"]
+
+    check(len(scheds) >= 2,
+          f"a scoring scheduler run emits schedule events, got {len(scheds)}")
+    check(all("scores" in s and s["scores"] for s in scheds),
+          "every schedule event carries per-job scores")
+    check(all("width" in s["scores"][0]["terms"] for s in scheds),
+          "schedule scores carry the raw weight-free terms")
+    # The logged score must be the actual width-derived value, not merely
+    # internally consistent — a constant or dropped score survives every
+    # check that only compares scores to each other (argmin tie-breaks by
+    # job_id would still pick the right winner). Pin score == weight·width
+    # against the recorded terms so a constant-score emit dies here.
+    for s in scheds:
+        for row in s["scores"]:
+            w = row["terms"]["width_weight"]
+            width = row["terms"]["width"]
+            check(abs(row["score"] - w * width) < 1e-9,
+                  f"schedule score {row['score']} is weight·width "
+                  f"({w}·{width}) for job {row['job_id']}")
+    check(all(s["winner"] == s["job_id"] for s in scheds),
+          "the schedule event's winner is the dispatched job")
+
+    # PARITY: with a scoring scheduler, every dispatched job produces
+    # exactly one schedule event for its own dispatch. A stash clobber
+    # (reading a live decision at dispatch instead of the job's pinned one)
+    # would drop events for jobs whose decision was overwritten — so the
+    # job-id sets diverge.
+    disp_ids  = {r["job_id"] for r in disp}
+    sched_ids = {s["job_id"] for s in scheds}
+    check(disp_ids == sched_ids,
+          f"every dispatched job has its own schedule event "
+          f"(dispatched={sorted(disp_ids)}, scheduled={sorted(sched_ids)})")
+
+    # WINNER CONSISTENCY: the dispatched job must be the argmin of its own
+    # recorded scores. A schedule event whose winner is not the lowest-
+    # scored candidate would mean the logged decision contradicts the
+    # dispatch it describes — the sweep would replay a different winner
+    # than actually ran.
+    for s in scheds:
+        argmin = min(s["scores"], key=lambda r: (r["score"], r["job_id"]))
+        check(argmin["job_id"] == s["winner"],
+              f"schedule event winner {s['winner']} is the argmin of its "
+              f"scores (got {argmin['job_id']})")
+
+    # LOG-DRIVEN REPLAY: the decision re-derives the winner from the LOG
+    # alone — the sweep is answerable from a recorded run, not just a live
+    # object. Reconstruct a bare scoring scheduler and replay.
+    s0 = scheds[0]
+    log_recorded = [(r["job_id"], r["terms"]) for r in s0["scores"]]
+    replayed = WidthScoringScheduler(mm, ProcessTable()).sweep_decision(
+        log_recorded, {"width_weight": 1.0})
+    check(replayed == s0["winner"],
+          f"log-driven replay reproduces winner {s0['winner']}, got {replayed}")
+
+    # NON-SCORING SILENCE: a run driven by a shipped order-only scheduler
+    # emits NO schedule events — the same honest silence as a non-scoring
+    # router or allocator. smoke.json's default is the packing scheduler.
+    with tempfile.TemporaryDirectory() as d:
+        with contextlib.redirect_stdout(io.StringIO()):
+            run("benchmark/workloads/smoke.json", out_dir=d, quiet=True)
+        logf = glob.glob(os.path.join(d, "*.jsonl"))[0]
+        silent = [r for r in (json.loads(l) for l in open(logf))
+                  if r.get("event") == "schedule"]
+    check(len(silent) == 0,
+          f"an order-only scheduler emits no schedule events, got {len(silent)}")
+
+
 def block_provider_registration_enforced():
     '''No device enters DevQ from an unregistered provider'''
     # MUTATION WITNESS. is_registered() returning True unconditionally
@@ -5312,6 +5473,7 @@ BLOCKS = [
     ("router_scoring",           block_router_scoring),
     ("sweepable_contract",       block_sweepable_contract),
     ("allocator_scoring",        block_allocator_scoring),
+    ("scheduler_scoring",        block_scheduler_scoring),
     ("provider_registration",    block_provider_registration_enforced),
     ("device_identity",          block_device_identity),
     ("same_kind_isolation",      block_same_kind_device_isolation),

@@ -61,6 +61,17 @@ class QCB:
         # makes an α/β allocator sweep answerable from the log.
         self.alloc_decision = None
 
+        # The scheduling decision that dispatched this job — the queued
+        # jobs a scoring scheduler ranked, pinned by the scheduler at the
+        # moment it chose this job as the cycle's dispatch. None for a
+        # non-scoring scheduler (FCFS/SDF/Packing) or before dispatch. The
+        # kernel reads it on dispatch to emit the `schedule` event, the
+        # scheduler-layer twin of `allocate`, so a scheduler weight sweep
+        # is answerable from the log. Pinned per-job for the same reason
+        # alloc_decision is: a batch scheduler dispatching several jobs
+        # must not have one job's ranking clobber another's.
+        self.sched_decision = None
+
         # An OPAQUE circuit-identity string, set by whoever submits the
         # job (the benchmark layer computes a content hash; see
         # benchmark/reference.circuit_hash). The kernel never computes or
