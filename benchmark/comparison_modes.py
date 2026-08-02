@@ -85,23 +85,24 @@ def present_sweep(sweep_result):
     A refused sweep (`faithful: false` — a non-scoring component, or a run
     whose recorded winner contradicts its scores) is presented AS a
     refusal, carrying its reason, not dropped: "this axis could not be
-    swept, because ...". A faithful sweep is presented as its flips (the α
-    values where the winning distribution changes, the actionable output)
-    plus the per-α winner distribution.
+    swept, because ...". A faithful sweep is presented as its flips (the
+    lattice EDGES where the winning distribution changes, the actionable
+    output) plus the per-lattice-point winner distribution.
 
     Returns:
 
         {"session_id", "axis", "sweepable": <bool>,
          "reason": <str|None>,          # when not sweepable
-         "grid", "bisect",
-         "flips": [{"between", "at", "from", "to"}, ...],   # when sweepable
-         "stable": <bool>,             # no flips across the whole grid
-         "distribution": {alpha: {winner: count}}}
+         "coarse_m", "bisect",
+         "flips": [{"between", "at", "from", "to"}, ...],   # when sweepable;
+                                        # between/at are weight vectors
+         "stable": <bool>,             # no flips anywhere on the simplex
+         "distribution": [{"point", "dist"}, ...]}
     '''
     base = {
         "session_id": sweep_result.get("session_id"),
         "axis"      : sweep_result.get("axis"),
-        "grid"      : sweep_result.get("grid"),
+        "coarse_m"  : sweep_result.get("coarse_m"),
         "bisect"    : sweep_result.get("bisect"),
     }
 
@@ -117,7 +118,7 @@ def present_sweep(sweep_result):
         reason       = None,
         flips        = flips,
         stable       = len(flips) == 0,
-        distribution = agg.get("winner_distribution", {}),
+        distribution = agg.get("winner_distribution", []),
     )
     return base
 
@@ -166,7 +167,7 @@ def _render_ranking(result):
 def _render_sweep(result):
     axis = result["axis"]
     sid  = result["session_id"]
-    head = f"α/β sweep of the {axis} in session {sid}"
+    head = f"weight-simplex sweep of the {axis} in session {sid}"
 
     if not result["sweepable"]:
         return f"{head}\n\n  not sweepable: {result['reason']}\n"
@@ -174,20 +175,21 @@ def _render_sweep(result):
     lines = [head, ""]
     if result["stable"]:
         lines.append(f"  stable: the {axis} decision does not change across "
-                     f"the swept range — no flip at any α.")
+                     f"the swept simplex — no flip on any lattice edge.")
     else:
-        lines.append(f"  {len(result['flips'])} flip(s) — α values where the "
-                     f"winning distribution changes:")
+        lines.append(f"  {len(result['flips'])} flip edge(s) — lattice edges "
+                     f"where the winning distribution changes:")
         for f in result["flips"]:
             lo, hi = f["between"]
-            at = f" at α≈{f['at']}" if f.get("at") is not None else ""
-            lines.append(f"    between α={lo} and α={hi}{at}")
+            at = f" at w≈{_fmt_vec(f['at'])}" if f.get("at") is not None else ""
+            lines.append(f"    between w={_fmt_vec(lo)} and w={_fmt_vec(hi)}{at}")
             lines.append(f"        from {_fmt_dist(f['from'])}")
             lines.append(f"        to   {_fmt_dist(f['to'])}")
 
-    lines += ["", "  winner distribution by α:"]
-    for alpha, dist in result["distribution"].items():
-        lines.append(f"    α={alpha}: {_fmt_dist(dist)}")
+    lines += ["", "  winner distribution by weight point:"]
+    for entry in result["distribution"]:
+        lines.append(f"    w={_fmt_vec(entry['point'])}: "
+                     f"{_fmt_dist(entry['dist'])}")
     return "\n".join(lines) + "\n"
 
 
@@ -213,6 +215,11 @@ def _fmt(value):
 def _fmt_dist(dist):
     '''A winner->count map rendered as winner:count pairs.'''
     return ", ".join(f"{k}:{v}" for k, v in dist.items())
+
+
+def _fmt_vec(vec):
+    '''A weight vector rendered compactly, e.g. (0.3, 0.7).'''
+    return "(" + ", ".join(_fmt(x) for x in vec) + ")"
 
 
 def load_bundle(run_dir):

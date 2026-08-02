@@ -56,16 +56,22 @@ from devq import DevQ
 # Phase 5.6) is a row here, not new driver logic.
 _AXES = {
     "router": {
-        "event"      : "route",
-        "winner_key" : "device",
-        "cand_key"   : "device",
-        "kind"       : "router",
+        "event"        : "route",
+        "winner_key"   : "device",
+        "cand_key"     : "device",
+        "kind"         : "router",
+        # The swept weight-group, in the order a lattice point's coordinates
+        # map onto these keys. Both scored axes sweep the shared-scope qubit/
+        # edge cost split (COST_MODEL); position 0 -> qubit, 1 -> edge, which
+        # at n=2 reproduces the historical (alpha, 1-alpha) mapping exactly.
+        "weight_group" : ["qubit_error_weight", "edge_error_weight"],
     },
     "allocator": {
-        "event"      : "allocate",
-        "winner_key" : "block",
-        "cand_key"   : "block",
-        "kind"       : "allocator",
+        "event"        : "allocate",
+        "winner_key"   : "block",
+        "cand_key"     : "block",
+        "kind"         : "allocator",
+        "weight_group" : ["qubit_error_weight", "edge_error_weight"],
     },
 }
 
@@ -123,33 +129,35 @@ def _sweepable_axes(log_path):
 
 # ── Weight sweep ──────────────────────────────────────────────────────────────
 
-def sweep(run_dir, session_id, axis, grid=None, bisect=False):
+def sweep(run_dir, session_id, axis, coarse_m=20, bisect=False):
     '''
     Re-derive one session's decisions on `axis` ("router" or "allocator")
-    across an α/β grid, from the recorded scores, and write
+    across its weight-group simplex, from the recorded scores, and write
     sweep_comp.<axis>.json beside the manifest. Returns the result dict.
 
-    grid: iterable of α values in [0, 1]; β is 1-α. Defaults to 0.00..1.00
-    in 0.05 steps. bisect: if true, localise each winner flip between
-    adjacent grid points by bisection (pure, same sweep hooks) to a small
-    tolerance, so the reported flip is exact rather than grid-limited.
+    The weight group of n terms lives on the Scheffe {n, m} simplex-lattice
+    (Scheffe 1958; see _simplex_lattice and docs/REFERENCES.md). `coarse_m`
+    is the lattice resolution m: points = C(m+n-1, n-1). At n=2 (both scored
+    axes today) the lattice is the historical (alpha, 1-alpha) grid. bisect:
+    if true, localise each winner flip along the lattice EDGE that brackets
+    it, by bisection (pure, same sweep hooks) to a small tolerance — exact
+    where valid (an edge is a single-crossing 1-D interval), never along an
+    interior chord.
 
     The result carries:
       - `faithful`: did replay at the run's own weights reproduce every
         recorded winner. If false, `decisions`/`aggregate` are omitted and
         `reason` explains the refusal — the session is not swept.
       - `decisions`: the PRIMITIVE — per recorded decision, the winner at
-        each grid point. The honest raw result.
-      - `aggregate`: the PRESENTABLE view derived from it — per grid point,
-        the winner distribution across decisions, plus the flip points
-        where that distribution shifts (localised if bisect).
+        each lattice point ({point, winner} records). The honest raw result.
+      - `aggregate`: the PRESENTABLE view — per lattice point, the winner
+        distribution across decisions, plus the flip edges where that
+        distribution shifts (localised along the edge if bisect).
     '''
     if axis not in _AXES:
         raise ValueError(
             f"unknown sweep axis {axis!r}; choose one of {sorted(_AXES)}")
     spec = _AXES[axis]
-    grid = list(grid) if grid is not None else [round(0.05 * i, 2)
-                                                for i in range(21)]
 
     log_path = _session_log(run_dir, session_id)
     engine   = _reconstruct(spec["kind"], session_id, run_dir)
@@ -157,7 +165,7 @@ def sweep(run_dir, session_id, axis, grid=None, bisect=False):
     result = {
         "session_id": session_id,
         "axis"      : axis,
-        "grid"      : grid,
+        "coarse_m"  : coarse_m,
         "bisect"    : bisect,
     }
 
@@ -192,24 +200,127 @@ def sweep(run_dir, session_id, axis, grid=None, bisect=False):
             return _write(_sweep_path(run_dir, axis), result)
     result["faithful"] = True
 
-    # The primitive: each decision's winner at each grid point.
+    # The lattice: the Scheffe {n, m} simplex over this axis's weight group.
+    n = len(spec["weight_group"])
+    int_pts = _int_lattice(n, coarse_m)
+    points  = [tuple(k / coarse_m for k in c) for c in int_pts]
+
+    # The primitive: each decision's winner at each lattice point. Points are
+    # weight vectors (JSON arrays), not scalars — a list of {point, winner}
+    # records rather than an alpha-keyed dict, so it reads faithfully at any n.
     swept = []
     for d in decisions:
-        winners = {a: _winner_at(engine, d["recorded_terms"], a, axis)
-                   for a in grid}
+        winner_by_point = [
+            {"point": [round(x, 6) for x in p],
+             "winner": _jsonable(_winner_at(engine, d["recorded_terms"], p, axis))}
+            for p in points
+        ]
         swept.append({
-            "job_id" : d["job_id"],
-            "winner_by_alpha": {str(a): _jsonable(w) for a, w in winners.items()},
+            "job_id"          : d["job_id"],
+            "winner_by_point" : winner_by_point,
         })
     result["decisions"] = swept
 
-    # The presentable aggregate, derived in the same pass.
-    result["aggregate"] = _aggregate(engine, decisions, grid, axis, bisect)
+    # The presentable aggregate, derived over the lattice edge graph.
+    result["aggregate"] = _aggregate(
+        engine, decisions, int_pts, points, axis, bisect)
 
     return _write(_sweep_path(run_dir, axis), result)
 
 
 # ── Sweep internals ───────────────────────────────────────────────────────────
+
+# Adaptive simplex-refinement engine. The weight space of n linear-combination
+# terms is the Scheffe (n-1)-simplex (see _simplex_lattice and docs/REFERENCES.md
+# — Scheffe 1958). The winner a weight point induces is piecewise-constant: it is
+# constant within cells and jumps across straight tie-loci where two candidates'
+# scores cross. We sample a coarse lattice, find the lattice EDGES whose endpoints
+# disagree, and localise each crossing by bisection ALONG THAT EDGE. Bisection is
+# valid only along an edge (a one-unit move between two weights): there the segment
+# is a 1-D interval a single tie-locus crosses once, so the midpoint bracket holds.
+# It is NOT valid along an arbitrary chord through the interior (multiple crossings,
+# no single flip), which is why flip detection walks the edge graph, never
+# list-consecutive points. At n=2 the edge graph IS the consecutive chain, so this
+# reduces exactly to the historical scalar-alpha grid + interval bisection.
+
+def _lattice_edges(int_points):
+    '''
+    The geometric adjacency graph of an integer simplex lattice: two points are
+    neighbours iff one differs from the other by moving a single unit from one
+    coordinate to another (all others equal). Returns index pairs (i, j) with
+    i < j, over the canonical-order `int_points`. At n=2 this is exactly the
+    consecutive chain (0,1),(1,2),...; at n>=3 it is the connected edge graph of
+    the triangle/tetrahedron/... whose crossings witness every cell boundary.
+    '''
+    index = {pt: i for i, pt in enumerate(int_points)}
+    edges = []
+    for pt in int_points:
+        i = index[pt]
+        for a in range(len(pt)):
+            if pt[a] == 0:
+                continue
+            for b in range(len(pt)):
+                if a == b:
+                    continue
+                nb = list(pt)
+                nb[a] -= 1
+                nb[b] += 1
+                j = index.get(tuple(nb))
+                if j is not None and i < j:
+                    edges.append((i, j))
+    return edges
+
+
+def _int_lattice(n, m):
+    '''The Scheffe {n, m} lattice as integer compositions (canonical lex order);
+    _simplex_lattice divides these by m. Kept separate so edge adjacency can be
+    expressed on the exact integer coordinates, where "one-unit move" is crisp.'''
+    def _compositions(total, parts):
+        if parts == 1:
+            yield (total,)
+            return
+        for first in range(total + 1):
+            for rest in _compositions(total - first, parts - 1):
+                yield (first,) + rest
+    return sorted(_compositions(m, n))
+
+
+def _refine_edge(decide, lo_pt, hi_pt, tol):
+    '''
+    Localise the winner flip along the straight segment lo_pt -> hi_pt (two
+    normalised weight tuples forming a lattice edge) to weight-space tolerance
+    `tol`, by bisection. Pure — uses only `decide`, the point->winner callback.
+
+    Returns (flip_point, winners_seen): flip_point is the normalised weight tuple
+    at (or just past) the crossing, or None if the endpoints agree. winners_seen
+    is every distinct winner observed while refining, so the caller's winner set
+    stays complete even for winners that live only in a thin sliver mid-edge.
+    '''
+    dim = len(lo_pt)
+
+    def at(t):
+        w = tuple(lo_pt[k] * (1 - t) + hi_pt[k] * t for k in range(dim))
+        s = sum(w) or 1.0
+        return tuple(x / s for x in w)
+
+    d_lo = decide(at(0.0))
+    d_hi = decide(at(1.0))
+    seen = {d_lo, d_hi}
+    if d_lo == d_hi:
+        return None, seen
+
+    seg = sum((hi_pt[k] - lo_pt[k]) ** 2 for k in range(dim)) ** 0.5
+    lo_t, hi_t = 0.0, 1.0
+    while (hi_t - lo_t) * seg > tol:
+        mid = (lo_t + hi_t) / 2
+        d_mid = decide(at(mid))
+        seen.add(d_mid)
+        if d_mid == d_lo:
+            lo_t = mid
+        else:
+            hi_t = mid
+    return at(hi_t), seen
+
 
 def _read_decisions(log_path, spec):
     '''
@@ -231,39 +342,55 @@ def _read_decisions(log_path, spec):
     return out
 
 
-def _winner_at(engine, recorded_terms, alpha, axis):
-    '''Re-derive the winner at cost weights (alpha, 1-alpha).'''
-    return engine.sweep_decision(recorded_terms, _cost_params(alpha, axis))
+def _winner_at(engine, recorded_terms, point, axis):
+    '''Re-derive the winner at the weight vector `point` (a normalised tuple
+    mapped onto the axis's weight_group).'''
+    return engine.sweep_decision(recorded_terms, _cost_params(point, axis))
 
 
-def _aggregate(engine, decisions, grid, axis, bisect):
+def _aggregate(engine, decisions, int_pts, points, axis, bisect):
     '''
-    Per grid point, the distribution of winners across decisions, plus the
-    α values where that distribution changes (the flips), optionally
-    localised by bisection between the bracketing grid points.
+    Per lattice point, the distribution of winners across decisions, plus the
+    flip EDGES where that distribution changes. A flip is detected on a lattice
+    edge (a one-unit move between two weights), never along a list-consecutive
+    chord — at n=2 the edge graph is the consecutive chain, so this matches the
+    historical behaviour; at n>=3 the edges tile the simplex boundary. Each flip
+    is localised along its own edge by bisection when `bisect` is set.
     '''
-    dist_by_alpha = {}
-    for a in grid:
+    def dist_at(point):
         counts = {}
         for d in decisions:
-            w = _winner_at(engine, d["recorded_terms"], a, axis)  # hashable key
+            w = _winner_at(engine, d["recorded_terms"], point, axis)
             counts[w] = counts.get(w, 0) + 1
-        dist_by_alpha[a] = counts
+        return counts
+
+    dist = [dist_at(p) for p in points]
+
+    def group_dist(point):
+        '''The winner distribution as a hashable key, for edge refinement.'''
+        return tuple(sorted(dist_at(point).items()))
 
     flips = []
-    for lo, hi in zip(grid, grid[1:]):
-        if dist_by_alpha[lo] != dist_by_alpha[hi]:
-            at = _bisect_flip(engine, decisions, lo, hi, axis) if bisect else None
+    for i, j in _lattice_edges(int_pts):
+        if dist[i] != dist[j]:
+            at = None
+            if bisect:
+                flip_pt, _seen = _refine_edge(group_dist, points[i], points[j],
+                                              tol=1e-4)
+                at = [round(x, 6) for x in flip_pt] if flip_pt else None
             flips.append({
-                "between": [lo, hi],
+                "between": [[round(x, 6) for x in points[i]],
+                            [round(x, 6) for x in points[j]]],
                 "at"     : at,
-                "from"   : _dist_jsonable(dist_by_alpha[lo]),
-                "to"     : _dist_jsonable(dist_by_alpha[hi]),
+                "from"   : _dist_jsonable(dist[i]),
+                "to"     : _dist_jsonable(dist[j]),
             })
 
     return {
-        "winner_distribution": {str(a): _dist_jsonable(c)
-                                for a, c in dist_by_alpha.items()},
+        "winner_distribution": [
+            {"point": [round(x, 6) for x in p], "dist": _dist_jsonable(c)}
+            for p, c in zip(points, dist)
+        ],
         "flips": flips,
     }
 
@@ -272,29 +399,6 @@ def _dist_jsonable(counts):
     '''A winner->count map with candidate keys rendered as JSON strings
     (a block tuple becomes its list's str, a device index its own str).'''
     return {str(_jsonable(k)): v for k, v in counts.items()}
-
-
-def _bisect_flip(engine, decisions, lo, hi, axis, tol=1e-4):
-    '''
-    Localise the α where the aggregate winner distribution flips, between
-    lo and hi, to tolerance tol — pure, using only the sweep hooks. Returns
-    the α at (or just above) the flip.
-    '''
-    def dist(a):
-        c = {}
-        for d in decisions:
-            w = _winner_at(engine, d["recorded_terms"], a, axis)  # hashable
-            c[w] = c.get(w, 0) + 1
-        return c
-
-    lo_dist = dist(lo)
-    while hi - lo > tol:
-        mid = (lo + hi) / 2
-        if dist(mid) == lo_dist:
-            lo = mid
-        else:
-            hi = mid
-    return round(hi, 6)
 
 
 def _reconstruct(kind, session_id, run_dir):
@@ -330,16 +434,52 @@ def _recorded_params(decision):
     return {k: v for k, v in terms.items() if k.endswith("_weight")}
 
 
-def _cost_params(alpha, axis):
+def _simplex_lattice(n, m):
     '''
-    Cost weights for a sweep point. Both scored axes read qubit/edge
-    weights; the router additionally needs its queue/noise split, which the
-    sweep holds fixed (it sweeps the α/β cost ratio, the shared-scope axis
-    COST_MODEL describes, not the router's queue/noise mix). The fixed 0.5
-    split matches the router default and is the recorded run's own value
-    for the shipped configs.
+    The Scheffe {n, m} simplex-lattice: every normalised weight n-tuple whose
+    entries are multiples of 1/m. Reference: Scheffe, H. (1958), "Experiments
+    with Mixtures", J. R. Statist. Soc. B 20(2):344-360 — see docs/REFERENCES.md.
+
+    Construction: enumerate the integer compositions of m into n non-negative
+    parts (k_1 + ... + k_n = m) and divide each part by m. Every point sums to
+    1 exactly, so there are no off-simplex points to discard. The count is
+    C(m+n-1, n-1) (Scheffe's formula), and because the ranking a weight vector
+    induces is scale-invariant, this lattice is the *complete* faithful search
+    space for n linear-combination weights, normalised or not.
+
+    Contract — canonical order: points are emitted in ascending lexicographic
+    order of their integer composition. This is a stable, documented order so
+    that "adjacent lattice points" is well-defined (bisect relies on it), and
+    at n=2 it reproduces the historical ascending grid
+    [(0, m/m), (1/m, (m-1)/m), ..., (m/m, 0)] point-for-point in sequence.
     '''
-    params = {"qubit_error_weight": alpha, "edge_error_weight": 1 - alpha}
+    def _compositions(total, parts):
+        if parts == 1:
+            yield (total,)
+            return
+        for first in range(total + 1):
+            for rest in _compositions(total - first, parts - 1):
+                yield (first,) + rest
+
+    return [tuple(k / m for k in comp)
+            for comp in sorted(_compositions(m, n))]
+
+
+def _cost_params(point, axis):
+    '''
+    Cost weights for a sweep point. `point` is a normalised weight tuple (a
+    Scheffe lattice point, sums to 1); its coordinates map onto the axis's
+    `weight_group` keys in order. At n=2 the group is (qubit, edge), so
+    point (a, 1-a) reproduces the historical (alpha, 1-alpha) mapping exactly.
+
+    Both scored axes sweep the shared-scope qubit/edge cost split; the router
+    additionally needs its queue/noise split, which the sweep holds fixed (it
+    sweeps the cost-model weight group, not the router's queue/noise mix). The
+    fixed 0.5 split matches the router default and is the recorded run's own
+    value for the shipped configs.
+    '''
+    keys = _AXES[axis]["weight_group"]
+    params = dict(zip(keys, point))
     if axis == "router":
         params["router_queue_weight"] = 0.5
         params["router_noise_weight"] = 0.5

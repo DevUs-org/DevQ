@@ -196,6 +196,7 @@ together they are the authoritative description of DevQ.
 
 | Document | Contents |
 |---|---|
+| [`docs/FEATURE_LIST.md`](docs/FEATURE_LIST.md) | Complete feature inventory (Phase 0 → present), with how each works in the core and how researchers, learners, and quantum developers benefit |
 | [`docs/SHELL.md`](docs/SHELL.md) | Every QShell command, and the JobSpec syntax for per-job noise thresholds and device constraints |
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | The four-level config cascade, key scopes, seeding and reproducibility, and the components DevQ ships with |
 | [`docs/REGISTRY.md`](docs/REGISTRY.md) | Registering a plugin — naming your scheduler, allocator, router, provider or frontend, what is validated, and declaring its configuration keys |

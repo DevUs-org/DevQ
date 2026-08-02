@@ -96,6 +96,39 @@ checkable by eye, and is a numerically distinct quantity from Hellinger on
 the same inputs, so the two together guard against a swapped-formula
 regression.
 
+### [Scheffe-Mixtures] — the simplex-lattice the weight sweep enumerates
+Henry Scheffé. "Experiments with Mixtures." *Journal of the Royal
+Statistical Society, Series B* 20(2):344–360, 1958.
+- https://www.jstor.org/stable/2983895
+
+The Phase 5.5c weight sweep enumerates a component's normalised weight
+group (n terms summing to 1) over the **Scheffé {n, m} simplex-lattice**:
+every weight n-tuple whose entries are multiples of `1/m`, i.e. the integer
+compositions of `m` into `n` parts divided by `m`. DevQ uses Scheffé's
+construction and his point-count `C(m+n−1, n−1)` directly. At `n=2` the
+lattice is the historical `(α, 1−α)` grid; at `n≥3` it tiles the triangle /
+tetrahedron / … . Cited at the use-site in `benchmark/comparison.py`
+(`_simplex_lattice`, `_int_lattice`). See [`COST_MODEL.md`](COST_MODEL.md#answering-the-sweep-from-one-recorded-run-phase-55a) and [`EXTENDING.md`](EXTENDING.md).
+
+### Elementary results used in the sweep (stated inline, not attributed)
+Two facts the sweep rests on are elementary and are proved inline at their
+use-site rather than cited, since manufacturing an authoritative reference
+for textbook material would misrepresent it:
+- **Scale-invariance of a linear ranking.** The arg-min of `w · x` over
+  candidates is unchanged when `w` is multiplied by any positive scalar, so
+  only the *direction* of the weight vector matters — which is why the
+  faithful search space is the simplex regardless of whether a component's
+  weights are stored normalised or raw. (A one-line proof accompanies the
+  code; Boyd & Vandenberghe, *Convex Optimization* (2004), is a "see also"
+  for level-set scaling if a reference is ever wanted.)
+- **Piecewise-constant winner surface.** The winner a weight point induces
+  is constant within cells and jumps across straight tie-loci; the objective
+  is therefore non-smooth with no useful gradient, which is why the sweep
+  *enumerates* the simplex rather than descending it. For the general
+  "non-smooth, black-box ⇒ enumerate/grid" context, Conn, Scheinberg &
+  Vicente, *Introduction to Derivative-Free Optimization* (SIAM, 2009), is a
+  contextual reference, not a prescription of DevQ's exact method.
+
 ---
 
 ## Software dependencies

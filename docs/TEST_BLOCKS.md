@@ -1480,11 +1480,26 @@ and `sweepable_axes`, and that last field is checked against the config —
 the noise router is sweepable everywhere, the allocator axis appears only
 where a scoring `noise_graph` allocator ran and not where the
 cost-oblivious `graph` allocator did. **The sweep**: a router sweep and a
-`noise_graph` allocator sweep are re-derived from the recorded scores
-across an α/β grid; the allocator sweep must surface at least one
-weight-driven block-choice flip and bisection must localise it to an α in
-[0, 1], and each axis writes its own `sweep_comp.<axis>.json`. Output is
-kept under `test_results/comparison/` for inspection.
+`noise_graph` allocator sweep are re-derived from the recorded scores over
+the weight group's **Scheffé simplex-lattice** (Phase 5.5c;
+`[Scheffe-Mixtures]`) at resolution `coarse_m`, not a scalar α grid. The
+lattice/edge-graph contract is pinned directly as the regression anchor:
+the n=2 edge graph must be exactly the consecutive chain (so the
+generalisation leaves the historical two-term sweep untouched), the n=3
+graph is connected with no isolated points, and `_cost_params` maps a
+lattice point onto the weight-group keys **in order** (position 0 → qubit,
+1 → edge) — pinned directly because the sweep walks the whole symmetric
+simplex, so a reversed mapping would leave the winner/flip *set* unchanged
+and slip past the sweep-level checks. The allocator sweep must surface at
+least one weight-driven block-choice flip; each flip names its two
+lattice-edge endpoints as weight vectors, bisection localises it to a
+normalised weight vector on that edge, and — the tooth that catches an
+inverted bisection — the localised point must land on the `to` side of the
+distribution change (`_dist_at(at) == to`). A coarse-vs-fine structural
+anchor requires the winner-distribution *set* and every flip's `from`/`to`
+to be **exact** across resolutions, tolerating only sub-tolerance movement
+of the flip position. Each axis writes its own `sweep_comp.<axis>.json`.
+Output is kept under `test_results/comparison/` for inspection.
 
 Two refusal paths are pinned separately, because a survivor showed they
 are not interchangeable. Sweeping a non-scoring allocator must be refused
@@ -1523,11 +1538,13 @@ session id, and — the honest cases — a null-metric session listed under
 landing on a non-scalar leaf (a dict) treated as missing rather than
 crashing the sort. **Sweep presentation**: a refused sweep read out as a
 refusal carrying its reason, a faithful sweep with no flips reported
-stable, and one with a flip surfacing it with its localised α. **Text
-renderer**: one renderer serving both modes (detected from the result
-shape), naming the metric and top session for a ranking and the flip for a
-sweep, listing the missing session so nothing is silently dropped, and
-writing exactly the returned text when given a path.
+stable, and one with a flip surfacing it with its localised weight vector
+(the n-ary schema — flips carry weight-vector endpoints and a localised
+point, not a scalar α). **Text renderer**: one renderer serving both modes
+(detected from the result shape), naming the metric and top session for a
+ranking and the flip (with its `w=` weight vectors) for a sweep, listing
+the missing session so nothing is silently dropped, and writing exactly the
+returned text when given a path.
 
 Two mutation survivors sharpened it. Ranking by a non-scalar leaf and the
 tie-break both needed a case that forced the discriminating behaviour —

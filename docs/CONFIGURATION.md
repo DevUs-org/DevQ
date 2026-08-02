@@ -25,6 +25,7 @@ later levels overriding earlier ones:
 2. **That device's provider `preferred_config()`** (e.g. IBM prefers `shots: 2048`)
 3. **Global user config file** — `DevQ(config_path=...)`, applies to all devices
 4. **Per-device user config file** — `add_device(device, config_path)`, this device only
+5. **5. Per-job Overrides**
 
 `shots` has one further tier **above** this cascade: a **per-job** shot
 count, set with `--shots=N` in the shell (or a `"shots"` field on a

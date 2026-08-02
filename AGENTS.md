@@ -46,7 +46,7 @@ lets them run as plugins in one system on identical workloads.
 | `shell/` | QShell and the JobSpec parser |
 | `circuits/` | `CircuitRep` (one ordered, op-tagged instruction stream — `gate`/`measure`/`reset` in source order; gate consumers filter `op == "gate"`) and execution futures |
 | `frontends/` | `BaseFrontend`, the `qasm2` frontend, and the full OpenQASM 2.0 parser in `frontends/qasm2/` (tokenizer, expression evaluator, custom-gate inlining); source-language readers that lower to `CircuitRep`, dispatched per job by extension |
-| `run_tests.py` | The whole test suite — 57 blocks, no pytest |
+| `run_tests.py` | The whole test suite — 65 blocks, no pytest |
 | `benchmark/runner.py` | Run a workload spec, or the whole component matrix, into a run directory |
 | `benchmark/metrics.py` | Offline metrics from a finished run — throughput, queue latency, utilisation — see `docs/METRICS.md` |
 | `benchmark/workloads/` | Runnable example specs, also used as test fixtures — see `docs/WORKLOADS.md` |
@@ -59,6 +59,7 @@ Documentation, all under `docs/`:
 
 | Document | Read it when |
 |---|---|
+| `FEATURE_LIST.md` | Orienting — the full feature inventory (Phase 0 → present), how each works in the core, and how researchers, learners, and quantum devs each benefit |
 | `SHELL.md` | Driving a session; every command and the JobSpec grammar |
 | `CONFIGURATION.md` | Config keys, the cascade, scopes, seeding |
 | `REGISTRY.md` | Registering a plugin — naming, what is checked, `KeySpec`, config keys |
@@ -384,8 +385,9 @@ Blocks record *what they proved*, not merely that they passed. Use
 
 - **Docstrings use `'''`** and open with a `Tags:` line. Existing tag
   values: `Main`, `Provider`, `Alt`, `Default`, and `Research` — the last
-  for paper/benchmark tooling that *uses* DevQ but is not part of it (the
-  `research/` package: its `__init__.py` and `run_qasmbench_small.py`),
+  for paper/benchmark tooling that *uses* DevQ but is not part of it (e.g.
+  `research/run_qasmbench_small.py`; note the `research/__init__.py` package
+  init is tagged `Main` like every package init, not `Research`),
   distinguishing it from `Main` entry points into the system itself. Do
   not invent new ones beyond these.
 - **Comments explain *why*, not *what*.** The codebase documents

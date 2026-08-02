@@ -193,7 +193,9 @@ above once Phase 5 ships:
   and sweepable end-to-end from a recorded log with a faithfulness anchor;
   the scheduler base carries the contract at router-parity though shipped
   schedulers have no scoring parameter yet and report not-sweepable
-  honestly (the first scored scheduler is the QOS baseline in 5.6).
+  honestly (the first scored scheduler is the NAQJS baseline in 5.6 — QOS,
+  earlier expected here, resolved to a spatial which-QPU decision and so is
+  a *router* baseline, not a scheduler).
   Selectable matrix components (`matrix_configs(select=)` and CLI flags)
   landed here too. **The engine** is `benchmark/comparison.py`:
   `assemble_matrix` bundles every session's config, metrics and sweepable
@@ -213,6 +215,25 @@ above once Phase 5 ships:
   them. The *absolute* view — one session's own bundle — is not among
   them: it is the 5.3 metric bundle, already shipped, so 5.5b is the two
   genuine comparisons that need 5.5a's engine underneath.
+- **5.5c — n-ary weight sweep** ✅ generalises the sweep from the two-term
+  α/β grid to a component's full weight group of n terms, over the
+  **Scheffé {n, m} simplex-lattice** (`[Scheffe-Mixtures]`). Scale-invariance
+  makes the normalised simplex the faithful search space (weights matter
+  only up to direction), and the winner surface is piecewise-constant, so
+  the sweep enumerates the lattice and localises flips along its **edge
+  graph** by bisection (valid only along edges, never interior chords). At
+  n=2 the lattice is exactly the historical α/β grid and the edge graph the
+  consecutive chain, so the two-term sweep is unchanged — the regression
+  anchor. `sweep(coarse_m=…)` replaces the scalar grid; the schema moves to
+  weight-vector points (`{point, winner}` primitives, weight-vector flip
+  edges). The faithful claim is bounded to **first-flip sensitivity**: replay
+  is exact only up to the first decision that reads state a prior decision
+  mutated (a load-aware router or pool-depleting allocator couples through
+  evolving state), so DevQ treats all components uniformly under that bound
+  rather than over-claiming a full trajectory at arbitrary weights. Touches
+  `comparison.py`, `comparison_modes.py`, and the `comparison`/
+  `comparison_modes` blocks; two mutation survivors (a reversed weight
+  mapping, an inverted bisection) sharpened the tests.
 - **5.6 — baseline plugins** 🔭 published baselines to compare against;
   this is what turns the platform into a result.
 - **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer,

@@ -3484,9 +3484,39 @@ def block_comparison():
         check("allocator" not in bundle[sid]["sweepable_axes"],
               f"{sid} (cost-oblivious graph allocator) is not allocator-sweepable")
 
+    # ── Lattice + edge-graph contract (the adaptive engine's foundation) ──
+    # The Scheffe {n,m} lattice and its geometric edge graph underpin the
+    # sweep. At n=2 the edge graph MUST be the consecutive chain — this is the
+    # regression anchor proving the n-ary generalisation leaves the historical
+    # scalar-alpha sweep untouched. Exercised through the sweep below, but the
+    # structural invariant is pinned here directly because it is load-bearing.
+    ip2 = C._int_lattice(2, 20)
+    check(len(ip2) == 21, "the n=2 lattice at m=20 has 21 points (Scheffe count)")
+    e2 = sorted(C._lattice_edges(ip2))
+    check(e2 == [(i, i + 1) for i in range(20)],
+          "the n=2 edge graph is exactly the consecutive chain (anchor)")
+    ip3 = C._int_lattice(3, 6)
+    check(len(ip3) == 28, "the n=3 lattice at m=6 has 28 points (C(8,2))")
+    e3 = C._lattice_edges(ip3)
+    adj3 = {}
+    for i, j in e3:
+        adj3.setdefault(i, set()).add(j)
+        adj3.setdefault(j, set()).add(i)
+    check(all(adj3.get(k) for k in range(len(ip3))),
+          "the n=3 edge graph has no isolated points")
+
+    # _cost_params maps a lattice point onto the weight_group keys IN ORDER:
+    # position 0 -> qubit_error_weight, 1 -> edge_error_weight. Pinned directly
+    # because the sweep walks the whole (symmetric) simplex, so a reversed
+    # mapping would leave the winner/flip SET unchanged and slip past the
+    # sweep-level checks — only a direct coordinate->key assertion catches it.
+    cp = C._cost_params((0.2, 0.8), "allocator")
+    check(cp["qubit_error_weight"] == 0.2 and cp["edge_error_weight"] == 0.8,
+          "cost_params maps point[0]->qubit_error, point[1]->edge_error, in order")
+
     # ── Router sweep + faithfulness anchor ────────────────────────────────
     rs = C.sweep(run_dir, router_sessions[0], "router",
-                 grid=[0.0, 0.25, 0.5, 0.75, 1.0], bisect=True)
+                 coarse_m=20, bisect=True)
     check(rs["faithful"] is True,
           "the router sweep's faithfulness anchor holds (replay reproduces "
           "the recorded winner)")
@@ -3494,33 +3524,97 @@ def block_comparison():
           "the router sweep re-derives per-decision winners")
     check("aggregate" in rs and "flips" in rs["aggregate"],
           "the router sweep produces the aggregate/flip view")
-    # The primitive covers every grid point for every decision.
-    check(all(len(d["winner_by_alpha"]) == 5 for d in rs["decisions"]),
-          "each decision has a winner at every grid point")
+    # The primitive covers every lattice point (21 at n=2, m=20) for every
+    # decision, as {point, winner} records — the new n-ary schema.
+    check(all(len(d["winner_by_point"]) == 21 for d in rs["decisions"]),
+          "each decision has a winner at every lattice point")
+    check(all(isinstance(rec["point"], list) and "winner" in rec
+              for d in rs["decisions"] for rec in d["winner_by_point"]),
+          "each primitive record is {point: [...], winner}")
     check(os.path.exists(os.path.join(run_dir, "sweep_comp.router.json")),
           "the router sweep writes sweep_comp.router.json")
 
-    # ── Allocator sweep: a real flip, localised by bisection ──────────────
+    # ── Allocator sweep: a real flip, localised along its lattice edge ────
     if ng_sessions:
         as_ = C.sweep(run_dir, ng_sessions[0], "allocator",
-                      grid=[0.0, 0.5, 1.0], bisect=True)
+                      coarse_m=20, bisect=True)
         check(as_["faithful"] is True,
               "the allocator sweep's faithfulness anchor holds")
-        # The allocator's block choice is weight-sensitive on these
-        # devices, so the sweep must surface at least one flip, and
-        # bisection must localise it to an α in [0, 1].
+        # The allocator's block choice is weight-sensitive on these devices,
+        # so the sweep must surface at least one flip. Each flip lives on a
+        # lattice edge (two weight-vector endpoints) and bisection localises
+        # it to a normalised weight vector ON that edge.
         flips = as_["aggregate"]["flips"]
         check(len(flips) >= 1,
               "the allocator sweep surfaces a weight-driven block-choice flip")
-        check(all(f["at"] is not None and 0.0 <= f["at"] <= 1.0
+        check(all(len(f["between"]) == 2
+                  and all(isinstance(p, list) for p in f["between"])
                   for f in flips),
-              "bisection localises each flip to an α in [0, 1]")
+              "each flip names its two lattice-edge endpoints as weight vectors")
+        check(all(f["at"] is not None
+                  and abs(sum(f["at"]) - 1.0) < 1e-6
+                  and all(0.0 <= x <= 1.0 for x in f["at"])
+                  for f in flips),
+              "bisection localises each flip to a normalised weight vector")
+        # The localised point must SIT AT the flip, not merely be a valid point
+        # on the edge: the winner distribution just toward the `from` endpoint
+        # must match `from`, and just toward the `to` endpoint must match `to`.
+        # An inverted or mislocalised bisection lands at the wrong end and fails
+        # this — the point being on the edge is necessary but not sufficient.
+        eng = C._reconstruct(C._AXES["allocator"]["kind"],
+                             ng_sessions[0], run_dir)
+        decs = C._read_decisions(C._session_log(run_dir, ng_sessions[0]),
+                                 C._AXES["allocator"])
+
+        def _dist_at(point):
+            c = {}
+            for d in decs:
+                w = C._winner_at(eng, d["recorded_terms"], point, "allocator")
+                c[w] = c.get(w, 0) + 1
+            return {str(C._jsonable(k)): v for k, v in c.items()}
+
+        # The localised point must land on the `to` side of the crossing:
+        # bisection converges to the point just past the flip, so the winner
+        # distribution AT `at` equals `to`. An inverted bisection converges to
+        # the `from` end instead and fails this — the point being a valid edge
+        # point (checked above) is necessary but not sufficient; this pins that
+        # it sits at the CORRECT boundary, with the correct direction.
+        located = all(_dist_at(tuple(f["at"])) == f["to"] for f in flips)
+        check(located,
+              "each localised flip point lands on the `to` side of its "
+              "distribution change (bisection direction is correct)")
         check(os.path.exists(os.path.join(run_dir, "sweep_comp.allocator.json")),
               "the allocator sweep writes sweep_comp.allocator.json")
 
+        # Disciplined regression anchor: everything STRUCTURAL is exact
+        # between a coarse and a fine sweep — the winner set, the flip count,
+        # and each flip's from/to distribution. Only the flip POSITION may
+        # move, and only within the bisection tolerance. This catches a
+        # wrong-winner, wrong-count or schema-drift bug exactly, while
+        # forgiving the sub-tolerance localisation wobble that is expected
+        # when the coarse grid differs (adaptive refinement, not exact grid).
+        coarse = C.sweep(run_dir, ng_sessions[0], "allocator",
+                         coarse_m=20, bisect=True)["aggregate"]
+        fine   = C.sweep(run_dir, ng_sessions[0], "allocator",
+                         coarse_m=40, bisect=True)["aggregate"]
+        cw = {tuple(sorted(e["dist"].items()))
+              for e in coarse["winner_distribution"]}
+        fw = {tuple(sorted(e["dist"].items()))
+              for e in fine["winner_distribution"]}
+        check(cw == fw,
+              "coarse and fine sweeps agree on the winner-distribution set "
+              "(structural anchor: exact, not tolerance)")
+        cstruct = sorted((tuple(sorted(f["from"].items())),
+                          tuple(sorted(f["to"].items()))) for f in coarse["flips"])
+        fstruct = sorted((tuple(sorted(f["from"].items())),
+                          tuple(sorted(f["to"].items()))) for f in fine["flips"])
+        check(cstruct == fstruct,
+              "coarse and fine sweeps agree on every flip's from/to "
+              "distribution (structural anchor: exact)")
+
     # ── Skip-with-reason for a non-scoring component ──────────────────────
     if graph_sessions:
-        skip = C.sweep(run_dir, graph_sessions[0], "allocator", grid=[0.0, 1.0])
+        skip = C.sweep(run_dir, graph_sessions[0], "allocator", coarse_m=20)
         check(skip["faithful"] is False,
               "sweeping a non-scoring allocator is refused, not faked")
         check("decisions" not in skip,
@@ -3569,7 +3663,7 @@ def block_comparison():
             "candidates": [0, 1],
             "scores": [{"device": 0, "score": 0.0, "terms": terms0},
                        {"device": 1, "score": 1.0, "terms": terms1}]}) + "\n")
-    tampered = C.sweep(bad_dir, "bad", "router", grid=[0.0, 0.5, 1.0])
+    tampered = C.sweep(bad_dir, "bad", "router", coarse_m=4)
     check(tampered["faithful"] is False,
           "the anchor refuses a session whose recorded winner contradicts "
           "its own scores")
@@ -3679,34 +3773,39 @@ def block_comparison_modes():
     # ── Sweep presentation ────────────────────────────────────────────────
     # Refused sweep: presented as a refusal carrying its reason.
     refused = {"session_id": "s", "axis": "allocator", "faithful": False,
-               "reason": "not a scoring component", "grid": [0.0, 1.0],
+               "reason": "not a scoring component", "coarse_m": 20,
                "bisect": False}
     pr = M.present_sweep(refused)
     check(pr["sweepable"] is False and "scoring" in pr["reason"],
           "a refused sweep is presented as not sweepable, with its reason")
 
-    # Faithful, stable (no flips): reported stable.
+    # Faithful, stable (no flips): reported stable. Distribution is the
+    # n-ary list-of-{point, dist} schema.
     stable = {"session_id": "s", "axis": "router", "faithful": True,
-              "grid": [0.0, 0.5, 1.0], "bisect": True,
+              "coarse_m": 20, "bisect": True,
               "aggregate": {"flips": [],
-                            "winner_distribution": {"0.0": {"1": 5}}}}
+                            "winner_distribution": [
+                                {"point": [0.0, 1.0], "dist": {"1": 5}}]}}
     ps = M.present_sweep(stable)
     check(ps["sweepable"] and ps["stable"] and ps["flips"] == [],
           "a faithful sweep with no flips is reported stable")
 
-    # Faithful with a flip: the flip is surfaced.
+    # Faithful with a flip: the flip is surfaced. between/at are weight
+    # vectors (lattice-edge endpoints and the localised point on the edge).
     flipped = {"session_id": "s", "axis": "allocator", "faithful": True,
-               "grid": [0.0, 0.5], "bisect": True,
+               "coarse_m": 20, "bisect": True,
                "aggregate": {
-                   "flips": [{"between": [0.0, 0.5], "at": 0.003,
+                   "flips": [{"between": [[0.0, 1.0], [0.05, 0.95]],
+                              "at": [0.003, 0.997],
                               "from": {"[2, 4]": 2}, "to": {"[0, 1]": 2}}],
-                   "winner_distribution": {"0.0": {"[2, 4]": 2},
-                                           "0.5": {"[0, 1]": 2}}}}
+                   "winner_distribution": [
+                       {"point": [0.0, 1.0], "dist": {"[2, 4]": 2}},
+                       {"point": [0.05, 0.95], "dist": {"[0, 1]": 2}}]}}
     pf = M.present_sweep(flipped)
     check(pf["sweepable"] and not pf["stable"] and len(pf["flips"]) == 1,
           "a faithful sweep with a flip surfaces it and is not stable")
-    check(pf["flips"][0]["at"] == 0.003,
-          "the presented flip carries its localised α")
+    check(pf["flips"][0]["at"] == [0.003, 0.997],
+          "the presented flip carries its localised weight vector")
 
     # ── Text renderer + file write ────────────────────────────────────────
     import tempfile
@@ -3717,8 +3816,8 @@ def block_comparison_modes():
           "the text names the missing session so it is not silently dropped")
 
     sweep_txt = M.render_text(pf)
-    check("flip" in sweep_txt and "α" in sweep_txt,
-          "the sweep renders to text naming its flip")
+    check("flip" in sweep_txt and "w=" in sweep_txt,
+          "the sweep renders to text naming its flip and weight vectors")
 
     # detection: rows -> ranking, else sweep; both from one renderer.
     stable_txt = M.render_text(ps)

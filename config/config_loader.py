@@ -19,6 +19,7 @@ Keys are split into three scopes:
       2. That device's provider preferred_config()
       3. Global user config file      (DevQ(config_path=...))
       4. Per-device user config file  (add_device(device, config_path))
+      5. Per-job Overrides
 
   GLOBAL keys (router, router_queue_weight, router_noise_weight) —
   resolved once for the whole system:

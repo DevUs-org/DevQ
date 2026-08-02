@@ -51,6 +51,7 @@ Configuration priority:
         2. That device's provider preferred_config()
         3. Global user config file   (DevQ(config_path=...))
         4. Per-device user config    (add_device(device, config_path))
+        5. Per-job Overrides
     GLOBAL keys (router policy): core defaults ← global user file.
     COMMON keys (qubit_error_weight, edge_error_weight): resolved in
         BOTH scopes — the global copy steers the NoiseRouter yardstick,

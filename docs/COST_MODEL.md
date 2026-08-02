@@ -165,3 +165,47 @@ yardstick and each device's allocator) means a sweep must be explicit
 about **which consumer** it re-weights: the router's device choice, or a
 device's block choice. They are the same weights over two different
 decisions.
+
+### Sweeping an n-term weight group over the simplex (Phase 5.5c)
+
+The $\alpha/\beta$ sweep above is the two-term case of a general
+construction. A scoring component's swept weight group has $n$ terms
+(here $n=2$: qubit and edge). Because the score is a linear combination
+compared by $\arg\min$, its ranking is **scale-invariant** — multiplying
+all weights by a positive constant changes nothing — so only the
+*direction* of the weight vector matters, and the faithful search space is
+the normalised simplex (the weights that sum to 1), whether or not a
+component stores its weights normalised. This holds for $n=2$ (the
+$(\alpha, 1-\alpha)$ line) and for every larger $n$.
+
+DevQ enumerates that simplex as the **Scheffé $\{n, m\}$ simplex-lattice**
+(`[Scheffe-Mixtures]`, see [`REFERENCES.md`](REFERENCES.md)): every
+normalised weight $n$-tuple whose entries are multiples of $1/m$. The
+resolution $m$ is the `coarse_m` argument; the point count is
+$\binom{m+n-1}{n-1}$. At $n=2$ this lattice *is* the historical
+$(\alpha, 1-\alpha)$ grid, so the two-term sweep is unchanged.
+
+The winner a weight point induces is **piecewise-constant**: it is constant
+within cells of the simplex and jumps across straight tie-loci (where two
+candidates' scores cross). The sweep therefore *enumerates* the lattice
+rather than descending it — there is no useful gradient. To localise where
+a winner flips, it walks the lattice's **edge graph** — pairs of points
+differing by moving one $1/m$ unit between two coordinates — not
+list-consecutive points. On an edge the segment is a 1-D interval a single
+tie-locus crosses once, so bisection along it localises the flip exactly;
+along an arbitrary interior chord it would not (multiple crossings, no
+single flip), which is why detection is edge-based. At $n=2$ the edge graph
+is exactly the consecutive chain, so this reduces to the historical
+interval bisection.
+
+**What the sweep faithfully covers.** Replaying decisions from one recorded
+run is exact only up to the first decision that reads state a prior decision
+mutated — a load-aware router or a pool-depleting allocator couples its
+decisions through evolving state, so past the first flip the recorded terms
+describe a trajectory that no longer occurs. DevQ treats every component
+uniformly under this bound: the sweep is a **first-flip sensitivity** — it
+answers "how far can these weights move before the decision first changes,
+and where", exactly, and does not claim to reproduce the whole downstream
+trajectory at arbitrary weights. Recovering behaviour past the first flip
+requires real re-execution at each weight point, which is a separate,
+heavier capability (a metric sweep), not this replay.
