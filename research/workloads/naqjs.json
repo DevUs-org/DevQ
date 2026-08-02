@@ -1,0 +1,32 @@
+{
+    "name": "naqjs",
+    "seed": 7,
+    "devices": [
+        {
+            "id": "sim",
+            "provider": "devq.simulated",
+            "backend": {
+                "kind": "random",
+                "num_qubits": 8
+            },
+            "config": "research/configs/naqjs.config.json"
+        }
+    ],
+    "arrival": {
+        "pattern": "batch"
+    },
+    "jobs": [
+        {
+            "circuit": "test_circuits/bell.qasm",
+            "shots": 1024
+        },
+        {
+            "circuit": "test_circuits/ghz.qasm",
+            "shots": 2048
+        },
+        {
+            "circuit": "test_circuits/bell.qasm",
+            "shots": 512
+        }
+    ]
+}

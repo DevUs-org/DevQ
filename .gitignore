@@ -3,6 +3,6 @@ venv/
 */.pyc
 **/.DS_STORE
 *.zip
-.testout
+*.testout
 results/
 test_results/
