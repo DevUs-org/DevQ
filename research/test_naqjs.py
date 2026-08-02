@@ -93,7 +93,7 @@ def _write_spec(tmp, jobs, num_qubits=8, eta=None, seed=7):
     '''Write a naqjs-selecting workload spec + its device config, return path.'''
     dev_cfg = {"scheduler": "naqjs"}
     if eta is not None:
-        dev_cfg["naqjs_eta"] = eta
+        dev_cfg["naqjs.eta"] = eta
     dev_cfg_path = os.path.join(tmp, "dev.json")
     json.dump(dev_cfg, open(dev_cfg_path, "w"))
 
@@ -181,6 +181,7 @@ def block_sweepable_hooks():
     s = NAQJSScheduler.__new__(NAQJSScheduler)
     s.naqjs_width_weight = s.naqjs_shots_weight = s.naqjs_seq_weight = 1.0
     s.naqjs_eta = 1.0
+    s.naqjs_default_shots = None
 
     tagged = [(1, {"width": 2, "shots": 1024, "seq": 0}),
               (2, {"width": 3, "shots": 2048, "seq": 1}),
@@ -195,15 +196,29 @@ def block_sweepable_hooks():
           "faithfulness anchor: replay at live weights reproduces the "
           "recorded winner (job 1)")
 
-    scaled = {"naqjs_width_weight": 5.0, "naqjs_shots_weight": 5.0,
-              "naqjs_seq_weight": 5.0}
+    # The sweep's faithfulness anchor (in comparison.py) recovers a run's
+    # weights from the ENRICHED terms _sweep_rank logs, matching them against
+    # live_params() keys. So every live_params key must appear in the logged
+    # terms carrying that key's live value — verify directly, since the
+    # sweep_decision replay above reads from live_params and would pass even
+    # if the self-logged copy were wrong.
+    ranked_terms = s._sweep_rank(
+        [(k, t, s._sweep_score(t, {})) for k, t in tagged], s.live_params())
+    lp = s.live_params()
+    _, _, enriched0 = ranked_terms[0]
+    check(all(k in enriched0 and enriched0[k] == v for k, v in lp.items()),
+          "each live_params weight is self-logged into the ranked terms "
+          "with its live value (the sweep's weight-recovery anchor)")
+
+    scaled = {"naqjs.width_weight": 5.0, "naqjs.shots_weight": 5.0,
+              "naqjs.seq_weight": 5.0}
     check(s.sweep_decision(tagged, scaled) == 1,
           "scale-invariance: rescaling all weights leaves the winner "
           "unchanged (only weight direction matters)")
 
     # Shots-only weighting: job 3 has the fewest shots (norm 0.0) and wins.
-    shots_only = {"naqjs_width_weight": 0.0, "naqjs_shots_weight": 1.0,
-                  "naqjs_seq_weight": 0.0}
+    shots_only = {"naqjs.width_weight": 0.0, "naqjs.shots_weight": 1.0,
+                  "naqjs.seq_weight": 0.0}
     check(s.sweep_decision(tagged, shots_only) == 3,
           "a different weighting flips the winner (shots-only -> job 3), "
           "proving the weights genuinely drive the decision")
@@ -211,14 +226,16 @@ def block_sweepable_hooks():
 
 def block_eta_cap():
     '''The eta*N cap bounds cumulative dispatched width in one cycle.'''
-    # A 4-qubit device with eta=0.5 -> cap = 2 qubits. Two 2-qubit bell
-    # circuits cannot both dispatch in the same cycle (2 + 2 > 2), so at
-    # most one dispatches per cycle under the cap, where with eta=1.0
-    # (cap = 4) both would fit.
+    # Use an 8-qubit device with eta=0.25 -> cap = 2 qubits, so the eta cap
+    # (2) is STRICTLY BELOW the pool bound (8). Two 2-qubit circuits both fit
+    # the pool, so if the eta break were removed BOTH would dispatch in
+    # cycle 1; the cap is what holds cycle-1 dispatch to <=1. (A 4-qubit
+    # device would let the pool alone explain a low count, masking a broken
+    # cap — the mutant that deletes the eta break must be observable here.)
     tmp = tempfile.mkdtemp(prefix="naqjs_eta_")
 
     out_capped = os.path.join(RESULTS_DIR, "eta_capped")
-    spec_capped = _write_spec(tmp, num_qubits=4, eta=0.5, jobs=[
+    spec_capped = _write_spec(tmp, num_qubits=8, eta=0.25, jobs=[
         {"circuit": BELL, "shots": 1024},
         {"circuit": BELL, "shots": 1024},
     ])
@@ -227,20 +244,71 @@ def block_eta_cap():
     cyc1 = [r for r in recs_capped
             if r.get("event") == "dispatch" and r.get("cycle") == 1]
     check(len(cyc1) <= 1,
-          f"eta=0.5 on a 4-qubit device caps cycle-1 dispatch to <=1 "
-          f"two-qubit job (got {len(cyc1)})")
+          f"eta=0.25 on an 8-qubit device (cap=2 < pool=8) caps cycle-1 "
+          f"dispatch to <=1 two-qubit job (got {len(cyc1)})")
 
+    # Same 8-qubit device, eta=1.0 (cap = 8 = pool): the cap is a no-op, so
+    # BOTH 2-qubit jobs dispatch in cycle 1. The contrast with the capped
+    # case above (same device, same jobs, only eta differs) is what proves
+    # the eta break — not the pool — produced the difference.
     tmp2 = tempfile.mkdtemp(prefix="naqjs_uncapped_")
     out_uncapped = os.path.join(RESULTS_DIR, "eta_uncapped")
-    spec_uncapped = _write_spec(tmp2, num_qubits=4, eta=1.0, jobs=[
+    spec_uncapped = _write_spec(tmp2, num_qubits=8, eta=1.0, jobs=[
         {"circuit": BELL, "shots": 1024},
         {"circuit": BELL, "shots": 1024},
     ])
     recs_uncapped = _run_spec(spec_uncapped, out_uncapped)
     cyc1_u = [r for r in recs_uncapped
               if r.get("event") == "dispatch" and r.get("cycle") == 1]
-    check(len(cyc1_u) >= 1,
-          "eta=1.0 (default, no-op cap) lets the pool alone bound dispatch")
+    check(len(cyc1_u) == 2,
+          f"eta=1.0 (no-op cap) on the same 8-qubit device dispatches BOTH "
+          f"jobs in cycle 1 (got {len(cyc1_u)}) — the capped case's <=1 is "
+          f"the eta break, not the pool")
+
+
+def block_shots_resolution():
+    '''The three-tier shots feature: per-job shots win; else the plugin
+    naqjs.default_shots; else a neutral constant so unspecified jobs tie.
+    This is what lets NAQJS rank a workload whose jobs omit shots (e.g.
+    QASMBench) instead of feeding None into the min-max and crashing.'''
+    import types
+
+    def _qcb(job_id, shots):
+        # Minimal stand-in: _resolve_shots/_sweep_terms read only .shots,
+        # .circuit.num_qubits, .job_id, .submitted_seq.
+        return types.SimpleNamespace(
+            job_id=job_id, shots=shots, submitted_seq=job_id,
+            circuit=types.SimpleNamespace(num_qubits=2))
+
+    # Tier 1: a job's own shots always win, even when a plugin default is set.
+    s = NAQJSScheduler.__new__(NAQJSScheduler)
+    s.naqjs_default_shots = 4096
+    check(s._resolve_shots(_qcb(1, 1024)) == 1024,
+          "per-job shots take precedence over naqjs.default_shots")
+
+    # Tier 2: a job with no shots falls back to the plugin default.
+    check(s._resolve_shots(_qcb(2, None)) == 4096,
+          "a job that omits shots uses naqjs.default_shots when set")
+
+    # Tier 3: no per-job shots and no plugin default -> neutral constant,
+    # and every such job takes the SAME value so they tie after min-max.
+    s2 = NAQJSScheduler.__new__(NAQJSScheduler)
+    s2.naqjs_default_shots = None
+    r = s2._resolve_shots(_qcb(3, None))
+    check(r == NAQJSScheduler._NEUTRAL_SHOTS,
+          f"unspecified shots with no default -> neutral constant (got {r})")
+
+    # The crash regression: a full queue of shots=None jobs must rank without
+    # raising (previously '<' not supported between NoneType).
+    s2.naqjs_width_weight = s2.naqjs_shots_weight = s2.naqjs_seq_weight = 1.0
+    tagged = s2._sweep_terms([_qcb(10, None), _qcb(11, None), _qcb(12, None)])
+    shots_vals = {t[1]["shots"] for t in tagged}
+    check(shots_vals == {NAQJSScheduler._NEUTRAL_SHOTS},
+          "all-unspecified queue resolves every shots term to the neutral "
+          f"constant (got {shots_vals})")
+    report = s2.explain_recorded(tagged)   # must not raise
+    check(len(report) == 3,
+          "an all-unspecified-shots queue ranks without error")
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────
@@ -248,6 +316,7 @@ def block_eta_cap():
 BLOCKS = [
     ("registration_and_seam", block_registration_and_seam),
     ("sweepable_hooks",       block_sweepable_hooks),
+    ("shots_resolution",      block_shots_resolution),
     ("eta_cap",               block_eta_cap),
 ]
 

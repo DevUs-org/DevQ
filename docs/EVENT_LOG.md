@@ -162,7 +162,7 @@ noise-graph allocator: `qubit_error_sum`/`edge_error_sum`, the weighted
 `block_cost`, and the `qubit_error_weight`/`edge_error_weight`. For a
 scoring scheduler such as NAQJS (a `research/` baseline): the per-job
 features `width`/`shots`/`seq`, their normalised forms, and the weights in
-force (`naqjs_width_weight`/`naqjs_shots_weight`/`naqjs_seq_weight`) — note
+force (`naqjs.width_weight`/`naqjs.shots_weight`/`naqjs.seq_weight`) — note
 these are queue features, not device-calibration terms, so a scheduler's
 `terms` share the raw-summands-plus-weights *shape* without sharing the
 noise-cost vocabulary. Because the summands are logged separately from the

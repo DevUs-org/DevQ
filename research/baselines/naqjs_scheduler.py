@@ -43,31 +43,74 @@ against Packing/FCFS/SDF.
 
 from kernel.scheduler.base_scheduler import BaseScheduler
 from kernel.process.lifecycle import JobStates
+from registry.keyspec import KeySpec, non_negative, unit_interval
 
 
-# Namespaced config keys (cascade + validate through the registry exactly
-# like core keys). Independent, non-negative weights default to 1.0 each —
-# the paper's balanced operating point — and eta defaults to 1.0, making the
-# scheduler-level cap a no-op (≈ pool exhaustion) unless a researcher sets it
-# below 1 to reproduce the paper's headroom-leaving packing.
-WIDTH_WEIGHT_KEY = "naqjs_width_weight"
-SHOTS_WEIGHT_KEY = "naqjs_shots_weight"
-SEQ_WEIGHT_KEY   = "naqjs_seq_weight"
-ETA_KEY          = "naqjs_eta"
+# Namespaced config keys. Every plugin key is dotted "<prefix>.<key>" — the
+# registry rejects un-namespaced plugin keys (they are reserved for DevQ
+# core), and the dot keeps qconfig readable and the plugin boundary visible
+# in published artifacts. These strings are the CASCADE / live_params / sweep
+# identity of each knob; the ctor stores them under plain-identifier
+# attributes (a dotted string is not a valid Python name).
+WIDTH_WEIGHT_KEY   = "naqjs.width_weight"
+SHOTS_WEIGHT_KEY   = "naqjs.shots_weight"
+SEQ_WEIGHT_KEY     = "naqjs.seq_weight"
+ETA_KEY            = "naqjs.eta"
+DEFAULT_SHOTS_KEY  = "naqjs.default_shots"
+
+
+def _positive_int_or_none(value):
+    '''Accept None (defer) or a positive integer shot count. None means
+    "no plugin-level default — a job that specifies no shots contributes a
+    neutral (tied) value to the shots axis". A supplied value must be a
+    positive integer, since it stands in for a real shot count.'''
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "expected a positive integer or null"
+    if value <= 0:
+        return "expected a positive integer or null"
+    return None
 
 
 class NAQJSScheduler(BaseScheduler):
 
     LABEL = "NAQJS (noise-aware priority scheduler)"
 
+    # Plugin-contributed config keys. The registry merges these into the
+    # cascade at register_scheduler() time, validates each user-supplied
+    # value, and surfaces them in qconfig. scope="device": a scheduler is
+    # per-device policy (one instance per DeviceContext), so each device
+    # resolves its own NAQJS knobs through the full four-level cascade.
+    # dq.build() reads these keys off this class, strips the "naqjs." prefix,
+    # and passes the resolved values as ctor kwargs (width_weight=..., etc.).
+    CONFIG_SCHEMA = {
+        WIDTH_WEIGHT_KEY: KeySpec(
+            scope="device", default=1.0, validate=non_negative,
+            label="NAQJS circuit-width weight (α)"),
+        SHOTS_WEIGHT_KEY: KeySpec(
+            scope="device", default=1.0, validate=non_negative,
+            label="NAQJS shot-count weight (β)"),
+        SEQ_WEIGHT_KEY: KeySpec(
+            scope="device", default=1.0, validate=non_negative,
+            label="NAQJS submission-order weight (γ)"),
+        ETA_KEY: KeySpec(
+            scope="device", default=1.0, validate=unit_interval,
+            label="NAQJS packing cap η (fraction of device qubits)"),
+        DEFAULT_SHOTS_KEY: KeySpec(
+            scope="device", default=None, validate=_positive_int_or_none,
+            label="NAQJS assumed shots when a job specifies none"),
+    }
+
     def __init__(self, memory_manager, process_table,
-                 naqjs_width_weight=1.0, naqjs_shots_weight=1.0,
-                 naqjs_seq_weight=1.0, naqjs_eta=1.0):
+                 width_weight=1.0, shots_weight=1.0,
+                 seq_weight=1.0, eta=1.0, default_shots=None):
         super().__init__(memory_manager, process_table)
-        self.naqjs_width_weight = naqjs_width_weight
-        self.naqjs_shots_weight = naqjs_shots_weight
-        self.naqjs_seq_weight   = naqjs_seq_weight
-        self.naqjs_eta          = naqjs_eta
+        self.naqjs_width_weight = width_weight
+        self.naqjs_shots_weight = shots_weight
+        self.naqjs_seq_weight   = seq_weight
+        self.naqjs_eta          = eta
+        self.naqjs_default_shots = default_shots
 
     def is_batch(self):
         # NAQJS packs several jobs per cycle up to the η·N cap.
@@ -139,17 +182,47 @@ class NAQJSScheduler(BaseScheduler):
             SEQ_WEIGHT_KEY:   self.naqjs_seq_weight,
         }
 
+    # Sentinel shot value for a job that specifies no shots when no plugin
+    # default is set either. It is a CONSTANT, so every such job takes the
+    # same value and they tie on the shots axis after min-max — which is the
+    # correct behaviour: a job that does not distinguish itself on shots
+    # should not be ordered by shots. (Reaching into the device's resolved
+    # `shots` config to recover the real number would give the identical
+    # ranking in the all-unspecified case, and would couple the scheduler to
+    # DeviceContext.config — a layer the scheduler does not and should not
+    # hold. See docs/COST_MODEL.md.)
+    _NEUTRAL_SHOTS = 0
+
+    def _resolve_shots(self, qcb):
+        '''
+        The shots feature for ranking. A job's own shot count wins; failing
+        that, the plugin-level naqjs.default_shots (if the researcher set one
+        — e.g. to make the shots axis live on a workload whose jobs omit
+        shots); failing that, a neutral constant so all such jobs tie.
+
+        Deliberately does NOT consult the device-resolved shots config: that
+        lives on DeviceContext.config, which the scheduler cannot reach, and
+        the kernel already resolves job-vs-device shots at dispatch. Ranking
+        is a queue-relative ordering, so a per-plugin assumed value (or a tie)
+        is the faithful, layer-clean choice.
+        '''
+        if qcb.shots is not None:
+            return qcb.shots
+        if self.naqjs_default_shots is not None:
+            return self.naqjs_default_shots
+        return self._NEUTRAL_SHOTS
+
     def _sweep_terms(self, decision):
         '''
         Per-job RAW, weight-free terms for the current queue. `decision` is
         the list of QCBs to rank. Keyed by job_id (already JSON-friendly).
-        width = circuit qubits, shots = per-job shot count, seq = deterministic
-        submission order.
+        width = circuit qubits, shots = resolved shot feature (see
+        _resolve_shots), seq = deterministic submission order.
         '''
         return [
             (qcb.job_id, {
                 "width": qcb.circuit.num_qubits,
-                "shots": qcb.shots,
+                "shots": self._resolve_shots(qcb),
                 "seq":   qcb.submitted_seq,
             })
             for qcb in decision
@@ -188,14 +261,15 @@ class NAQJSScheduler(BaseScheduler):
             w_n, s_n, q_n = nw[raw[0]], ns[raw[1]], nq[raw[2]]
             final = a * w_n + b * s_n + g * q_n
             enriched = dict(terms)
-            enriched.update(
-                width_norm=w_n, shots_norm=s_n, seq_norm=q_n,
+            enriched.update({
+                "width_norm": w_n, "shots_norm": s_n, "seq_norm": q_n,
                 # Log the weights that produced this ranking into the terms,
                 # exactly as NoiseRouter does: the sweep's faithfulness anchor
-                # recovers the run's weights from the recorded terms (keys
-                # ending in _weight), so they must be present or the anchor
-                # replays at empty params and fails.
-                naqjs_width_weight=a, naqjs_shots_weight=b, naqjs_seq_weight=g,
-            )
+                # recovers the run's weights from the recorded terms by
+                # matching live_params() keys, so these MUST be the same
+                # dotted keys live_params() reports, or the anchor replays at
+                # empty params and fails.
+                WIDTH_WEIGHT_KEY: a, SHOTS_WEIGHT_KEY: b, SEQ_WEIGHT_KEY: g,
+            })
             out.append((key, final, enriched))
         return out

@@ -58,6 +58,7 @@ Configuration priority:
         each device's copy steers that device's allocator.
 '''
 
+import inspect
 import re
 
 from hardware.device_loader import load_device
@@ -498,8 +499,33 @@ class DevQ:
                 edge_error_weight  = config["edge_error_weight"]
             )
             memory    = MemoryManager(device, allocator)
-            scheduler = self._registry.get("scheduler", config["scheduler"])(
-                memory, None   # process_table injected below by Kernel wiring
+            # A scheduler with knobs of its own declares them in CONFIG_SCHEMA
+            # with dotted "<prefix>.<key>" names that cascade like core keys.
+            # Feed the resolved values in as ctor kwargs, stripping the
+            # namespace prefix to recover the plain-identifier parameter name
+            # (naqjs.eta -> eta). This is generic: any scheduler plugin's
+            # declared keys are wired through with no further edit here. (The
+            # allocator above is still explicit because its two weight keys
+            # are core keys, not plugin CONFIG_SCHEMA.)
+            #
+            # Declaring a schema key does NOT oblige the ctor to accept it: a
+            # key means "this cascades, validates, and shows in qconfig",
+            # and a component may instead consume it at runtime (reading its
+            # resolved config) rather than via injection. So pass only the
+            # keys the ctor actually names as parameters; the rest still
+            # cascade and remain available to the component by other means.
+            sched_cls    = self._registry.get("scheduler", config["scheduler"])
+            sched_schema = getattr(sched_cls, "CONFIG_SCHEMA", None) or {}
+            accepted     = inspect.signature(sched_cls.__init__).parameters
+            sched_kwargs = {
+                param: config[key]
+                for key in sched_schema
+                for param in (key.split(".", 1)[1],)
+                if param in accepted
+            }
+            scheduler = sched_cls(
+                memory, None,   # process_table injected below by Kernel wiring
+                **sched_kwargs
             )
 
             contexts.append(DeviceContext(

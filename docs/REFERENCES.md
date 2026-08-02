@@ -53,11 +53,14 @@ like-for-like rather than a comparison of two differently-defined
 [`ROADMAP.md`](ROADMAP.md).
 
 ### [NAQJS] — the first scored-scheduler baseline
-Yuan Wu, Chi Zhang, Feng Pan, et al. "NAQJS: A Noise-Aware Quantum Job
-Scheduler." International Conference on Computer-Aided Design (ICCAD '24),
-2024. arXiv:2404.07882. _(verify author list and page numbers before
-submission.)_
+Wenjie Wu, Yiquan Wang, Ge Yan, Yuming Zhao, Bo Zhang, and Junchi Yan. "On
+Reducing the Execution Latency of Superconducting Quantum Processors via
+Quantum Job Scheduling." IEEE/ACM International Conference on Computer-Aided
+Design (ICCAD '24), Article No. 44, pp. 1–9, 2024.
+doi:10.1145/3676536.3676678. arXiv:2404.07882. (The noise-aware scheduler
+proposed in this paper is named NAQJS.)
 - arXiv: https://arxiv.org/abs/2404.07882
+- DOI: https://doi.org/10.1145/3676536.3676678
 
 NAQJS ranks a queue by a priority score over three min-max-normalised
 per-job features — circuit width, shot count, and submission time — combined

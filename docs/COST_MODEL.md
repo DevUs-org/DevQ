@@ -214,7 +214,7 @@ heavier capability (a metric sweep), not this replay.
 shared qubit/edge weight pair, whose keys are fixed and known. A scored
 *scheduler* (e.g. the NAQJS baseline) is the third axis, and it differs in
 two ways the sweep handles generically. First, its weight keys are
-plugin-specific (NAQJS's `naqjs_width/shots/seq_weight`), so they are not
+plugin-specific (NAQJS's `naqjs.width_weight`/`naqjs.shots_weight`/`naqjs.seq_weight`), so they are not
 hardcoded — the scheduler axis leaves its weight group unset and derives the
 swept keys from the reconstructed component's `live_params()`, the contract's
 own declaration of the weights it scores with, so no plugin key names enter
@@ -225,3 +225,33 @@ one decision the same way a router's single choice is. A research baseline is
 not globally registered, so the sweep is passed the same class map the run
 registered and rebuilds the component from it to replay — without it, the
 sweep refuses honestly rather than resolving the plugin name to nothing.
+
+**Plugin scheduler config keys (Phase 5.6).** A scheduler with knobs of its
+own declares them in `CONFIG_SCHEMA` under dotted `<prefix>.<key>` names
+(`naqjs.width_weight`, `naqjs.shots_weight`, `naqjs.seq_weight`, `naqjs.eta`,
+`naqjs.default_shots`) — the registry rejects un-namespaced plugin keys, and
+the dot keeps qconfig readable and the plugin boundary visible in published
+artifacts. These keys cascade and validate exactly like core keys. `dq.build`
+feeds them into the scheduler by reading the class's `CONFIG_SCHEMA`,
+stripping the namespace prefix to recover the ctor parameter name
+(`naqjs.eta` → `eta`), and passing the resolved values as kwargs — generic
+across any scheduler plugin, so a new baseline needs no core edit. Declaring
+a schema key does *not* oblige the ctor to accept it: a component may consume
+a key at runtime instead of by injection, so `dq.build` passes only the
+subset of schema keys the ctor actually names as parameters (checked with
+`inspect.signature`). The three weight keys are what the sweep varies; `eta`
+and `default_shots` are fixed scoring inputs and are deliberately kept OUT of
+`live_params()` so the sweep does not try to vary them.
+
+**Shots as a ranking feature.** NAQJS's shots term is resolved per job as: the
+job's own `shots` if set; else the plugin-level `naqjs.default_shots` if the
+researcher set one; else a neutral constant. The neutral constant makes every
+unspecified-shots job tie on the shots axis after min-max — the correct
+behaviour, since a job that does not distinguish itself on shots should not be
+ordered by shots. This is what lets NAQJS rank a workload whose jobs omit
+shots (e.g. QASMBench) instead of feeding `None` into the normalisation. The
+resolver deliberately does NOT read the device-resolved `shots` config: that
+value lives on `DeviceContext.config`, a layer the scheduler does not hold,
+and the kernel already resolves job-vs-device shots at dispatch. Ranking is a
+queue-relative ordering, so a per-plugin assumed value (or a tie) is the
+faithful, layer-clean choice.
