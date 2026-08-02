@@ -188,6 +188,14 @@ class NAQJSScheduler(BaseScheduler):
             w_n, s_n, q_n = nw[raw[0]], ns[raw[1]], nq[raw[2]]
             final = a * w_n + b * s_n + g * q_n
             enriched = dict(terms)
-            enriched.update(width_norm=w_n, shots_norm=s_n, seq_norm=q_n)
+            enriched.update(
+                width_norm=w_n, shots_norm=s_n, seq_norm=q_n,
+                # Log the weights that produced this ranking into the terms,
+                # exactly as NoiseRouter does: the sweep's faithfulness anchor
+                # recovers the run's weights from the recorded terms (keys
+                # ending in _weight), so they must be present or the anchor
+                # replays at empty params and fails.
+                naqjs_width_weight=a, naqjs_shots_weight=b, naqjs_seq_weight=g,
+            )
             out.append((key, final, enriched))
         return out

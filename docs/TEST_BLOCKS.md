@@ -1501,6 +1501,18 @@ to be **exact** across resolutions, tolerating only sub-tolerance movement
 of the flip position. Each axis writes its own `sweep_comp.<axis>.json`.
 Output is kept under `test_results/comparison/` for inspection.
 
+**The scheduler axis** (Phase 5.6) is covered with a synthetic fixture: a
+log whose batch cycle emits several `schedule` events sharing one ranking
+snapshot, and a tiny scored scheduler standing in for a research plugin
+(which cannot be imported into the core suite). It pins that the scheduler
+axis is reported sweepable (derived from `_AXES`, not a hardcoded event
+list), that the repeated events collapse to **one** sweep decision whose
+winner is the ranking's argmin (not a per-dispatch job), that the sweep
+reconstructs the plugin via an explicit `registry_map` and derives its
+swept keys from the component's `live_params` (so no plugin key names live
+in core), and that without the `registry_map` the plugin cannot be rebuilt
+and the sweep honestly refuses rather than faking a result.
+
 Two refusal paths are pinned separately, because a survivor showed they
 are not interchangeable. Sweeping a non-scoring allocator must be refused
 with a reason that names the component non-scoring — not merely because no

@@ -209,3 +209,19 @@ and where", exactly, and does not claim to reproduce the whole downstream
 trajectory at arbitrary weights. Recovering behaviour past the first flip
 requires real re-execution at each weight point, which is a separate,
 heavier capability (a metric sweep), not this replay.
+
+**Three sweepable axes (Phase 5.6).** The router and allocator sweep the
+shared qubit/edge weight pair, whose keys are fixed and known. A scored
+*scheduler* (e.g. the NAQJS baseline) is the third axis, and it differs in
+two ways the sweep handles generically. First, its weight keys are
+plugin-specific (NAQJS's `naqjs_width/shots/seq_weight`), so they are not
+hardcoded — the scheduler axis leaves its weight group unset and derives the
+swept keys from the reconstructed component's `live_params()`, the contract's
+own declaration of the weights it scores with, so no plugin key names enter
+core. Second, a batch scheduler emits one `schedule` event per dispatched job
+in a cycle, all sharing one ranking snapshot; those collapse to a single
+sweep decision whose winner is the ranking's argmin, so a cycle's ranking is
+one decision the same way a router's single choice is. A research baseline is
+not globally registered, so the sweep is passed the same class map the run
+registered and rebuilds the component from it to replay — without it, the
+sweep refuses honestly rather than resolving the plugin name to nothing.

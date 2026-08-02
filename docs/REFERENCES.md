@@ -52,6 +52,29 @@ like-for-like rather than a comparison of two differently-defined
 "fidelities". See [`METRICS.md`](METRICS.md) (fidelity) and
 [`ROADMAP.md`](ROADMAP.md).
 
+### [NAQJS] — the first scored-scheduler baseline
+Yuan Wu, Chi Zhang, Feng Pan, et al. "NAQJS: A Noise-Aware Quantum Job
+Scheduler." International Conference on Computer-Aided Design (ICCAD '24),
+2024. arXiv:2404.07882. _(verify author list and page numbers before
+submission.)_
+- arXiv: https://arxiv.org/abs/2404.07882
+
+NAQJS ranks a queue by a priority score over three min-max-normalised
+per-job features — circuit width, shot count, and submission time — combined
+with independent non-negative weights $\alpha, \beta, \gamma$, then packs the
+sorted queue up to a $\eta \cdot N$ qubit-usage cap per cycle. DevQ ports the
+queue-rearranging stage as a scored, sweepable scheduler baseline
+(`research/baselines/naqjs_scheduler.py`), delegating placement to the
+device's allocator (DevQ's two-level split): NAQJS supplies the order and the
+$\eta$ cap. Faithfulness notes are recorded at the use-site — the paper's
+negated-descending score equals DevQ's un-negated ascending lowest-wins
+ranking; `submitted_seq` substitutes for wall-clock submission time
+order-preservingly under min-max normalisation; the weights are independent
+knobs (not a normalised group), though the sweep still walks the simplex by
+scale-invariance. It is the first scored *scheduler* (QOS, `[QOS]`, is a
+spatial which-QPU decision and so a *router* baseline). See
+[`COST_MODEL.md`](COST_MODEL.md) and [`ROADMAP.md`](ROADMAP.md).
+
 ### [Qiskit-HF] — the exact fidelity definition DevQ replicates
 Qiskit `quantum_info.hellinger_fidelity` — the Hellinger fidelity between
 two count distributions, ranging `[0, 1]`, higher-is-better.

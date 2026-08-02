@@ -73,6 +73,20 @@ _AXES = {
         "kind"         : "allocator",
         "weight_group" : ["qubit_error_weight", "edge_error_weight"],
     },
+    "scheduler": {
+        "event"        : "schedule",
+        "winner_key"   : "winner",
+        "cand_key"     : "job_id",
+        "kind"         : "scheduler",
+        # A scored scheduler's weight keys are plugin-specific (e.g. NAQJS's
+        # naqjs_width/shots/seq_weight), so they are NOT hardcoded here —
+        # naming a plugin in core would couple the sweep infra to it. None
+        # means "derive the swept keys from the reconstructed component's
+        # live_params()", which is the contract's own authoritative
+        # declaration of the weights it scores with. Keeps the scheduler axis
+        # generic: any scored scheduler is sweepable without a core edit.
+        "weight_group" : None,
+    },
 }
 
 
@@ -118,10 +132,14 @@ def _sweepable_axes(log_path):
     '''Which axes have at least one scores-bearing decision in this log.'''
     if not os.path.exists(log_path):
         return []
+    # Derived from _AXES rather than a hardcoded event list, so a newly wired
+    # axis (e.g. scheduler) is detected automatically — the same reason the
+    # ranking below reads the axis set from _AXES.
+    axis_events = {spec["event"] for spec in _AXES.values()}
     events = set()
     for rec in _records(log_path):
         ev = rec.get("event")
-        if ev in ("route", "allocate") and rec.get("scores"):
+        if ev in axis_events and rec.get("scores"):
             events.add(ev)
     return sorted(axis for axis, spec in _AXES.items()
                   if spec["event"] in events)
@@ -129,7 +147,8 @@ def _sweepable_axes(log_path):
 
 # ── Weight sweep ──────────────────────────────────────────────────────────────
 
-def sweep(run_dir, session_id, axis, coarse_m=20, bisect=False):
+def sweep(run_dir, session_id, axis, coarse_m=20, bisect=False,
+          registry_map=None):
     '''
     Re-derive one session's decisions on `axis` ("router" or "allocator")
     across its weight-group simplex, from the recorded scores, and write
@@ -160,7 +179,7 @@ def sweep(run_dir, session_id, axis, coarse_m=20, bisect=False):
     spec = _AXES[axis]
 
     log_path = _session_log(run_dir, session_id)
-    engine   = _reconstruct(spec["kind"], session_id, run_dir)
+    engine   = _reconstruct(spec["kind"], session_id, run_dir, registry_map)
 
     result = {
         "session_id": session_id,
@@ -175,6 +194,16 @@ def sweep(run_dir, session_id, axis, coarse_m=20, bisect=False):
             f"the {axis} in session {session_id!r} is not a scoring "
             f"component, so there is nothing to sweep")
         return _write(_sweep_path(run_dir, axis), result)
+
+    # The swept weight keys: an axis may hardcode them (router/allocator share
+    # the core qubit/edge pair), or leave weight_group None to derive them from
+    # the component's own live_params() — used by the scheduler axis so a
+    # plugin's private key names (naqjs_*) never enter core. Sorted for a
+    # stable lattice-coordinate -> key mapping across runs.
+    weight_keys = spec["weight_group"]
+    if weight_keys is None:
+        weight_keys = sorted(engine.live_params().keys())
+    result["weight_keys"] = weight_keys
 
     decisions = _read_decisions(log_path, spec)
     if not decisions:
@@ -201,7 +230,7 @@ def sweep(run_dir, session_id, axis, coarse_m=20, bisect=False):
     result["faithful"] = True
 
     # The lattice: the Scheffe {n, m} simplex over this axis's weight group.
-    n = len(spec["weight_group"])
+    n = len(weight_keys)
     int_pts = _int_lattice(n, coarse_m)
     points  = [tuple(k / coarse_m for k in c) for c in int_pts]
 
@@ -212,7 +241,7 @@ def sweep(run_dir, session_id, axis, coarse_m=20, bisect=False):
     for d in decisions:
         winner_by_point = [
             {"point": [round(x, 6) for x in p],
-             "winner": _jsonable(_winner_at(engine, d["recorded_terms"], p, axis))}
+             "winner": _jsonable(_winner_at(engine, d["recorded_terms"], p, axis, weight_keys))}
             for p in points
         ]
         swept.append({
@@ -223,7 +252,7 @@ def sweep(run_dir, session_id, axis, coarse_m=20, bisect=False):
 
     # The presentable aggregate, derived over the lattice edge graph.
     result["aggregate"] = _aggregate(
-        engine, decisions, int_pts, points, axis, bisect)
+        engine, decisions, int_pts, points, axis, weight_keys, bisect)
 
     return _write(_sweep_path(run_dir, axis), result)
 
@@ -327,28 +356,59 @@ def _read_decisions(log_path, spec):
     Pull every scores-bearing decision of one axis out of the log as
     {job_id, winner, recorded_terms}, where recorded_terms is the
     [(candidate_key, terms), ...] the Sweepable hooks consume.
+
+    A batch scheduler is special: it emits one `schedule` event PER dispatched
+    job in a cycle, but all of them share ONE ranking snapshot (the same
+    recorded_terms), and each event's `winner` field is the job THAT event
+    dispatched — not the ranking's argmin. For the sweep, a cycle's ranking is
+    ONE decision, whose winner is the argmin of that ranking (lowest
+    (score, key)), consistent with how a router/allocator's single choice is
+    its argmin. So scheduler events are deduplicated by their ranking snapshot
+    and the winner is recomputed as the argmin, rather than taken from the
+    per-dispatch `winner` field. Router/allocator (one event = one choice) are
+    unaffected.
     '''
+    dedup = spec["kind"] == "scheduler"
     out = []
+    seen_snapshots = set()
     for rec in _records(log_path):
         if rec.get("event") != spec["event"] or not rec.get("scores"):
             continue
         recorded_terms = [(_cand_key(s[spec["cand_key"]]), s["terms"])
                           for s in rec["scores"]]
+
+        if dedup:
+            # Collapse events that share this ranking; the winner is the
+            # ranking's argmin from the recorded per-candidate scores, not the
+            # per-event dispatched job.
+            snapshot = tuple((k, tuple(sorted(t.items())))
+                             for k, t in recorded_terms)
+            if snapshot in seen_snapshots:
+                continue
+            seen_snapshots.add(snapshot)
+            winner = min(rec["scores"],
+                         key=lambda s: (s["score"],
+                                        _cand_key(s[spec["cand_key"]])))
+            winner = _cand_key(winner[spec["cand_key"]])
+        else:
+            winner = _cand_key(rec[spec["winner_key"]])
+
         out.append({
             "job_id"        : rec.get("job_id"),
-            "winner"        : _cand_key(rec[spec["winner_key"]]),
+            "winner"        : winner,
             "recorded_terms": recorded_terms,
         })
     return out
 
 
-def _winner_at(engine, recorded_terms, point, axis):
+def _winner_at(engine, recorded_terms, point, axis, weight_keys):
     '''Re-derive the winner at the weight vector `point` (a normalised tuple
-    mapped onto the axis's weight_group).'''
-    return engine.sweep_decision(recorded_terms, _cost_params(point, axis))
+    mapped onto weight_keys).'''
+    return engine.sweep_decision(recorded_terms,
+                                 _cost_params(point, axis, weight_keys))
 
 
-def _aggregate(engine, decisions, int_pts, points, axis, bisect):
+def _aggregate(engine, decisions, int_pts, points, axis, weight_keys, bisect):
     '''
     Per lattice point, the distribution of winners across decisions, plus the
     flip EDGES where that distribution changes. A flip is detected on a lattice
@@ -360,7 +420,7 @@ def _aggregate(engine, decisions, int_pts, points, axis, bisect):
     def dist_at(point):
         counts = {}
         for d in decisions:
-            w = _winner_at(engine, d["recorded_terms"], point, axis)
+            w = _winner_at(engine, d["recorded_terms"], point, axis, weight_keys)
             counts[w] = counts.get(w, 0) + 1
         return counts
 
@@ -401,13 +461,20 @@ def _dist_jsonable(counts):
     return {str(_jsonable(k)): v for k, v in counts.items()}
 
 
-def _reconstruct(kind, session_id, run_dir):
+def _reconstruct(kind, session_id, run_dir, registry_map=None):
     '''
     A default-constructed instance of the session's registered component
     for `kind`, used purely as a scoring engine (the sweep passes weights
     explicitly, so the instance's own weights are irrelevant). Reads the
     component name from the manifest's per-session config. Returns None if
     the session or its component cannot be resolved.
+
+    `registry_map` is an optional {kind: {name: class}} map of components
+    registered for the run but not globally (a research/ baseline like
+    NAQJS, registered per-run via register_schedulers). Without it, only
+    built-in components resolve — so a sweep of a plugin must pass the same
+    class map the run registered, or the fresh DevQ() here cannot rebuild
+    it. Built-in sweeps (router/allocator) pass nothing and are unchanged.
     '''
     manifest = _load_json(os.path.join(run_dir, "manifest.json"))
     config = None
@@ -418,7 +485,23 @@ def _reconstruct(kind, session_id, run_dir):
     if not config or kind not in config:
         return None
     try:
-        cls = DevQ()._registry.get(kind, config[kind])
+        owner = DevQ()
+        for reg_kind, classes in (registry_map or {}).items():
+            register = getattr(owner, f"register_{reg_kind}")
+            for name, cls in classes.items():
+                register(name, cls)
+        cls = owner._registry.get(kind, config[kind])
+        if kind == "scheduler":
+            # A scheduler's constructor requires (memory_manager,
+            # process_table), unlike routers/allocators which default
+            # everything. The sweep uses the instance PURELY as a scoring
+            # engine — it calls only the Sweepable hooks (live_params,
+            # _sweep_*, sweep_decision), never schedule()/the queue/memory —
+            # so None placeholders are safe and never dereferenced. Weights
+            # are irrelevant here too: the sweep passes them explicitly per
+            # lattice point, and the faithfulness anchor reads the run's
+            # actual weights from the logged terms, not from this instance.
+            return cls(None, None)
         return cls()
     except Exception:
         return None
@@ -465,21 +548,21 @@ def _simplex_lattice(n, m):
             for comp in sorted(_compositions(m, n))]
 
 
-def _cost_params(point, axis):
+def _cost_params(point, axis, weight_keys):
     '''
     Cost weights for a sweep point. `point` is a normalised weight tuple (a
-    Scheffe lattice point, sums to 1); its coordinates map onto the axis's
-    `weight_group` keys in order. At n=2 the group is (qubit, edge), so
-    point (a, 1-a) reproduces the historical (alpha, 1-alpha) mapping exactly.
+    Scheffe lattice point, sums to 1); its coordinates map onto `weight_keys`
+    in order. At n=2 the group is (qubit, edge), so point (a, 1-a) reproduces
+    the historical (alpha, 1-alpha) mapping exactly. `weight_keys` is resolved
+    by the caller — an axis's hardcoded group, or a scored scheduler's own
+    live_params() keys — so no plugin-specific key names live in this module.
 
-    Both scored axes sweep the shared-scope qubit/edge cost split; the router
-    additionally needs its queue/noise split, which the sweep holds fixed (it
-    sweeps the cost-model weight group, not the router's queue/noise mix). The
-    fixed 0.5 split matches the router default and is the recorded run's own
-    value for the shipped configs.
+    The router additionally needs its queue/noise split, which the sweep holds
+    fixed (it sweeps the cost-model weight group, not the router's queue/noise
+    mix). The fixed 0.5 split matches the router default and is the recorded
+    run's own value for the shipped configs.
     '''
-    keys = _AXES[axis]["weight_group"]
-    params = dict(zip(keys, point))
+    params = dict(zip(weight_keys, point))
     if axis == "router":
         params["router_queue_weight"] = 0.5
         params["router_noise_weight"] = 0.5

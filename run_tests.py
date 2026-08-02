@@ -3505,12 +3505,15 @@ def block_comparison():
     check(all(adj3.get(k) for k in range(len(ip3))),
           "the n=3 edge graph has no isolated points")
 
-    # _cost_params maps a lattice point onto the weight_group keys IN ORDER:
+    # _cost_params maps a lattice point onto the resolved weight keys IN ORDER:
     # position 0 -> qubit_error_weight, 1 -> edge_error_weight. Pinned directly
     # because the sweep walks the whole (symmetric) simplex, so a reversed
     # mapping would leave the winner/flip SET unchanged and slip past the
     # sweep-level checks — only a direct coordinate->key assertion catches it.
-    cp = C._cost_params((0.2, 0.8), "allocator")
+    # weight_keys is now resolved by the caller (an axis's hardcoded group, or
+    # a scored scheduler's live_params keys) and passed in explicitly.
+    alloc_keys = C._AXES["allocator"]["weight_group"]
+    cp = C._cost_params((0.2, 0.8), "allocator", alloc_keys)
     check(cp["qubit_error_weight"] == 0.2 and cp["edge_error_weight"] == 0.8,
           "cost_params maps point[0]->qubit_error, point[1]->edge_error, in order")
 
@@ -3568,8 +3571,9 @@ def block_comparison():
 
         def _dist_at(point):
             c = {}
+            _ak = C._AXES["allocator"]["weight_group"]
             for d in decs:
-                w = C._winner_at(eng, d["recorded_terms"], point, "allocator")
+                w = C._winner_at(eng, d["recorded_terms"], point, "allocator", _ak)
                 c[w] = c.get(w, 0) + 1
             return {str(C._jsonable(k)): v for k, v in c.items()}
 
@@ -3627,6 +3631,110 @@ def block_comparison():
         # empty-decisions branch.
         check("not a scoring component" in skip.get("reason", ""),
               "the refusal names the component non-scoring, not just empty")
+
+    # ── The scheduler axis: batch dedup, argmin winner, plugin reconstruct ─
+    # A batch scheduler emits one `schedule` event PER dispatched job in a
+    # cycle, all sharing ONE ranking snapshot; the sweep must (a) detect the
+    # scheduler axis is sweepable, (b) collapse those events into ONE decision
+    # whose winner is the ranking's argmin (not the per-event dispatched job),
+    # and (c) reconstruct the scored scheduler via an explicit registry_map,
+    # since a research plugin is not globally registered. A tiny scored
+    # scheduler stands in for a real plugin (which cannot be imported into the
+    # core suite), with its weight keys DERIVED from live_params (no plugin
+    # key names in _AXES).
+    class ToyScoredScheduler(BaseScheduler):
+        LABEL = "Toy Scored Scheduler"
+
+        def __init__(self, memory_manager, process_table, toy_a=1.0, toy_b=1.0):
+            super().__init__(memory_manager, process_table)
+            self.toy_a, self.toy_b = toy_a, toy_b
+
+        def schedule(self):
+            return []   # unused by the sweep (scoring engine only)
+
+        def live_params(self):
+            return {"toy_a_weight": self.toy_a, "toy_b_weight": self.toy_b}
+
+        def _sweep_terms(self, decision):
+            return [(q, {"x": q, "y": 10 - q}) for q in decision]
+
+        def _sweep_score(self, terms, params):
+            return (terms["x"], terms["y"])
+
+        def _sweep_rank(self, scored, params):
+            xs = [r[0] for _, _, r in scored]
+            ys = [r[1] for _, _, r in scored]
+            def mm(vals):
+                lo, hi = min(vals), max(vals)
+                sp = hi - lo
+                return {v: (0.0 if sp == 0 else (v - lo) / sp) for v in set(vals)}
+            nx, ny = mm(xs), mm(ys)
+            a, b = params["toy_a_weight"], params["toy_b_weight"]
+            out = []
+            for key, terms, raw in scored:
+                final = a * nx[raw[0]] + b * ny[raw[1]]
+                enriched = dict(terms, x_norm=nx[raw[0]], y_norm=ny[raw[1]],
+                                toy_a_weight=a, toy_b_weight=b)
+                out.append((key, final, enriched))
+            return out
+
+    sched_dir = os.path.join(root, "test_results", "_scheduler_axis_fixture")
+    shutil.rmtree(sched_dir, ignore_errors=True)
+    os.makedirs(sched_dir)
+    with open(os.path.join(sched_dir, "manifest.json"), "w") as h:
+        json.dump({"sessions": [{
+            "session_id": "toy", "log": "toy.jsonl",
+            "config": {"scheduler": "toy_scored", "allocator": "graph",
+                       "router": "noise"}}]}, h)
+    # One ranking over jobs 1,2,3 (x=job id), emitted as THREE schedule events
+    # (a batch cycle dispatching all three) — identical scores snapshot, but
+    # each event's `winner` is the job it dispatched (1, then 2, then 3).
+    scores = [{"job_id": j, "score": float(j),
+               "terms": {"x": j, "y": 10 - j,
+                         "toy_a_weight": 1.0, "toy_b_weight": 1.0}}
+              for j in (1, 2, 3)]
+    with open(os.path.join(sched_dir, "toy.jsonl"), "w") as h:
+        for dispatched in (1, 2, 3):
+            h.write(json.dumps({"event": "schedule", "job_id": dispatched,
+                                "winner": dispatched, "scores": scores}) + "\n")
+
+    reg = {"scheduler": {"toy_scored": ToyScoredScheduler}}
+
+    # (a) the scheduler axis is reported sweepable from the schedule events.
+    axes = C._sweepable_axes(os.path.join(sched_dir, "toy.jsonl"))
+    check("scheduler" in axes,
+          "a log with scores-bearing schedule events reports the scheduler "
+          "axis sweepable (derived from _AXES, not a hardcoded event list)")
+
+    # (b) the three events collapse to ONE decision whose winner is the
+    # ranking's argmin (job 1, lowest score), NOT three decisions each
+    # winning their dispatched job.
+    decs = C._read_decisions(os.path.join(sched_dir, "toy.jsonl"),
+                             C._AXES["scheduler"])
+    check(len(decs) == 1,
+          "a batch cycle's repeated schedule events collapse to one sweep "
+          "decision (one ranking, not one-per-dispatch)")
+    check(decs[0]["winner"] == 1,
+          "the deduped decision's winner is the ranking's argmin (job 1), "
+          "not a per-event dispatched job")
+
+    # (c) the sweep reconstructs the plugin via registry_map and derives its
+    # weight keys from live_params — faithful, and swept over the 2-weight
+    # simplex.
+    res = C.sweep(sched_dir, "toy", "scheduler", coarse_m=8, bisect=True,
+                  registry_map=reg)
+    check(res["faithful"] is True,
+          "the scheduler sweep reconstructs the plugin (registry_map) and "
+          "its faithfulness anchor holds")
+    check(res.get("weight_keys") == ["toy_a_weight", "toy_b_weight"],
+          "the scheduler axis derives its swept keys from the component's "
+          "live_params (no plugin key names hardcoded in core)")
+    # Without the registry_map the plugin cannot be rebuilt -> not sweepable,
+    # which pins that reconstruction actually depends on the passed classes.
+    res_noreg = C.sweep(sched_dir, "toy", "scheduler", coarse_m=8)
+    check(res_noreg["faithful"] is False,
+          "without registry_map a research plugin cannot be reconstructed, so "
+          "the sweep honestly refuses rather than faking a result")
 
     # ── Unknown axis is an error, not a silent empty result ───────────────
     raised = False

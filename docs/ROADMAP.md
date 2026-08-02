@@ -234,8 +234,19 @@ above once Phase 5 ships:
   `comparison.py`, `comparison_modes.py`, and the `comparison`/
   `comparison_modes` blocks; two mutation survivors (a reversed weight
   mapping, an inverted bisection) sharpened the tests.
-- **5.6 — baseline plugins** 🔭 published baselines to compare against;
-  this is what turns the platform into a result.
+- **5.6 — baseline plugins** 🚧 published baselines to compare against;
+  this is what turns the platform into a result. **NAQJS (the first scored
+  scheduler, `[NAQJS]`) has landed** as a `research/` plugin built entirely
+  through the documented API with no core edits — proving the plugin path
+  end-to-end, including the never-before-exercised `schedule` scoring seam.
+  A comparison script (`research/naqjs_comparison.py`) benchmarks it against
+  the default Packing scheduler and sweeps its three-weight simplex. Building
+  it completed the sweep infrastructure for the *scheduler* axis (5.5c had
+  wired only router/allocator): the `_AXES` scheduler entry, `live_params`-
+  derived weight keys, plugin reconstruction via an explicit class map, and
+  batch-event dedup — all generic, all core, all covered and mutation-tested.
+  Still to come: QOS (router) and Mapomatic (allocator) baselines for the
+  full "DevQ vs QOS" story.
 - **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer,
   folding in the comparison modes.
 - **5.8 — real hardware** 🔭 gated on credits and access.
