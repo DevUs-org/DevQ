@@ -74,7 +74,7 @@ from research.baselines.naqjs_scheduler import NAQJSScheduler
 from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
 
-WORKLOAD = os.path.join(_HERE, "workloads", "qasmbench_small.json")
+WORKLOAD = os.path.join(_HERE, "workloads", "qasmbench_contended.json")
 OUT_DIR  = os.path.join(_HERE, "test_results", "naqjs_qasmbench_comparison")
 
 # The scheduler is the only varied axis; allocator and router are pinned to
@@ -137,7 +137,7 @@ def main():
 
     out("NAQJS vs Packing on QASMBench (small) — comparison and weight sweep")
     out("=" * 66)
-    out("workload: research/workloads/qasmbench_small.json")
+    out("workload: research/workloads/qasmbench_contended.json")
     out("devices : ibm.simulated x4 (Nairobi, Lagos, Jakarta, Kolkata)")
     out("varied  : scheduler (naqjs vs packing); allocator=noise_graph, "
         "router=noise fixed")

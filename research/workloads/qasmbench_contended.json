@@ -1,0 +1,58 @@
+{
+    "name": "qasmbench_contended",
+    "seed": 42,
+    "devices": [
+        {
+            "id": "nairobi",
+            "provider": "ibm.simulated",
+            "backend": {
+                "backend_name": "FakeNairobiV2"
+            }
+        }
+    ],
+    "arrival": {
+        "pattern": "batch"
+    },
+    "jobs": [
+        {
+            "circuit": "research/circuits/qasmbench/small/error_correctiond3_n5.qasm",
+            "shots": 8192
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/pea_n5.qasm",
+            "shots": 512
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/lpn_n5.qasm",
+            "shots": 4096
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/qec_en_n5.qasm",
+            "shots": 256
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/adder_n4.qasm",
+            "shots": 2048
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/qft_n4.qasm",
+            "shots": 128
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/variational_n4.qasm",
+            "shots": 8192
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/vqe_n4.qasm",
+            "shots": 1024
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/basis_trotter_n4.qasm",
+            "shots": 512
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/cat_state_n4.qasm",
+            "shots": 4096
+        }
+    ]
+}
