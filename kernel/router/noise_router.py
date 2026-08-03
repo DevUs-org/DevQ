@@ -211,7 +211,7 @@ class NoiseRouter(BaseRouter):
 
         edge_cost = 0.0
         qubit_set = set(qubits)
-        for u, v in ctx.device.edge_error_map:
+        for u, v in ctx.device.edges():
             if u in qubit_set and v in qubit_set:
                 edge_cost += ctx.device.edge_error(u, v)
 

@@ -284,6 +284,13 @@ can change without touching consumers:
 | T2 coherence            | `t2(q)`               | µs   | per qubit       |
 | gate duration           | `gate_duration(arity)`| ns   | per arity (1/2) |
 
+To **enumerate** the coupling edges (rather than look up one), use
+`edges()`, which returns the canonical `(u, v)` tuples (`u < v`); pair each
+with `edge_error(u, v)` for its rate. This is the accessor a cost-scoring
+component uses to walk the edges — the noise router and noise-graph
+allocator both go through it, so neither reaches into the raw
+`edge_error_map`.
+
 Each accessor returns a **typical fallback** when its backing map is
 unpopulated (a device built by older code, or a provider that could not
 resolve a term), so every device answers every accessor and no consumer

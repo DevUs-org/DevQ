@@ -101,9 +101,10 @@ class NoiseGraphAllocator(BaseAllocator):
         tagged = []
 
         if required == 2:
-            # Connected pairs enumerated directly from the edge map — the
-            # same fast path allocate() used before the refactor.
-            for (u, v) in device.edge_error_map.keys():
+            # Connected pairs enumerated directly from the coupling edges —
+            # the same fast path allocate() used before the refactor, now via
+            # the device's edges() accessor rather than the raw map.
+            for (u, v) in device.edges():
                 if (u in usable and v in usable
                         and edge_allowed(device, u, v, max_edge_error)):
                     block = (u, v) if u < v else (v, u)

@@ -161,6 +161,19 @@ class QuantumDevice:
     def edge_error(self, u, v):
         return self.edge_error_map.get(tuple(sorted((u, v))), 0.05)
 
+    def edges(self):
+        '''
+        The device's coupling edges as canonical (u, v) tuples with u < v.
+
+        The edge-enumeration accessor: cost-scoring components (the noise
+        router, the noise-graph allocator) need to iterate edges, and this
+        is the interface for it — so no consumer reaches into the raw
+        `edge_error_map` and the storage can change without touching them
+        (the same accessor discipline `qubit_error`/`edge_error` give for
+        scalar lookups). Pair each edge with `edge_error(u, v)` for its rate.
+        '''
+        return list(self.edge_error_map.keys())
+
     def gate_error(self, q):
         '''
         Single-qubit gate error for qubit q. Fallback 5e-4 — a typical
