@@ -137,6 +137,7 @@ The **QShell** provides a full inspection command set (see
 | `qtopology [dN] [q …]` | Device coupling map(s) |
 | `qerrors [q\|e\|b] [dN]` | Qubit errors, edge errors, or both |
 | `qconfig [dN]` | Router policy and each device's config with the source of every value |
+| `qregistry [p r s a f]` | Registered components — providers, routers, schedulers, allocators, frontends (built-in and externally registered); flags filter by kind |
 
 **🔬 Researchers** get a lifecycle with *honest terminal states* — a
 rejected job is classified with a reason, never silently dropped — which
@@ -337,7 +338,7 @@ add a new backend or a custom policy without forking DevQ.
 
 **How it works.** Configuration is resolved independently per device through
 a four-level cascade (later levels override earlier): **core defaults ←
-global user file ← provider defaults ← per-device file**. Keys fall into
+provider defaults ← global user file ← per-device file**. Keys fall into
 three scopes — **global** (system-wide, e.g. the router policy; providers
 deliberately cannot set these), **common** (per-device, e.g. the α/β
 allocator weights), and a **per-job** tier above the cascade for `shots`.

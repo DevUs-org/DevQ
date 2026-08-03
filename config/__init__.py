@@ -1,8 +1,9 @@
 '''
 Tags: Main
 
-config — Three-level configuration cascade.
+config — Four-level configuration cascade.
 
-DevQ core defaults → provider preferred_config() → user JSON,
-with per-key provenance tracking surfaced by qconfig.
+DevQ core defaults → provider preferred_config() → global user JSON →
+per-device user JSON, with per-key provenance tracking surfaced by
+qconfig. (`shots` has one further per-job tier above the cascade.)
 '''

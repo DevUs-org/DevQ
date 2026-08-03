@@ -13,13 +13,15 @@ table to keep in step.
 Keys are split into three scopes:
 
   DEVICE keys (scheduler, allocator, shots) — resolved independently
-  for every attached device through the full cascade
+  for every attached device through the full four-level cascade
   (later levels win):
       1. DevQ core defaults
       2. That device's provider preferred_config()
       3. Global user config file      (DevQ(config_path=...))
       4. Per-device user config file  (add_device(device, config_path))
-      5. Per-job Overrides
+  `shots` alone has one further per-job tier ABOVE this cascade
+  (--shots=N / a spec "shots" field), resolved at dispatch — see the
+  per-job override note below.
 
   GLOBAL keys (router, router_queue_weight, router_noise_weight) —
   resolved once for the whole system:
