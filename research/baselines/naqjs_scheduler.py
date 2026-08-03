@@ -82,8 +82,9 @@ class NAQJSScheduler(BaseScheduler):
     # value, and surfaces them in qconfig. scope="device": a scheduler is
     # per-device policy (one instance per DeviceContext), so each device
     # resolves its own NAQJS knobs through the full four-level cascade.
-    # dq.build() reads these keys off this class, strips the "naqjs." prefix,
-    # and passes the resolved values as ctor kwargs (width_weight=..., etc.).
+    # dq.build() reads these keys off this class, rewrites the "naqjs."
+    # prefix dot to "___", and passes the resolved values as ctor kwargs
+    # (naqjs___width_weight=..., etc. — see the __init__ signature).
     CONFIG_SCHEMA = {
         WIDTH_WEIGHT_KEY: KeySpec(
             scope="device", default=1.0, validate=non_negative,
@@ -103,14 +104,20 @@ class NAQJSScheduler(BaseScheduler):
     }
 
     def __init__(self, memory_manager, process_table,
-                 width_weight=1.0, shots_weight=1.0,
-                 seq_weight=1.0, eta=1.0, default_shots=None):
+                 naqjs___width_weight=1.0, naqjs___shots_weight=1.0,
+                 naqjs___seq_weight=1.0, naqjs___eta=1.0,
+                 naqjs___default_shots=None):
+        # Parameter names mirror the dotted CONFIG_SCHEMA keys with the
+        # namespace dot rewritten to "___" (naqjs.eta -> naqjs___eta), the
+        # form DevQ's generic schema-to-ctor injection passes. Preserving
+        # the prefix keeps a plugin key that reuses a core name distinct
+        # from the core parameter; see registry.keyspec.flatten_key.
         super().__init__(memory_manager, process_table)
-        self.naqjs_width_weight = width_weight
-        self.naqjs_shots_weight = shots_weight
-        self.naqjs_seq_weight   = seq_weight
-        self.naqjs_eta          = eta
-        self.naqjs_default_shots = default_shots
+        self.naqjs_width_weight  = naqjs___width_weight
+        self.naqjs_shots_weight  = naqjs___shots_weight
+        self.naqjs_seq_weight    = naqjs___seq_weight
+        self.naqjs_eta           = naqjs___eta
+        self.naqjs_default_shots = naqjs___default_shots
 
     def is_batch(self):
         # NAQJS packs several jobs per cycle up to the η·N cap.

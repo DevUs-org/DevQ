@@ -68,6 +68,7 @@ from kernel.memory.memory_manager import MemoryManager
 from shell.qshell import QShell
 from config.config_loader import ConfigLoader
 from registry.registry import Registry, RegistryError
+from registry.keyspec import flatten_key
 
 from kernel.scheduler.fcfs_scheduler import FCFSScheduler
 from kernel.scheduler.shortest_depth_scheduler import ShortestDepthScheduler
@@ -189,6 +190,42 @@ def _validate_device_name(name, taken):
         )
 
     return cleaned
+
+
+def _schema_kwargs(cls, config):
+    '''
+    Constructor kwargs contributed by a component's own CONFIG_SCHEMA.
+
+    For each key the class declares, rewrite the dotted key to its
+    parameter name (keyspec.flatten_key: "naqjs.eta" -> "naqjs___eta")
+    and, IF the constructor names that parameter, pair it with the
+    resolved value. Keys the constructor does not name are skipped — a
+    declared key need not be ctor-injected; it may instead be read at
+    runtime, and it still cascades and validates regardless.
+
+    This is the single generic mechanism behind all three component
+    build paths (scheduler, allocator, router). Core keys that a build
+    path passes explicitly (the noise/router weights) are NOT here; they
+    are merged in by each caller. Because flatten_key preserves the
+    namespace prefix, a plugin key that reuses a core name stays distinct
+    from the core parameter, so the two never collide in the merge.
+
+    Args:
+        cls:    the component class about to be constructed.
+        config: the resolved config mapping for the relevant scope, from
+                which each declared key's value is read.
+
+    Returns:
+        dict of {parameter_name: value} ready to splat into cls(...).
+    '''
+    schema   = getattr(cls, "CONFIG_SCHEMA", None) or {}
+    accepted = inspect.signature(cls.__init__).parameters
+    return {
+        param: config[key]
+        for key in schema
+        for param in (flatten_key(key),)
+        if param in accepted
+    }
 
 
 class DevQ:
@@ -494,38 +531,29 @@ class DevQ:
                 device_config_path=device_config_path
             )
 
-            allocator = self._registry.get("allocator", config["allocator"])(
+            # Every component is built the same way: its CORE kwargs (the
+            # ones DevQ passes explicitly) merged with the kwargs its own
+            # CONFIG_SCHEMA contributes via _schema_kwargs. A plugin declares
+            # dotted "<prefix>.<key>" keys that cascade like core keys; each
+            # is rewritten to a "<prefix>___<key>" parameter name and injected
+            # only if the ctor names it (see _schema_kwargs / keyspec). This
+            # is fully generic — a plugin's keys wire through with no edit
+            # here — and because the prefix is preserved, a plugin key may
+            # reuse a core name (alloc.qubit_error_weight ->
+            # alloc___qubit_error_weight) without colliding with the core
+            # parameter in the merge below.
+            alloc_cls = self._registry.get("allocator", config["allocator"])
+            allocator = alloc_cls(
                 qubit_error_weight = config["qubit_error_weight"],
-                edge_error_weight  = config["edge_error_weight"]
+                edge_error_weight  = config["edge_error_weight"],
+                **_schema_kwargs(alloc_cls, config)
             )
             memory    = MemoryManager(device, allocator)
-            # A scheduler with knobs of its own declares them in CONFIG_SCHEMA
-            # with dotted "<prefix>.<key>" names that cascade like core keys.
-            # Feed the resolved values in as ctor kwargs, stripping the
-            # namespace prefix to recover the plain-identifier parameter name
-            # (naqjs.eta -> eta). This is generic: any scheduler plugin's
-            # declared keys are wired through with no further edit here. (The
-            # allocator above is still explicit because its two weight keys
-            # are core keys, not plugin CONFIG_SCHEMA.)
-            #
-            # Declaring a schema key does NOT oblige the ctor to accept it: a
-            # key means "this cascades, validates, and shows in qconfig",
-            # and a component may instead consume it at runtime (reading its
-            # resolved config) rather than via injection. So pass only the
-            # keys the ctor actually names as parameters; the rest still
-            # cascade and remain available to the component by other means.
-            sched_cls    = self._registry.get("scheduler", config["scheduler"])
-            sched_schema = getattr(sched_cls, "CONFIG_SCHEMA", None) or {}
-            accepted     = inspect.signature(sched_cls.__init__).parameters
-            sched_kwargs = {
-                param: config[key]
-                for key in sched_schema
-                for param in (key.split(".", 1)[1],)
-                if param in accepted
-            }
+
+            sched_cls = self._registry.get("scheduler", config["scheduler"])
             scheduler = sched_cls(
                 memory, None,   # process_table injected below by Kernel wiring
-                **sched_kwargs
+                **_schema_kwargs(sched_cls, config)
             )
 
             contexts.append(DeviceContext(
@@ -579,13 +607,17 @@ class DevQ:
         the weights it was built with and never seeing the cascade — so
         qconfig reported one set of weights while a different set was
         actually routing. A router with knobs of its own declares
-        namespaced config keys instead; those cascade and are visible.
+        namespaced config keys instead; those cascade and are visible,
+        and are injected through the SAME generic path as scheduler and
+        allocator plugin keys (core weights explicit, _schema_kwargs
+        merged on top).
         '''
-        router = self._registry.get("router", global_config["router"])
+        router_cls = self._registry.get("router", global_config["router"])
 
-        return router(
+        return router_cls(
             router_queue_weight = global_config["router_queue_weight"],
             router_noise_weight = global_config["router_noise_weight"],
             qubit_error_weight = global_config["qubit_error_weight"],
-            edge_error_weight = global_config["edge_error_weight"]
+            edge_error_weight = global_config["edge_error_weight"],
+            **_schema_kwargs(router_cls, global_config)
         )
