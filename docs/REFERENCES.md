@@ -103,8 +103,8 @@ first scored **allocator** baseline (NAQJS `[NAQJS]` is a scheduler; QOS
 substitutes its own connected-block candidate generation for the paper's
 VF2 search, which coincide at DevQ's device/circuit scope; and Mapomatic's
 cost is a *fixed, parameter-free* product-of-fidelities, so — unlike DevQ's
-own tunable-weight `NoiseGraphAllocator` (cost $\alpha \cdot \Sigma q +
-\beta \cdot \Sigma e$) — it exposes no weights and is a non-scoring policy
+own tunable-weight `NoiseGraphAllocator` (cost $\alpha \cdot \sum q +
+\beta \cdot \sum e$) — it exposes no weights and is a non-scoring policy
 in the `Sweepable` sense. Comparing the two isolates the effect of the
 aggregation rule (multiplicative fidelity vs. additive weighted error) on
 the same calibration inputs. See [`COST_MODEL.md`](COST_MODEL.md) and
