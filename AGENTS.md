@@ -130,6 +130,7 @@ Commands, briefly — full reference in [`docs/SHELL.md`](docs/SHELL.md):
 | `qps` | All jobs with device binding and lifecycle state |
 | `qmap <job_id>` | A job's device and virtual → physical qubit mapping |
 | `qdevices` | Attached devices, load, qubit counts |
+| `qregistry [p r s a f]` | Registered components (providers, routers, schedulers, allocators, frontends); flags filter by kind |
 | `qmem`, `qtopology`, `qerrors` | Free/allocated qubits, coupling map, error rates |
 | `qconfig` | Every active config value **with the source it came from** |
 
@@ -279,7 +280,7 @@ overrides:
 |---|---|---|
 | router | `route()` | `select()` |
 | allocator | `allocate()` | `allocate()`, optionally override `feasible()` |
-| scheduler | `schedule()` | `schedule()`, using the base's `_attempt_allocation()` |
+| scheduler | `schedule()` | `schedule()`, using the base's `_attempt_allocation()` (or, like PackingScheduler, an equivalent that drives the same lifecycle transitions) |
 
 `_attempt_allocation()` performs the shared allocate-and-classify step —
 it sets the mapping and `RUNNING` on success and classifies failure as

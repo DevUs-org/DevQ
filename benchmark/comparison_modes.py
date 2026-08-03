@@ -8,7 +8,7 @@ comparison.py already computed; they derive no new numbers:
   rank_sessions(bundle, metric)      inter-component: order the matrix's
                                      sessions by one metric
   present_sweep(sweep_result)        intra-component: read out one
-                                     session's α/β sweep
+                                     session's weight sweep
 
 Each returns STRUCTURED data. `render_text(result, to=...)` turns either
 into a plain-text table or report and, given a path, writes it to a `.txt`

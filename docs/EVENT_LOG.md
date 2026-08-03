@@ -206,10 +206,10 @@ Beside the logs and manifest sit the **derived artifacts**, each written
 by an offline pass that reads the logs and computes — never by the run
 itself: `metrics.json` (per-session metrics), `comparison.json` (the
 matrix bundle — every session's config, metrics and sweepable axes), and
-`sweep_comp.<axis>.json` (an α/β weight sweep of one axis, written when a
-sweep is run). These are the reading surface the comparison modes and a
-future `qbench` present; see
-[`METRICS.md`](METRICS.md#cross-config-comparison-and-the-αβ-sweep).
+`sweep_comp.<axis>.json` (a weight sweep of one axis over its weight-group
+simplex, written when a sweep is run). These are the reading surface the
+comparison modes and a future `qbench` present; see
+[`METRICS.md`](METRICS.md#cross-config-comparison-and-the-weight-sweep).
 
 `--resume` skips sessions the manifest records as completed. It is
 session-level only: seeding is sequential, so a session restarted

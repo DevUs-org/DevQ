@@ -127,8 +127,10 @@ scheduler):
   kernel's resolution step, so the system needs no locks.
 
 ### 🔬 Phase 5 — Research Benchmarking Mode (in progress)
-A `qbench` command: run circuit workloads through every
-router/scheduler/allocator combination and report comparative results. The
+A research benchmarking layer: run circuit workloads through every
+router/scheduler/allocator combination and report comparative results
+(offline metrics, cross-config comparison, and weight sweeps today; a
+`qbench` shell over them is the final sub-phase, 5.7). The
 goal is for DevQ to serve as an **algorithm evaluation playground** for
 quantum scheduling and allocation researchers — write an allocator against
 `BaseAllocator` or a router against `BaseRouter`, register it with
@@ -208,8 +210,9 @@ above once Phase 5 ships:
 - **5.5b — comparison modes** ✅ the reading surface over 5.5a, two
   modes in `benchmark/comparison_modes.py`: inter-component
   (`rank_sessions` orders the matrix's sessions by a metric) and
-  intra-component (`present_sweep` reads out one session's α/β sweep — its
-  flips, or a refusal with its reason). Each returns structured data with
+  intra-component (`present_sweep` reads out one session's weight sweep — its
+  flips, or a refusal with its reason; α/β at 5.5b, generalised to the n-ary
+  simplex in 5.5c below). Each returns structured data with
   a `render_text` view over it that can write a `.txt`, so the qbench
   shell (5.7) renders the same modes its own way rather than re-deriving
   them. The *absolute* view — one session's own bundle — is not among

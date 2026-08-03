@@ -54,6 +54,8 @@ read.
 | `placeholders.json` | Five jobs whose seed, provider and threshold come from `${NAME}` environment placeholders, resolved at load. Shows the credential-safe spec mechanism; needs the `DEVQ_*` vars set (see the suite's `PLACEHOLDER_ENV`). |
 | `rejection.json` | Four jobs, half carrying an impossibly strict `max_qubit_error` so no device is feasible and routing rejects them terminally while the rest complete. The fixture for the rejection-rate metric — a deliberately aggressive threshold sweep, yielding a rejection rate of 0.5. Finishes `completed_with_failures`, which is a result, not a crash. |
 | `contention.json` | Twenty-five jobs across two devices under batch arrival, so jobs queue behind one another and their waits spread. The fixture for queue-latency p95 at a realistic job count: with nearest-rank, p95 only falls below max at n ≥ 21, so this is the spec where the two differ. Also a strong load-imbalance case — sticky routing sends the whole batch to one device. |
+| `per_job_shots.json` | One mock device, two Bell jobs: the first names `"shots": 333`, the second names none. Shows the per-job shot tier that sits above the config cascade — the first job runs its own count, the second defers to the device-resolved default. The fixture behind the `per_job_shots` test block. |
+| `gate_error_filter.json` | One 7-qubit mock device, two Bell jobs, the first carrying `max_1q_gate_error: 0.01`. Exercises the single-qubit-gate-error placement filter (`--max-1q-gate-error`) independently of the readout/edge thresholds. The fixture behind the `max_1q_gate_error_filter` test block. |
 
 `ibm_federation.json` names the `ibm` provider, which is not registered
 by default. Register it in Python first — specs reference registered
