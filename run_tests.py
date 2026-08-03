@@ -1761,6 +1761,38 @@ def block_registry_validation():
         def schedule(self):
             return None
 
+    class SepInKey(BaseScheduler):
+        # "___" is reserved as the namespace/parameter separator; a key
+        # containing it would make the dotted-key -> ctor-param rewrite
+        # ambiguous.
+        CONFIG_SCHEMA = {"m.a___b": KeySpec("device", 1, positive_int, "K")}
+
+        def schedule(self):
+            return None
+
+    class SepInPrefix(BaseScheduler):
+        CONFIG_SCHEMA = {"pre___fix.k": KeySpec("device", 1, positive_int, "K")}
+
+        def schedule(self):
+            return None
+
+    class UnderscoreEdge(BaseScheduler):
+        # A leading "_" on the key abutting the separator is
+        # indistinguishable from a trailing "_" on the prefix.
+        CONFIG_SCHEMA = {"m._k": KeySpec("device", 1, positive_int, "K")}
+
+        def schedule(self):
+            return None
+
+    class UnderscoreEdgeTrailing(BaseScheduler):
+        # The other side of the same rule: a trailing "_" on the key (or a
+        # trailing "_" on the prefix) must be rejected too, not only a
+        # leading one.
+        CONFIG_SCHEMA = {"m.k_": KeySpec("device", 1, positive_int, "K")}
+
+        def schedule(self):
+            return None
+
     cases = [
         ("scheduler", NotAScheduler,         "must subclass"),
         ("scheduler", NoInitArgs,            "cannot be constructed"),
@@ -1773,6 +1805,10 @@ def block_registry_validation():
         ("scheduler", DanglingGroupMember,   "not declared in any CONFIG_SCHEMA"),
         ("scheduler", SingleMemberGroup,     "needs at least two"),
         ("scheduler", GroupNeverDeclared,    "no such group is declared"),
+        ("scheduler", SepInKey,              "reserved as the namespace/parameter separator"),
+        ("scheduler", SepInPrefix,           "reserved as the namespace/parameter separator"),
+        ("scheduler", UnderscoreEdge,        "starts or ends with '_'"),
+        ("scheduler", UnderscoreEdgeTrailing, "starts or ends with '_'"),
     ]
 
     register = {"scheduler": lambda d, c: d.register_scheduler("bad", c),
@@ -2083,6 +2119,147 @@ def block_plugin_config_keys():
         expect(buf.getvalue(),
                "invalid value '-3' for 'mock.batch_window'",
                "expected a positive integer")
+    finally:
+        for f in os.listdir(tmpdir):
+            os.unlink(os.path.join(tmpdir, f))
+        os.rmdir(tmpdir)
+
+
+def block_schema_ctor_injection():
+    '''Plugin CONFIG_SCHEMA keys inject into scheduler, allocator and router ctors'''
+    import json
+    import os
+    import tempfile
+
+    # A scheduler that NAMES its declared key as a ctor parameter (prefix
+    # preserved: "inj.eta" -> "inj___eta"). Contrast with MockScheduler,
+    # whose inherited ctor names none of its keys, so nothing injects.
+    class InjectingScheduler(BaseScheduler):
+        LABEL = "Injecting Scheduler"
+        CONFIG_SCHEMA = {
+            "inj.eta": KeySpec("device", 1.0, non_negative, "Inj eta"),
+        }
+
+        def __init__(self, memory_manager, process_table, inj___eta=1.0):
+            super().__init__(memory_manager, process_table)
+            self.seen_eta = inj___eta
+
+        def schedule(self):
+            return []
+
+    # An allocator that REUSES a core key name for its OWN distinct
+    # quantity. The core "qubit_error_weight" (normalised, <=1) and the
+    # plugin "alloc.qubit_error_weight" (its own scale, here >1) must land
+    # in SEPARATE parameters and both survive — this is the whole reason
+    # the injector preserves the prefix instead of stripping it.
+    class ReusingAllocator(BaseAllocator):
+        LABEL = "Reusing Allocator"
+        CONFIG_SCHEMA = {
+            "alloc.qubit_error_weight": KeySpec(
+                "device", 2.5, non_negative, "Alloc own scale"),
+        }
+
+        def __init__(self, qubit_error_weight=0.1, edge_error_weight=0.9,
+                     alloc___qubit_error_weight=None):
+            super().__init__(qubit_error_weight=qubit_error_weight,
+                             edge_error_weight=edge_error_weight)
+            self.own_scale = alloc___qubit_error_weight
+
+        def allocate(self, circuit, device, pool,
+                     max_qubit_error=None, max_edge_error=None,
+                     max_1q_gate_error=None):
+            need = circuit.num_qubits
+            free = sorted(pool.available())
+            if len(free) < need:
+                raise AllocationError("Reusing: not enough free qubits")
+            chosen = free[:need]
+            pool.allocate(chosen)
+            return {v: p for v, p in enumerate(chosen)}
+
+    # A router that names its own global-scope key.
+    class InjectingRouter(BaseRouter):
+        LABEL = "Injecting Router"
+        CONFIG_SCHEMA = {
+            "rtr.bias": KeySpec("global", 3.0, non_negative, "Router bias"),
+        }
+
+        def __init__(self, router_queue_weight=0.5, router_noise_weight=0.5,
+                     qubit_error_weight=0.1, edge_error_weight=0.9,
+                     rtr___bias=None):
+            super().__init__(router_queue_weight, router_noise_weight,
+                             qubit_error_weight, edge_error_weight)
+            self.seen_bias = rtr___bias
+
+        def select(self, qcb, candidates):
+            return candidates[0]
+
+    tmpdir = tempfile.mkdtemp(prefix="devq_inject_")
+    path   = os.path.join(tmpdir, "cfg.json")
+    try:
+        # Select all three plugins and give each key a non-default value,
+        # so a value that arrives at the ctor proves the cascade->inject
+        # path end to end (a default could arrive by ctor default alone).
+        with open(path, "w") as f:
+            json.dump({
+                "scheduler": "inj",
+                "allocator": "ralloc",
+                "router":    "irtr",
+                "inj.eta":                   0.75,
+                "alloc.qubit_error_weight":  4.0,
+                "rtr.bias":                  9.0,
+            }, f)
+
+        dq = DevQ(config_path=path)
+        dq.register_scheduler("inj",   InjectingScheduler)
+        dq.register_allocator("ralloc", ReusingAllocator)
+        dq.register_router("irtr",     InjectingRouter)
+        sh = dq.add_device(
+            DevQSimulatedProvider(seed=SEED).get_device("fully_connected", 5)
+        ).build()
+
+        ctx   = sh.kernel.contexts[0]
+        sched = ctx.scheduler
+        alloc = ctx.memory_manager.allocator
+        rtr   = sh.kernel.router
+
+        # Scheduler: its plugin key reached the ctor under the flattened name.
+        check(sched.seen_eta == 0.75,
+              f"scheduler received injected inj.eta=0.75 (got {sched.seen_eta})")
+
+        # Allocator: BOTH the core weight and the plugin's same-named key
+        # arrived, in SEPARATE slots. The core weight is normalised so its
+        # exact value is not asserted; what matters is the plugin scale is
+        # the plugin's value and did NOT overwrite (or get overwritten by)
+        # the core weight.
+        check(alloc.own_scale == 4.0,
+              f"allocator received injected alloc.qubit_error_weight=4.0 in its "
+              f"OWN slot (got {alloc.own_scale})")
+        check(alloc.qubit_error_weight != 4.0,
+              "core qubit_error_weight is distinct from the plugin's reused-name "
+              f"key (core={alloc.qubit_error_weight}, plugin=4.0) — no collision")
+
+        # Router: its plugin key reached the ctor.
+        check(rtr.seen_bias == 9.0,
+              f"router received injected rtr.bias=9.0 (got {rtr.seen_bias})")
+
+        # The flattened form is INTERNAL: qconfig shows only dotted keys.
+        out = run(sh, ["qconfig"])
+        expect_absent(out, "___")
+        expect(out, "inj.eta", "alloc.qubit_error_weight", "rtr.bias")
+
+        # flatten_key rewrites ONLY the first (namespace) dot. A key with a
+        # further dot keeps it verbatim in the parameter name — which then
+        # matches no real parameter, so such a key simply is not injected
+        # (it still cascades). Asserting the first-dot-only rule directly,
+        # because the plugins above use single-dot keys and so cannot
+        # distinguish "replace first dot" from "replace every dot".
+        from registry.keyspec import flatten_key as _fk, param_to_key as _pk
+        check(_fk("inj.eta") == "inj___eta",
+              f"flatten_key single dot (got {_fk('inj.eta')!r})")
+        check(_fk("a.b.c") == "a___b.c",
+              f"flatten_key rewrites only the first dot (got {_fk('a.b.c')!r})")
+        check(_pk("a___b.c") == "a.b.c",
+              f"param_to_key inverts the first separator (got {_pk('a___b.c')!r})")
     finally:
         for f in os.listdir(tmpdir):
             os.unlink(os.path.join(tmpdir, f))
@@ -5735,6 +5912,7 @@ BLOCKS = [
     ("plugin_contract_enforcement", block_plugin_contract_enforcement),
     ("registry_frozen",          block_registry_frozen),
     ("plugin_config_keys",       block_plugin_config_keys),
+    ("schema_ctor_injection",    block_schema_ctor_injection),
     ("plugin_normalise_group",   block_plugin_normalise_group),
     ("component_labels",         block_component_labels),
     ("qregistry",                block_qregistry),

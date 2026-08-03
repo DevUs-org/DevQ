@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 65 sanity blocks in `run_tests.py`, covering
+Specification for the 66 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 65 blocks, one line each
+python run_tests.py              # all 66 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -925,6 +925,39 @@ caught it. The check now reads `shell._global_config` and the device
 context's config directly, and asserts both directions: a device key is
 absent from the global scope, and a global key is absent from the device
 scope.
+
+### `schema_ctor_injection`
+
+*Plugin `CONFIG_SCHEMA` keys inject into scheduler, allocator and router
+ctors.*
+
+Where `plugin_config_keys` proves a declared key **cascades and shows in
+qconfig**, this block proves the other half: a declared key whose value
+the component wants at construction time is **passed to `__init__`**. The
+same generic mechanism (`_schema_kwargs`) drives all three component
+build paths, so the block registers one injecting plugin of each kind,
+selects them via config with non-default values, builds, and reads the
+constructed instances back:
+
+| kind | declared key | ctor parameter | asserted |
+|---|---|---|---|
+| scheduler | `inj.eta` | `inj___eta` | value `0.75` arrived |
+| allocator | `alloc.qubit_error_weight` | `alloc___qubit_error_weight` | value `4.0` arrived in its OWN slot |
+| router | `rtr.bias` | `rtr___bias` | value `9.0` arrived |
+
+The dotted key becomes a parameter name by rewriting the prefix dot to
+`___` (`inj.eta` → `inj___eta`), **preserving the prefix**. The allocator
+case is the reason: it declares `alloc.qubit_error_weight`, a name it
+shares with a DevQ **core** weight, but for its own distinct quantity.
+Because the prefix is kept, the core weight (parameter
+`qubit_error_weight`) and the plugin's key (parameter
+`alloc___qubit_error_weight`) land in **separate slots** — the block
+asserts the plugin value is `4.0` **and** that the core weight is not
+`4.0`, i.e. neither overwrote the other. A strip-the-prefix scheme would
+have collapsed both onto one parameter.
+
+Finally asserts the flattened `___` form is **internal**: `qconfig` shows
+only the dotted keys, never the parameter form.
 
 ### `plugin_normalise_group`
 
