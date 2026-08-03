@@ -90,9 +90,9 @@ per-job `execution_time` and `turnaround` fields that share those roots.
 **Execution throughput** — jobs that completed without rejection, over
 the span in which devices were actively working:
 
-$$\text{execution\_throughput} = \frac{|\text{completed, not rejected}|}{t_{\text{exec}}}$$
+$$\text{execution}\_\text{throughput} = \frac{|\text{completed, not rejected}|}{t_{\text{exec}}}$$
 
-$$t_{\text{exec}} = \max_j(\text{resolved\_at}_j) - \min_j(\text{dispatched\_at}_j)$$
+$$t_{\text{exec}} = \max_j(\text{resolved}\_\text{at}_j) - \min_j(\text{dispatched}\_\text{at}_j)$$
 
 both extrema taken over dispatched jobs. This is the internally coherent
 figure: numerator and both span endpoints range over the same
@@ -102,9 +102,9 @@ job dispatched.
 **Turnaround throughput** — all submitted jobs, over the span from the
 first submission to the last resolution:
 
-$$\text{turnaround\_throughput} = \frac{|\text{all submitted}|}{t_{\text{turn}}}$$
+$$\text{turnaround}\_\text{throughput} = \frac{|\text{all submitted}|}{t_{\text{turn}}}$$
 
-$$t_{\text{turn}} = \max_j(\text{resolved\_at}_j) - \min_j(\text{submitted\_at}_j)$$
+$$t_{\text{turn}} = \max_j(\text{resolved}\_\text{at}_j) - \min_j(\text{submitted}\_\text{at}_j)$$
 
 This answers "how fast did the whole batch clear," queue wait included.
 The span start, `min(submitted_at)`, exists for every job; the end,
@@ -126,7 +126,7 @@ Input: `summary` per-job rows only.
 Per job, the pure queue wait before running — the time spent enqueued
 before dispatch:
 
-$$\text{queue\_latency}_j = \text{dispatched\_at}_j - \text{submitted\_at}_j$$
+$$\text{queue}\_\text{latency}_j = \text{dispatched}\_\text{at}_j - \text{submitted}\_\text{at}_j$$
 
 This is the `queue_latency` field already present in the per-job summary,
 so the metric is aggregation, not re-derivation. It is the wait *before*
@@ -189,7 +189,7 @@ nothing.
 Both fractions are taken against one **shared run window**, the
 execution-span
 
-$$t_{\text{exec}} = \max_j(\text{resolved\_at}_j) - \min_j(\text{dispatched\_at}_j)$$
+$$t_{\text{exec}} = \max_j(\text{resolved}\_\text{at}_j) - \min_j(\text{dispatched}\_\text{at}_j)$$
 
 over all dispatched jobs — the same span as execution throughput. The
 pre-dispatch queue period is excluded because no device could have been
@@ -200,7 +200,7 @@ story, whereas the shared window keeps per-device fractions comparable to
 each other and to the system figure. The device-specific part lives in
 the numerator (a device's own intervals); the denominator is shared.
 
-$$\text{util}(d) = \frac{\bigcup_{j \text{ on } d} [\text{dispatched\_at}_j, \text{resolved\_at}_j)}{t_{\text{exec}}}$$
+$$\text{util}(d) = \frac{\bigcup_{j \text{ on } d} [\text{dispatched}\_\text{at}_j, \text{resolved}\_\text{at}_j)}{t_{\text{exec}}}$$
 
 The system-wide figure is total union-busy across all devices over the
 window times the number of devices that ran work:
@@ -231,7 +231,7 @@ Input: `summary` per-job rows only.
 
 The fraction of submitted jobs the system terminally **refused**:
 
-$$\text{rejection\_rate} = \frac{|\text{REJECTED}|}{|\text{all submitted}|}$$
+$$\text{rejection}\_\text{rate} = \frac{|\text{REJECTED}|}{|\text{all submitted}|}$$
 
 reported with its raw counts:
 
@@ -300,7 +300,7 @@ Each basis carries the per-device distribution (idle devices at `0`), the
 spread as a **population coefficient of variation**, and a convenience
 reading:
 
-$$\text{cv} = \frac{\sigma}{\mu}, \qquad \text{load\_balance} = \frac{1}{1 + \text{cv}}$$
+$$\text{cv} = \frac{\sigma}{\mu}, \qquad \text{load}\_\text{balance} = \frac{1}{1 + \text{cv}}$$
 
 where $\sigma$ is the **population** standard deviation (denominator $n$,
 not $n-1$: we measure the actual device set, not a sample from a larger
