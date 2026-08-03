@@ -465,6 +465,38 @@ decision — and that a "best weight" is workload- and metric-relative, not
 absolute. **🛠️ Developers**: understand how robust your chosen allocator or
 router weights are before you rely on them.
 
+### 5.6 — Baseline plugins (NAQJS)
+**What it is.** The first published baseline from the literature, built as a
+DevQ plugin so a comparison reads as "DevQ vs the literature" rather than
+"DevQ vs a strawman". NAQJS ([`REFERENCES.md`](REFERENCES.md)) is a scored
+*scheduler* — it ranks the queue by a weighted sum of circuit width, shot
+count and submission order, then packs up to an η·N cap.
+
+**How it works in the core.** NAQJS lives under `research/`, built through
+the documented plugin API: `BaseScheduler` + the `Sweepable` hooks + a
+namespaced `CONFIG_SCHEMA` (`naqjs.width_weight`, `naqjs.shots_weight`,
+`naqjs.seq_weight`, `naqjs.eta`, `naqjs.default_shots`). Landing it exercised
+the `schedule` scoring seam for the first time and completed the sweep's
+scheduler axis. It also drove the one deliberate core edit of the phase:
+`dq.build` now injects a scheduler's dotted config keys into its constructor
+generically (previously scheduler config never reached the constructor — only
+the sweep set the weights), so future scheduler plugins wire through with no
+core change. Two comparison scripts benchmark NAQJS against the default
+Packing scheduler — one on a minimal workload, one on the full QASMBench
+small suite across four IBM fake backends — each ranking the two on the
+metrics and sweeping NAQJS's three-weight simplex.
+
+**🔬 Researchers**: the comparison **mode** itself was validated with a
+low-vs-high-contention contrast — the same harness reports a tie when
+scheduling cannot matter (little contention, order barely affects
+completion) and a scheduler-attributable divergence when it can (wide jobs
+serialised on one device). The honest corollary, surfaced rather than hidden:
+single-run wall-clock throughput is noise-dominated, so a defensible
+performance number needs mean ± noise floor over N runs. **🛠️ Developers**:
+NAQJS is the worked example for writing your own scored scheduler plugin —
+see [`EXTENDING.md`](EXTENDING.md). **🎓 Learners**: a concrete instance of a
+"noise-aware" scheduling policy you can read, run, and sweep.
+
 ### Phase 5 in one sentence
 Write an allocator against `BaseAllocator`, a router against `BaseRouter`,
 or a scheduler against `BaseScheduler`; register it with one line; benchmark
@@ -498,9 +530,11 @@ orchestration layer beneath your circuits is verified, not merely written.
 Documented here so the boundary between what exists and what is coming is
 never ambiguous:
 
-- **Phase 5.6 — baseline plugins**: published policies (NAQJS as the first
-  scored scheduler, QOS as a router, Mapomatic as an allocator) built as
-  DevQ plugins, so a comparison reads as "DevQ vs the literature".
+- **Phase 5.6 — baseline plugins (continued)**: NAQJS (scored scheduler)
+  has shipped; still to come are QOS as a router baseline and Mapomatic as
+  an allocator baseline, completing the "DevQ vs the literature" comparison
+  set. Both will extend the generic schema→constructor wiring the scheduler
+  axis introduced to the router and allocator build paths.
 - **Phase 5.7 — `qbench`**: an interactive benchmarking sub-shell over the
   metrics and comparison layers.
 - **Phase 5.8 — real hardware**: absolute fidelity, T1, and temporal drift

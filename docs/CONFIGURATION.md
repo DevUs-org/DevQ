@@ -38,6 +38,13 @@ reports device-level resolution) and is resolved at dispatch as
 `shots`, because shot count is a per-circuit statistical requirement rather
 than device policy; `scheduler` and `allocator` have no per-job form.
 
+A registered plugin may contribute further **device-scope** keys of its
+own, declared in its `CONFIG_SCHEMA` and namespaced with a dot
+(`naqjs.eta`, `naqjs.default_shots`). They cascade through the same four
+levels, validate against the plugin's own rules, and appear in `qconfig`
+alongside the core keys — see [`REGISTRY.md`](REGISTRY.md) for declaring
+them and how a scheduler's keys are injected into its constructor.
+
 **Global keys** (`router`, `router_queue_weight`, `router_noise_weight`)
 are resolved once for the whole system: core defaults ← global user file.
 Providers deliberately **cannot** set global keys — a provider expressing

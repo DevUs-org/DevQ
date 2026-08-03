@@ -141,6 +141,16 @@ misbehaviour:
   next job be handed the same qubits (a silent double-booking).
 
 **New scheduler** — subclass `BaseScheduler`, implement `schedule()`.
+Tunable knobs of your own go in a namespaced `CONFIG_SCHEMA` (see
+[`REGISTRY.md`](REGISTRY.md)); for a scheduler, DevQ additionally *injects*
+each schema key whose un-prefixed name matches an `__init__` parameter,
+passing the resolved cascaded value in (`naqjs.eta` → `eta=`). Name the
+parameter to receive the value at construction, or omit it and read the
+resolved config at runtime — a declared key is cascaded, validated, and
+shown in `qconfig` either way. The NAQJS baseline
+(`research/baselines/naqjs_scheduler.py`) is a worked example: five dotted
+keys, the three swept weights reported through `live_params()`, the fixed
+inputs (`naqjs.eta`, `naqjs.default_shots`) kept out of it.
 
 **New router** — subclass `BaseRouter`, implement
 `select(qcb, candidates) → DeviceContext`. Candidates arrive already

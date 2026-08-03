@@ -236,17 +236,33 @@ above once Phase 5 ships:
   mapping, an inverted bisection) sharpened the tests.
 - **5.6 — baseline plugins** 🚧 published baselines to compare against;
   this is what turns the platform into a result. **NAQJS (the first scored
-  scheduler, `[NAQJS]`) has landed** as a `research/` plugin built entirely
-  through the documented API with no core edits — proving the plugin path
-  end-to-end, including the never-before-exercised `schedule` scoring seam.
-  A comparison script (`research/naqjs_comparison.py`) benchmarks it against
-  the default Packing scheduler and sweeps its three-weight simplex. Building
-  it completed the sweep infrastructure for the *scheduler* axis (5.5c had
-  wired only router/allocator): the `_AXES` scheduler entry, `live_params`-
-  derived weight keys, plugin reconstruction via an explicit class map, and
-  batch-event dedup — all generic, all core, all covered and mutation-tested.
+  scheduler, `[NAQJS]`) has landed** as a `research/` plugin, proving the
+  plugin path end-to-end, including the never-before-exercised `schedule`
+  scoring seam. Two comparison scripts benchmark it against the default
+  Packing scheduler and sweep its three-weight simplex:
+  `research/naqjs_comparison.py` (the minimal `naqjs.json` workload) and
+  `research/naqjs_qasmbench_comparison.py` (the full QASMBench small suite
+  across four IBM fake backends). Building the scheduler axis completed the
+  sweep infrastructure 5.5c had wired only for router/allocator: the `_AXES`
+  scheduler entry, `live_params`-derived weight keys, plugin reconstruction
+  via an explicit class map, and batch-event dedup — all generic, all core,
+  all covered and mutation-tested. Running NAQJS on QASMBench also required
+  two corrections to the plugin path itself: a shots-feature fallback for
+  jobs that specify no shots (`_resolve_shots`, with a new `naqjs.default_shots`
+  key), and — the one deliberate **core edit** in this phase — generic
+  wiring in `dq.build` that injects a scheduler's dotted `CONFIG_SCHEMA` keys
+  into its constructor (previously scheduler config never reached the
+  constructor at all; only the sweep set the weights). The comparison **mode**
+  was validated with a low-vs-high-contention contrast (`qasmbench_small.json`
+  vs `qasmbench_contended.json`): identical machinery reports a tie when
+  scheduling cannot matter and a measurable, scheduler-attributable divergence
+  when it can — with the honest finding that single-run wall-clock throughput
+  is noise-dominated and needs mean ± noise floor over N runs for a defensible
+  performance number.
   Still to come: QOS (router) and Mapomatic (allocator) baselines for the
-  full "DevQ vs QOS" story.
+  full "DevQ vs QOS" story. Both will want the same generic schema→constructor
+  wiring the scheduler axis just got, in the router (`_build_router`) and
+  allocator build paths.
 - **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer,
   folding in the comparison modes.
 - **5.8 — real hardware** 🔭 gated on credits and access.

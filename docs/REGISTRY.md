@@ -176,15 +176,30 @@ whose `select()` has the wrong signature, because it inherits a valid
 
 | Kind | `__init__` receives |
 |---|---|
-| scheduler | `(memory_manager, process_table)` positionally |
+| scheduler | `(memory_manager, process_table)` positionally, plus any `CONFIG_SCHEMA` key whose un-prefixed name matches a constructor parameter (see below) |
 | allocator | `qubit_error_weight=`, `edge_error_weight=` |
 | router | `router_queue_weight=`, `router_noise_weight=`, `qubit_error_weight=`, `edge_error_weight=` |
 | provider | `seed=` |
 
-Inheriting the base `__init__` satisfies all of these. If you define
-your own, accept the same parameters — DevQ constructs every component
-itself, so there is no instance escape hatch. Extra knobs of your own go
-in namespaced config keys, which cascade and appear in `qconfig`.
+Inheriting the base `__init__` satisfies the positional/core parameters.
+If you define your own, accept the same ones — DevQ constructs every
+component itself, so there is no instance escape hatch.
+
+For a **scheduler**, extra knobs you declare in `CONFIG_SCHEMA` are also
+injected as constructor keyword arguments: DevQ strips the namespace
+prefix to recover the parameter name (`naqjs.eta` → `eta=`) and passes the
+resolved, cascaded value in. Declaring a schema key does **not** oblige
+your constructor to accept it — DevQ passes only the subset of your schema
+keys whose un-prefixed names match actual `__init__` parameters (checked
+with `inspect.signature`). A key your constructor does not name is still
+cascaded, validated, and shown in `qconfig`; you simply read it at runtime
+instead of receiving it at construction. So the two styles compose: name a
+parameter to have the value injected (the NAQJS baseline does this for its
+weights and `eta`), or omit it and consult the resolved config yourself.
+This wiring is generic — a new scheduler plugin's keys flow through with no
+change to DevQ. (Allocator and router knobs are still passed by the core
+paths above; a plugin allocator or router with its own keys reads them at
+runtime for now.)
 
 ---
 

@@ -74,5 +74,23 @@ arbitrate and no override warning. A caller who wants a seed the spec
 does not name constructs the provider themselves and attaches its device
 with `add_device()` instead.
 
+### Research workloads (`research/workloads/`)
+
+Separate from the shipped `benchmark/workloads/` fixtures above, the
+`research/` package carries its own specs for the paper's baseline
+comparisons. They are **not** test fixtures — `run_tests.py` never
+enumerates `research/`, so they are exercised only by their own research
+tooling, and their numbers depend on the pinned calibration snapshot.
+They name the `ibm.simulated` provider (not a DevQ built-in), so the
+research runners register it the same way shown above.
+
+| Spec | What it exercises |
+|---|---|
+| `naqjs.json` | The minimal NAQJS scheduler workload — one `devq.simulated` device, three toy jobs with explicit shots. The fixture behind `research/naqjs_comparison.py`. |
+| `qasmbench_small.json` | The full QASMBench small suite (43 circuits) across four IBM fake backends. Behind `research/naqjs_qasmbench_comparison.py` and `research/run_qasmbench_small.py`. Jobs specify no shots, so a scored scheduler's shots feature falls back to its plugin default or a neutral tie. |
+| `qasmbench_contended.json` | Ten wide (4–5q) QASMBench jobs on a single 7-qubit device, so pairs cannot co-reside and jobs serialise — dispatch order determines completion. The high-contention half of the comparison-mode validation: it is the workload where scheduling has leverage, the contrast against the low-contention `qasmbench_small.json` run. |
+
+
+
 Full schema, seed resolution and the strictness rules:
 [`EVENT_LOG.md`](EVENT_LOG.md).
