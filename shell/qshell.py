@@ -617,6 +617,17 @@ class QShell(cmd.Cmd):
                     val    = self._global_config.get(key, "")
                     source = self._global_provenance.get(key, "")
                     print(f"  {key:<12} =  {str(val):<14}  source: {source}")
+                # Global-scope keys contributed by registered plugins (a
+                # router's own tunables). Namespaced, so they sort under
+                # their owner's prefix and can never collide with a core
+                # key — the same treatment the per-device section gives
+                # device-scope plugin keys below.
+                for key in sorted(self._global_config):
+                    if "." not in key:
+                        continue
+                    val    = self._global_config.get(key, "")
+                    source = self._global_provenance.get(key, "")
+                    print(f"  {key:<12} =  {str(val):<14}  source: {source}")
                 print()
 
             for ctx in contexts:
