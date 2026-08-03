@@ -227,12 +227,15 @@ devq.start()
 
 With `{"allocator": "mine", "mine.window": 12}` in the config file, the
 allocator is constructed per device and its key rides the full cascade.
-(A **scheduler** goes one step further: a schema key whose un-prefixed name
-matches an `__init__` parameter is injected as a constructor argument, so
-`naqjs.eta` reaches the scheduler as `eta=`. Allocator and router keys are
-read from the resolved config at runtime, not injected — see
-[`docs/REGISTRY.md`](docs/REGISTRY.md). Unifying that is on the QOS/Mapomatic
-list.)
+(Any schema key whose parameter name matches an `__init__` parameter is
+injected as a constructor argument, uniformly for **scheduler, allocator,
+and router**. The dotted key becomes the parameter name by rewriting the
+namespace dot to `___`, prefix kept, so `naqjs.eta` reaches the scheduler
+as `naqjs___eta=` — and a plugin key reusing a core name, e.g.
+`mine.qubit_error_weight` → `mine___qubit_error_weight`, stays distinct
+from the core `qubit_error_weight`. A key the constructor does not name is
+still cascaded and read from the resolved config at runtime. See
+[`docs/REGISTRY.md`](docs/REGISTRY.md).)
 
 **Do not edit DevQ core to add a component.** There is no map to append
 to. If a change to `registry/registry.py` seems necessary to register

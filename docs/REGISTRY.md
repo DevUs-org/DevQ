@@ -176,30 +176,38 @@ whose `select()` has the wrong signature, because it inherits a valid
 
 | Kind | `__init__` receives |
 |---|---|
-| scheduler | `(memory_manager, process_table)` positionally, plus any `CONFIG_SCHEMA` key whose un-prefixed name matches a constructor parameter (see below) |
-| allocator | `qubit_error_weight=`, `edge_error_weight=` |
-| router | `router_queue_weight=`, `router_noise_weight=`, `qubit_error_weight=`, `edge_error_weight=` |
+| scheduler | `(memory_manager, process_table)` positionally, plus any `CONFIG_SCHEMA` key whose parameter name matches a constructor parameter (see below) |
+| allocator | `qubit_error_weight=`, `edge_error_weight=`, plus matching `CONFIG_SCHEMA` keys |
+| router | `router_queue_weight=`, `router_noise_weight=`, `qubit_error_weight=`, `edge_error_weight=`, plus matching `CONFIG_SCHEMA` keys |
 | provider | `seed=` |
 
 Inheriting the base `__init__` satisfies the positional/core parameters.
 If you define your own, accept the same ones — DevQ constructs every
 component itself, so there is no instance escape hatch.
 
-For a **scheduler**, extra knobs you declare in `CONFIG_SCHEMA` are also
-injected as constructor keyword arguments: DevQ strips the namespace
-prefix to recover the parameter name (`naqjs.eta` → `eta=`) and passes the
-resolved, cascaded value in. Declaring a schema key does **not** oblige
-your constructor to accept it — DevQ passes only the subset of your schema
-keys whose un-prefixed names match actual `__init__` parameters (checked
-with `inspect.signature`). A key your constructor does not name is still
+For a **scheduler, allocator, or router**, extra knobs you declare in
+`CONFIG_SCHEMA` are also injected as constructor keyword arguments — the
+same generic mechanism for all three. DevQ rewrites the dotted key to a
+parameter name by replacing the namespace dot with `___`, **keeping the
+prefix**: `naqjs.eta` → `naqjs___eta=`. It passes the resolved, cascaded
+value in. Declaring a schema key does **not** oblige your constructor to
+accept it — DevQ passes only the subset of your schema keys whose
+parameter names match actual `__init__` parameters (checked with
+`inspect.signature`). A key your constructor does not name is still
 cascaded, validated, and shown in `qconfig`; you simply read it at runtime
 instead of receiving it at construction. So the two styles compose: name a
 parameter to have the value injected (the NAQJS baseline does this for its
 weights and `eta`), or omit it and consult the resolved config yourself.
-This wiring is generic — a new scheduler plugin's keys flow through with no
-change to DevQ. (Allocator and router knobs are still passed by the core
-paths above; a plugin allocator or router with its own keys reads them at
-runtime for now.)
+
+Preserving the prefix (rather than stripping it to a bare name) means a
+plugin key may **reuse a core name** for its own distinct quantity:
+declare `myalloc.qubit_error_weight` and name the parameter
+`myalloc___qubit_error_weight`, and it arrives separately from the core
+`qubit_error_weight` — both reach the constructor, neither overwrites the
+other. This is why prefixes and keys may not contain `___`, or start or
+end with `_`: those rules keep the dot↔`___` rewrite unambiguous. The
+`___` form appears **only** in your `__init__` signature; every
+user-facing surface (`qconfig`, logs, provenance) shows the dotted key.
 
 ---
 
@@ -231,6 +239,13 @@ Plugin keys must be `prefix.key` — `qos.batch_window`, not
 stops two independent plugins colliding on a name like `window`, keeps
 `qconfig` readable, and makes the plugin boundary visible in published
 benchmark artifacts.
+
+Two further rules keep the constructor-parameter rewrite (above)
+unambiguous: neither the prefix nor the key may contain `___` (three
+underscores, the reserved namespace/parameter separator), and neither may
+start or end with a single `_`. Single underscores **inside** a name are
+fine (`batch_window`, `q_o_s`). A key breaking either rule is rejected at
+registration.
 
 A namespaced key is not privileged for being namespaced: it is a legal
 config key only once its owner is registered. Before that, it is an

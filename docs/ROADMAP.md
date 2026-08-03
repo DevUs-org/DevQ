@@ -263,9 +263,13 @@ above once Phase 5 ships:
   is noise-dominated and needs mean ± noise floor over N runs for a defensible
   performance number.
   Still to come: QOS (router) and Mapomatic (allocator) baselines for the
-  full "DevQ vs QOS" story. Both will want the same generic schema→constructor
-  wiring the scheduler axis just got, in the router (`_build_router`) and
-  allocator build paths.
+  full "DevQ vs QOS" story. The generic schema→constructor wiring the
+  scheduler axis introduced has since been **unified across all three build
+  paths** (scheduler, allocator, and router now inject their `CONFIG_SCHEMA`
+  keys through one shared mechanism, `_schema_kwargs`), with the parameter
+  name derived by rewriting the namespace dot to `___` so a plugin key may
+  reuse a core name without collision — so those baselines need no further
+  core wiring, only the plugin classes themselves.
 - **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer,
   folding in the comparison modes.
 - **5.8 — real hardware** 🔭 gated on credits and access.

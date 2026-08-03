@@ -142,15 +142,20 @@ misbehaviour:
 
 **New scheduler** — subclass `BaseScheduler`, implement `schedule()`.
 Tunable knobs of your own go in a namespaced `CONFIG_SCHEMA` (see
-[`REGISTRY.md`](REGISTRY.md)); for a scheduler, DevQ additionally *injects*
-each schema key whose un-prefixed name matches an `__init__` parameter,
-passing the resolved cascaded value in (`naqjs.eta` → `eta=`). Name the
-parameter to receive the value at construction, or omit it and read the
-resolved config at runtime — a declared key is cascaded, validated, and
-shown in `qconfig` either way. The NAQJS baseline
-(`research/baselines/naqjs_scheduler.py`) is a worked example: five dotted
-keys, the three swept weights reported through `live_params()`, the fixed
-inputs (`naqjs.eta`, `naqjs.default_shots`) kept out of it.
+[`REGISTRY.md`](REGISTRY.md)); for a scheduler, allocator, or router DevQ
+additionally *injects* each schema key whose parameter name matches an
+`__init__` parameter, passing the resolved cascaded value in. The dotted
+key becomes the parameter name by rewriting the namespace dot to `___`,
+prefix kept (`naqjs.eta` → `naqjs___eta=`). Name the parameter to receive
+the value at construction, or omit it and read the resolved config at
+runtime — a declared key is cascaded, validated, and shown in `qconfig`
+either way. Keeping the prefix lets a plugin key safely reuse a core name
+for its own quantity (`myalloc.qubit_error_weight` →
+`myalloc___qubit_error_weight`, distinct from core `qubit_error_weight`).
+The NAQJS baseline (`research/baselines/naqjs_scheduler.py`) is a worked
+example: five dotted keys, the three swept weights reported through
+`live_params()`, the fixed inputs (`naqjs.eta`, `naqjs.default_shots`)
+kept out of it.
 
 **New router** — subclass `BaseRouter`, implement
 `select(qcb, candidates) → DeviceContext`. Candidates arrive already
@@ -163,9 +168,10 @@ constraints excluded) or any non-candidate value raises `RouterContractError`.
 `parse(source) → CircuitRep`, and declare `EXTENSIONS` (lowercase, dotted)
 for the source files it reads. A frontend takes **no constructor
 arguments**: it is a stateless source-to-`CircuitRep` reader, so unlike
-the other kinds DevQ injects nothing at construction. A knob, if one is
-ever needed, is a namespaced `CONFIG_SCHEMA` key (the router precedent),
-never a constructor argument.
+scheduler, allocator, and router — into which DevQ injects matching
+`CONFIG_SCHEMA` keys — a frontend receives nothing at construction. A
+knob, if one is ever needed, is a namespaced `CONFIG_SCHEMA` key read at
+runtime, never a constructor argument.
 
 A frontend is **dispatched, not selected**. There is no `frontend` config
 key naming one winner the way `router` or `scheduler` does. Every

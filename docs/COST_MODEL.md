@@ -233,9 +233,10 @@ own declares them in `CONFIG_SCHEMA` under dotted `<prefix>.<key>` names
 the dot keeps qconfig readable and the plugin boundary visible in published
 artifacts. These keys cascade and validate exactly like core keys. `dq.build`
 feeds them into the scheduler by reading the class's `CONFIG_SCHEMA`,
-stripping the namespace prefix to recover the ctor parameter name
-(`naqjs.eta` → `eta`), and passing the resolved values as kwargs — generic
-across any scheduler plugin, so a new baseline needs no core edit. Declaring
+rewriting each dotted key to its ctor parameter name — the namespace dot
+becomes `___`, prefix kept (`naqjs.eta` → `naqjs___eta`) — and passing the
+resolved values as kwargs. This is generic across scheduler, allocator and
+router plugins alike, so a new baseline needs no core edit. Declaring
 a schema key does *not* oblige the ctor to accept it: a component may consume
 a key at runtime instead of by injection, so `dq.build` passes only the
 subset of schema keys the ctor actually names as parameters (checked with
