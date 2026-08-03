@@ -174,7 +174,9 @@ Registering a component makes its name a legal value of the corresponding
 config key immediately — `{"scheduler": "mine"}` — because the set of legal
 values is read from the registry rather than from a fixed list. A component
 may also declare its own namespaced config keys (`mine.batch_window`), which
-then cascade, validate and appear in `qconfig` exactly like core keys.
+then cascade, validate and appear in `qconfig` exactly like core keys; for a
+scheduler, keys whose name matches a constructor parameter are also injected
+at construction (see [`docs/REGISTRY.md`](docs/REGISTRY.md)).
 
 Contracts are checked **at registration**, not when the component is
 eventually constructed: the ABC, the constructor signature DevQ will call,
