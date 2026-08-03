@@ -29,12 +29,14 @@ Available backends (examples):
     FakeMumbaiV2    —    27 qubits
 
 Usage:
-    from hardware.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
-    from hardware.device_loader import load_device
+    from devq import DevQ
+    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
-    device = load_device(IBMSimulatedProvider().get_device("FakeSherbrooke"))
-    kernel = Kernel(device)
-    shell  = QShell(kernel)
+    ibm = IBMSimulatedProvider(seed=42)
+    DevQ() \
+        .register_provider("ibm.simulated", IBMSimulatedProvider) \
+        .add_device(ibm.get_device("FakeSherbrooke")) \
+        .start()
 '''
 
 from providers.base_provider import BaseProvider

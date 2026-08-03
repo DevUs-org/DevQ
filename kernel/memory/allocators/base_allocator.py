@@ -4,8 +4,9 @@ Tags: Main
 BaseAllocator — Abstract base class for all qubit allocators.
 
 Defines the allocation contract that MemoryManager and the schedulers
-depend on. Any allocator (built-in or third-party, e.g. via qbench)
-must implement allocate() with this exact signature.
+depend on. Any allocator (built-in or third-party, registered via
+devq.register_allocator(); see docs/REGISTRY.md) must implement
+allocate() with this exact signature.
 
 Constructor: every allocator is built with the device's resolved cost
 weights (qubit_error_weight, edge_error_weight), normalised to sum to 1.

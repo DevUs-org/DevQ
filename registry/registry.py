@@ -3,7 +3,8 @@ Tags: Main
 
 Registry — DevQ's name -> component resolution and extensibility surface.
 
-Every pluggable part of DevQ (scheduler, allocator, router, provider) is
+Every pluggable part of DevQ (scheduler, allocator, router, provider,
+frontend) is
 referred to elsewhere in the system by a short string: in config files
 ("scheduler": "packing"), in benchmark workload specs ("provider":
 "ibm.simulated"), and in qconfig output. The Registry is the single place that
@@ -59,9 +60,9 @@ been caught here. Registration performs:
                   exist, have at least two members, and agree with the
                   normalise_group recorded on each member KeySpec.
 
-CLASSES ONLY. Every component — scheduler, allocator, router, provider —
-is registered as a CLASS. There is one rule and no exceptions to
-remember: register the type, construct what you attach.
+CLASSES ONLY. Every component — scheduler, allocator, router, provider,
+frontend — is registered as a CLASS. There is one rule and no exceptions
+to remember: register the type, construct what you attach.
 
 The uniformity is recent. Routers and providers once accepted a
 ready-made instance, on the reasoning that a user might need to pass

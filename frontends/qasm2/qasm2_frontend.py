@@ -9,10 +9,11 @@ with no third-party dependency: qregistry shows one `frontend` entry and
 
 Parses source with the full 2.0 parser in frontends/qasm2/ — a real
 tokenizer, an expression evaluator that keeps gate parameters, and
-recursive custom-gate inlining. It records measure and reset in
-CircuitRep's separate channels (not the gate list), so what the
-providers execute is unchanged until a later execution-path phase teaches
-them to honour those channels.
+recursive custom-gate inlining. It records measure and reset inline in
+CircuitRep's single ordered instruction stream, in source position; both
+providers honour them at execution (explicit measures, and `reset` at its
+source position), so a circuit's measurement and reset semantics are
+executed, not just parsed.
 '''
 
 from ..base_frontend import BaseFrontend

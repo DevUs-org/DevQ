@@ -3,8 +3,11 @@ Tags: Main
 
 MemoryManager — Manages qubit allocation and deallocation.
 
-The allocator is injected at construction time via the DevQ config system.
-Swap allocators by passing a different instance — no other changes needed.
+The allocator CLASS named by the `allocator` config key is constructed
+once per device (with that device's resolved cost weights) and injected
+here — components are registered as classes, never instances, so
+per-device state never leaks across devices. Swap allocators via the
+`allocator` config key; no code change needed. See docs/REGISTRY.md.
 
 Also the classification entry point for allocation failures:
 unsatisfiable_reason() asks the active allocator whether a job could

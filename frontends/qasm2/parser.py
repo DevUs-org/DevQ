@@ -15,8 +15,9 @@ did not:
     global qubit 2;
   - inlines custom `gate` definitions RECURSIVELY, substituting both
     parameters and qubit arguments;
-  - records measure and reset as first-class instructions — but in
-    CircuitRep's separate channels, never in the gate list (see
+  - records measure and reset as first-class instructions, inline in
+    CircuitRep's single ordered `instructions` stream in source position
+    (so a `reset` keeps its place relative to the gates around it — see
     CircuitRep's module docstring);
   - parses `if (creg==N)` and REJECTS it with a precise reason: a
     conditional needs mid-circuit measurement feedback the execution

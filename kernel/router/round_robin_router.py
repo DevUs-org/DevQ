@@ -5,9 +5,9 @@ RoundRobinRouter — Load-oblivious, noise-oblivious baseline router.
 
 Cycles through the attached devices in index order, routing each job
 to the next feasible device after the last one used. Useful as a
-debugging tool, a fairness baseline, and a qbench comparison point
-against the NoiseRouter — exactly the role Static/FCFS play at the
-allocator/scheduler layers.
+debugging tool, a fairness baseline, and a comparison point against the
+NoiseRouter (via the benchmark runner today, a future qbench shell later)
+— exactly the role Static/FCFS play at the allocator/scheduler layers.
 
 The feasibility pipeline (device constraints + per-device feasible())
 is inherited from BaseRouter, so a round-robin turn never lands a job

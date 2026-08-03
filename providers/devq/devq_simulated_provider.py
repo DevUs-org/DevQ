@@ -9,12 +9,11 @@ execute() returns mocked results to verify allocation and scheduling
 behaviour without any dependency on an external quantum framework.
 
 Usage:
+    from devq import DevQ
     from providers.devq.devq_simulated_provider import DevQSimulatedProvider
-    from hardware.device_loader import load_device
 
-    device = load_device(DevQSimulatedProvider().get_device("random", num_qubits=10))
-    kernel = Kernel(device)
-    shell  = QShell(kernel)
+    # DevQSimulatedProvider ships registered, so no register_provider needed.
+    DevQ(DevQSimulatedProvider().get_device("random", 10)).start()
 '''
 
 from providers.base_provider import BaseProvider

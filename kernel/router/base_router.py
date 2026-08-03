@@ -6,7 +6,7 @@ BaseRouter — Abstract base class for all device routers.
 Defines the routing contract the kernel depends on, mirroring the
 BaseAllocator / BaseScheduler pattern: routing policy is a pluggable,
 inspectable decision layer, swappable via config (and benchmarkable
-via qbench, Phase 5).
+through the benchmark runner today, or a future qbench shell, Phase 5.7).
 
 Contract:
     route(qcb, contexts) -> (DeviceContext, None) | (None, reason)
