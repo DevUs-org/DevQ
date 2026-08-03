@@ -3736,6 +3736,82 @@ def block_comparison():
           "without registry_map a research plugin cannot be reconstructed, so "
           "the sweep honestly refuses rather than faking a result")
 
+    # ── The anchor recovers weights by the component's OWN keys, not by a
+    #    "_weight" name convention ──────────────────────────────────────────
+    # Regression guard: a third-party scoring component may name its weight
+    # keys anything (qos.alpha, foo.lam, ...). The faithfulness anchor recovers
+    # the run's weights from live_params() keys, so a non-"_weight" name must
+    # still sweep faithfully. A prior implementation filtered recorded terms by
+    # k.endswith("_weight"), which returned an EMPTY anchor for such a
+    # component and broke replay — passing only by naming coincidence for the
+    # built-ins. This fixture's keys deliberately do NOT end in "_weight".
+    class OddKeyScheduler(BaseScheduler):
+        LABEL = "Odd Key Scheduler"
+
+        def __init__(self, memory_manager, process_table, alpha=1.0, beta=1.0):
+            super().__init__(memory_manager, process_table)
+            self.alpha, self.beta = alpha, beta
+
+        def schedule(self):
+            return []
+
+        def live_params(self):
+            # keys WITHOUT the "_weight" suffix — the whole point of the guard
+            return {"odd.alpha": self.alpha, "odd.beta": self.beta}
+
+        def _sweep_terms(self, decision):
+            return [(q, {"x": q, "y": 10 - q}) for q in decision]
+
+        def _sweep_score(self, terms, params):
+            return (terms["x"], terms["y"])
+
+        def _sweep_rank(self, scored, params):
+            xs = [r[0] for _, _, r in scored]
+            ys = [r[1] for _, _, r in scored]
+            def mm(vals):
+                lo, hi = min(vals), max(vals)
+                sp = hi - lo
+                return {v: (0.0 if sp == 0 else (v - lo) / sp) for v in set(vals)}
+            nx, ny = mm(xs), mm(ys)
+            # KeyError here if the anchor passed empty params — the exact
+            # failure mode the guard protects against.
+            a, b = params["odd.alpha"], params["odd.beta"]
+            out = []
+            for key, terms, raw in scored:
+                final = a * nx[raw[0]] + b * ny[raw[1]]
+                enriched = dict(terms, x_norm=nx[raw[0]], y_norm=ny[raw[1]],
+                                **{"odd.alpha": a, "odd.beta": b})
+                out.append((key, final, enriched))
+            return out
+
+    odd_dir = os.path.join(root, "test_results", "_odd_key_axis_fixture")
+    shutil.rmtree(odd_dir, ignore_errors=True)
+    os.makedirs(odd_dir)
+    with open(os.path.join(odd_dir, "manifest.json"), "w") as h:
+        json.dump({"sessions": [{
+            "session_id": "odd", "log": "odd.jsonl",
+            "config": {"scheduler": "odd_key", "allocator": "graph",
+                       "router": "noise"}}]}, h)
+    odd_scores = [{"job_id": j, "score": float(j),
+                   "terms": {"x": j, "y": 10 - j,
+                             "odd.alpha": 1.0, "odd.beta": 1.0}}
+                  for j in (1, 2, 3)]
+    with open(os.path.join(odd_dir, "odd.jsonl"), "w") as h:
+        for dispatched in (1, 2, 3):
+            h.write(json.dumps({"event": "schedule", "job_id": dispatched,
+                                "winner": dispatched,
+                                "scores": odd_scores}) + "\n")
+    odd_reg = {"scheduler": {"odd_key": OddKeyScheduler}}
+    odd_res = C.sweep(odd_dir, "odd", "scheduler", coarse_m=8,
+                      registry_map=odd_reg)
+    check(odd_res["faithful"] is True,
+          "the faithfulness anchor recovers weights by the component's own "
+          "live_params keys, so a scoring component whose keys do NOT end in "
+          "'_weight' still sweeps faithfully (regression guard for the anchor "
+          "key-recovery)")
+    check(odd_res.get("weight_keys") == ["odd.alpha", "odd.beta"],
+          "the odd-key scheduler's swept keys come from live_params verbatim")
+
     # ── Unknown axis is an error, not a silent empty result ───────────────
     raised = False
     try:

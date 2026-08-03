@@ -8,15 +8,17 @@ is pure — they read logs and the manifest and compute; they execute no
 circuits and touch no device:
 
   assemble_matrix(run_dir)  -> the comparison bundle, written comparison.json
-  sweep(run_dir, session, axis, grid, bisect) -> the weight-sweep result,
-                                                 written sweep_comp.<axis>.json
+  sweep(run_dir, session_id, axis, coarse_m=20, bisect=False, registry_map=None)
+        -> the weight-sweep result, written sweep_comp.<axis>.json
 
 The matrix bundle is the inter-component surface: one row per session, its
 config and its metrics, so the 5.5b modes can diff config A against config
 B without re-reading logs. The sweep is the intra-component surface: it
-re-derives one session's routing or allocation decisions across an α/β
-grid FROM THE RECORDED SCORES, so "how would this config route at other
-weights" is answered from one recorded run rather than by re-executing.
+re-derives one session's router, allocator, OR scheduler decisions across
+that component's weight-group simplex (the Scheffe {n, m} lattice; at n=2 the
+historical (alpha, 1-alpha) grid) FROM THE RECORDED SCORES, so "how would this
+config decide at other weights" is answered from one recorded run rather than
+by re-executing.
 
 Both write an artifact rather than only returning data: a sweep that a
 user ran and then disconnected from would otherwise be lost, and — like
@@ -105,9 +107,9 @@ def assemble_matrix(run_dir):
     assembles rather than failing, and the gap is visible.
 
     Each row also records which axes are sweepable in that session — a
-    scoring router/allocator leaves a scores-bearing event, a non-scoring
-    one does not — so a reader knows where an intra-component sweep is
-    available without opening the log.
+    scoring router, allocator, or scheduler leaves a scores-bearing event, a
+    non-scoring one does not — so a reader knows where an intra-component sweep
+    is available without opening the log.
     '''
     manifest = _load_json(os.path.join(run_dir, "manifest.json"))
     metrics  = _load_json(os.path.join(run_dir, "metrics.json"), default={})
@@ -150,14 +152,16 @@ def _sweepable_axes(log_path):
 def sweep(run_dir, session_id, axis, coarse_m=20, bisect=False,
           registry_map=None):
     '''
-    Re-derive one session's decisions on `axis` ("router" or "allocator")
-    across its weight-group simplex, from the recorded scores, and write
-    sweep_comp.<axis>.json beside the manifest. Returns the result dict.
+    Re-derive one session's decisions on `axis` ("router", "allocator", or
+    "scheduler") across its weight-group simplex, from the recorded scores, and
+    write sweep_comp.<axis>.json beside the manifest. Returns the result dict.
 
     The weight group of n terms lives on the Scheffe {n, m} simplex-lattice
     (Scheffe 1958; see _simplex_lattice and docs/REFERENCES.md). `coarse_m`
-    is the lattice resolution m: points = C(m+n-1, n-1). At n=2 (both scored
-    axes today) the lattice is the historical (alpha, 1-alpha) grid. bisect:
+    is the lattice resolution m: points = C(m+n-1, n-1). At n=2 (the router and
+    allocator, which sweep the shared qubit/edge pair) the lattice is the
+    historical (alpha, 1-alpha) grid; a scored scheduler's weight group may be
+    larger and its keys are derived from the component's live_params(). bisect:
     if true, localise each winner flip along the lattice EDGE that brackets
     it, by bisection (pure, same sweep hooks) to a small tolerance — exact
     where valid (an edge is a single-crossing 1-D interval), never along an
@@ -213,10 +217,15 @@ def sweep(run_dir, session_id, axis, coarse_m=20, bisect=False,
             f"{session_id!r}")
         return _write(_sweep_path(run_dir, axis), result)
 
-    # Faithfulness anchor: replay each decision at the weights the run
-    # actually used and require the recorded winner back. The run's weights
-    # are recorded in every score's terms (live_params of the component).
-    anchor_params = _recorded_params(decisions[0])
+    # Faithfulness anchor: replay each decision at the parameters the run
+    # actually used and require the recorded winner back. The run's params
+    # are recorded in every score's terms (live_params of the component), and
+    # are recovered by the component's OWN full live_params keys — the same
+    # authoritative set the swept keys derive from — never by a name
+    # convention. (The full set, not just the swept weight-group: e.g. the
+    # router sweeps qubit/edge but its scoring also reads the fixed
+    # queue/noise weights.)
+    anchor_params = _recorded_params(decisions[0], engine.live_params().keys())
     for d in decisions:
         replayed = engine.sweep_decision(d["recorded_terms"], anchor_params)
         if replayed != d["winner"]:
@@ -507,14 +516,23 @@ def _reconstruct(kind, session_id, run_dir, registry_map=None):
         return None
 
 
-def _recorded_params(decision):
+def _recorded_params(decision, param_keys):
     '''
-    The weights the run actually used, read from a decision's recorded
+    The parameters the run actually used, read from a decision's recorded
     terms — the component logged its live_params into every score's terms,
     so the anchor replays against exactly what ran.
+
+    `param_keys` is the component's FULL live_params() key set — every
+    parameter its scoring reads, not only the swept weight-group. The
+    router, for instance, sweeps the qubit/edge pair but its scoring also
+    reads the (held-fixed) queue/noise weights; the anchor must supply all
+    of them. Filtering by the component's OWN declared keys — rather than
+    by a "_weight" name convention — is what keeps the anchor correct for a
+    third-party scoring component whose keys are named otherwise
+    (e.g. qos.alpha): it agrees with live_params() exactly.
     '''
     _key, terms = decision["recorded_terms"][0]
-    return {k: v for k, v in terms.items() if k.endswith("_weight")}
+    return {k: terms[k] for k in param_keys if k in terms}
 
 
 def _simplex_lattice(n, m):
