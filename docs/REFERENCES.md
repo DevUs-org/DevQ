@@ -78,6 +78,38 @@ scale-invariance. It is the first scored *scheduler* (QOS, `[QOS]`, is a
 spatial which-QPU decision and so a *router* baseline). See
 [`COST_MODEL.md`](COST_MODEL.md) and [`ROADMAP.md`](ROADMAP.md).
 
+### [Mapomatic] — the first scored-allocator baseline
+Paul D. Nation and Matthew Treinish. "Suppressing quantum circuit errors
+due to system variability." *PRX Quantum* 4, 010327 (2023).
+doi:10.1103/PRXQuantum.4.010327. arXiv:2209.15512. (The layout-scoring
+tool proposed in this paper is named *mapomatic*.)
+- arXiv: https://arxiv.org/abs/2209.15512
+- DOI: https://doi.org/10.1103/PRXQuantum.4.010327
+- Reference implementation: https://github.com/qiskit-community/mapomatic
+  (formerly qiskit-partners/mapomatic) — Apache License 2.0 _(verify
+  before submission if any code is derived)_.
+
+Mapomatic is a post-compilation layout-selection routine: it enumerates
+the sub-graphs of a device topology onto which a compiled circuit can be
+placed (via VF2 subgraph isomorphism) and scores each layout by a
+heuristic built from the backend's calibration data, choosing the
+lowest-noise one. DevQ ports the **scoring heuristic** — the layout's
+estimated total error as one minus the product of the per-operation
+fidelities entering it, $S = 1 - \prod_x (1 - e_x)$ over readout,
+single-qubit-gate, and two-qubit-gate errors — as a *device-scope*
+allocator baseline (`research/baselines/mapomatic_allocator.py`), the
+first scored **allocator** baseline (NAQJS `[NAQJS]` is a scheduler; QOS
+`[QOS]` is a router). Faithfulness notes are recorded at the use-site: DevQ
+substitutes its own connected-block candidate generation for the paper's
+VF2 search, which coincide at DevQ's device/circuit scope; and Mapomatic's
+cost is a *fixed, parameter-free* product-of-fidelities, so — unlike DevQ's
+own tunable-weight `NoiseGraphAllocator` (cost $\alpha \cdot \Sigma q +
+\beta \cdot \Sigma e$) — it exposes no weights and is a non-scoring policy
+in the `Sweepable` sense. Comparing the two isolates the effect of the
+aggregation rule (multiplicative fidelity vs. additive weighted error) on
+the same calibration inputs. See [`COST_MODEL.md`](COST_MODEL.md) and
+[`ROADMAP.md`](ROADMAP.md).
+
 ### [Qiskit-HF] — the exact fidelity definition DevQ replicates
 Qiskit `quantum_info.hellinger_fidelity` — the Hellinger fidelity between
 two count distributions, ranging `[0, 1]`, higher-is-better.

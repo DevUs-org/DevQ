@@ -498,6 +498,42 @@ NAQJS is the worked example for writing your own scored scheduler plugin —
 see [`EXTENDING.md`](EXTENDING.md). **🎓 Learners**: a concrete instance of a
 "noise-aware" scheduling policy you can read, run, and sweep.
 
+### 5.6 — Baseline plugins (Mapomatic)
+**What it is.** The second published baseline, and the first for the
+*allocator* axis. Mapomatic ([`REFERENCES.md`](REFERENCES.md); Nation &
+Treinish, PRX Quantum 2023) is a calibration-aware layout chooser: it scores
+each placeable block by the product of its per-operation fidelities —
+$S = 1 - \prod(1-e)$ over readout, single-qubit-gate and two-qubit-gate
+errors — and picks the lowest. Where NAQJS is a scored *scheduler*, Mapomatic
+is a scored *allocator*, so together they cover two of DevQ's three plugin
+axes (QOS, the router baseline, is the third).
+
+**How it works in the core.** Mapomatic lives under `research/`, built
+through the documented plugin API — `BaseAllocator` + the shared filtering
+helpers + the device calibration accessors — with **zero core edits**. That
+zero is the point: it is the first plugin to land *after* the
+schema→constructor wiring was unified across all three build paths, so it
+confirms the allocator path needs no bespoke wiring, only the plugin class.
+Unlike NAQJS, Mapomatic is a *non-scoring* policy in the `Sweepable` sense:
+its product-of-fidelities cost is parameter-free, so it exposes no weight
+simplex and honestly implements none of the sweep hooks — the deliberate
+fixed-vs-tunable contrast with DevQ's own `NoiseGraphAllocator`, whose cost
+is a *tunable* $\alpha \cdot \sum q + \beta \cdot \sum e$.
+
+**🔬 Researchers**: `research/mapomatic_comparison.py` benchmarks the two
+allocators on the QASMBench small suite ranked on **fidelity** — the metric
+an allocator's qubit choice actually moves, since two allocators that both
+place every job produce near-identical timing on an uncontended batch. The
+comparison isolates the effect of the aggregation rule (multiplicative
+fidelity vs. additive weighted error) on the same calibration inputs, and
+the honest result is a split decision — one policy wins the median, the
+other the mean and the tail — surfaced rather than collapsed into a single
+misleading "X beats Y". **🛠️ Developers**: Mapomatic is the worked example
+for a *non-scoring* allocator plugin — the counterpart to NAQJS's scored
+one, showing what a policy owes (an `allocate()` contract) and what it may
+honestly leave alone (the sweep hooks). **🎓 Learners**: a concrete,
+runnable instance of the qubit-selection heuristic real Qiskit ships.
+
 ### Phase 5 in one sentence
 Write an allocator against `BaseAllocator`, a router against `BaseRouter`,
 or a scheduler against `BaseScheduler`; register it with one line; benchmark
@@ -532,10 +568,11 @@ Documented here so the boundary between what exists and what is coming is
 never ambiguous:
 
 - **Phase 5.6 — baseline plugins (continued)**: NAQJS (scored scheduler)
-  has shipped; still to come are QOS as a router baseline and Mapomatic as
-  an allocator baseline, completing the "DevQ vs the literature" comparison
-  set. Both will extend the generic schema→constructor wiring the scheduler
-  axis introduced to the router and allocator build paths.
+  and Mapomatic (scored allocator) have shipped; still to come is QOS as a
+  router baseline, completing the "DevQ vs the literature" comparison set.
+  It extends the generic schema→constructor wiring — now unified across the
+  scheduler, allocator, and router build paths — that the scheduler axis
+  introduced.
 - **Phase 5.7 — `qbench`**: an interactive benchmarking sub-shell over the
   metrics and comparison layers.
 - **Phase 5.8 — real hardware**: absolute fidelity, T1, and temporal drift

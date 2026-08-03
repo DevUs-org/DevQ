@@ -262,14 +262,24 @@ above once Phase 5 ships:
   when it can — with the honest finding that single-run wall-clock throughput
   is noise-dominated and needs mean ± noise floor over N runs for a defensible
   performance number.
-  Still to come: QOS (router) and Mapomatic (allocator) baselines for the
-  full "DevQ vs QOS" story. The generic schema→constructor wiring the
-  scheduler axis introduced has since been **unified across all three build
-  paths** (scheduler, allocator, and router now inject their `CONFIG_SCHEMA`
-  keys through one shared mechanism, `_schema_kwargs`), with the parameter
-  name derived by rewriting the namespace dot to `___` so a plugin key may
-  reuse a core name without collision — so those baselines need no further
-  core wiring, only the plugin classes themselves.
+  **Mapomatic (the first scored allocator, `[Mapomatic]`) has since
+  landed** as a `research/` plugin — a faithful port of its
+  product-of-fidelities layout score, benchmarked against the default
+  NoiseGraph allocator by `research/mapomatic_comparison.py` on the
+  QASMBench small suite, ranked on **fidelity** (the metric an allocator's
+  qubit choice actually moves). It is a *non-scoring* policy — its cost is
+  parameter-free, so it exposes no weight simplex to sweep, the deliberate
+  fixed-vs-tunable contrast with NoiseGraph's `alpha·Sq + beta·Se`. It
+  needed **zero core edits**, confirming the unified schema→constructor
+  wiring below delivered on its promise for the allocator path.
+  Still to come: the QOS (router) baseline for the full "DevQ vs QOS"
+  story. The generic schema→constructor wiring the scheduler axis
+  introduced has since been **unified across all three build paths**
+  (scheduler, allocator, and router now inject their `CONFIG_SCHEMA` keys
+  through one shared mechanism, `_schema_kwargs`), with the parameter name
+  derived by rewriting the namespace dot to `___` so a plugin key may reuse
+  a core name without collision — so that baseline needs no further core
+  wiring, only the plugin class itself.
 - **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer,
   folding in the comparison modes.
 - **5.8 — real hardware** 🔭 gated on credits and access.

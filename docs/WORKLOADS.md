@@ -89,6 +89,7 @@ research runners register it the same way shown above.
 | Spec | What it exercises |
 |---|---|
 | `naqjs.json` | The minimal NAQJS scheduler workload — one `devq.simulated` device, three toy jobs with explicit shots. The fixture behind `research/naqjs_comparison.py`. |
+| `mapomatic.json` | The minimal Mapomatic allocator workload — one `devq.simulated` device, three toy jobs (2q and 3q) selecting the `mapomatic` allocator. The fixture behind `research/test_mapomatic.py`'s placement block. (Its fidelity-ranked comparison, `research/mapomatic_comparison.py`, runs on `qasmbench_small.json` instead, because fidelity needs the reference-capable `ibm.simulated` provider.) |
 | `qasmbench_small.json` | The full QASMBench small suite (43 circuits) across four IBM fake backends. Behind `research/naqjs_qasmbench_comparison.py` and `research/run_qasmbench_small.py`. Jobs specify no shots, so a scored scheduler's shots feature falls back to its plugin default or a neutral tie. |
 | `qasmbench_contended.json` | Ten wide (4–5q) QASMBench jobs on a single 7-qubit device, so pairs cannot co-reside and jobs serialise — dispatch order determines completion. The high-contention half of the comparison-mode validation: it is the workload where scheduling has leverage, the contrast against the low-contention `qasmbench_small.json` run. |
 
