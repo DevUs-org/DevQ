@@ -121,7 +121,7 @@ import inspect
 from dataclasses import dataclass
 from typing import Sequence
 
-from registry.keyspec import KeySpec, NormaliseGroup, SCOPES
+from registry.keyspec import KeySpec, NormaliseGroup, SCOPES, KEY_PARAM_SEP
 
 
 class RegistryError(Exception):
@@ -499,6 +499,32 @@ class Registry:
                 f"'<prefix>.<key>' (for example '{name}.{key}'). Un-namespaced "
                 "keys are reserved for DevQ core."
             )
+
+        # The dotted key is rewritten to a constructor-parameter name by
+        # replacing the prefix dot with KEY_PARAM_SEP (see keyspec.flatten_key):
+        # "qos.batch_window" -> "qos___batch_window". For that rewrite to be
+        # unambiguous — so no two distinct keys can ever map to one parameter —
+        # neither the prefix nor the bare key may contain the separator, and
+        # neither may start or end with a single "_" (a trailing "_" on the
+        # prefix would abut the separator and be indistinguishable from a
+        # leading "_" on the key). Reject such keys at declaration, where the
+        # author can fix the name, rather than letting two keys silently share
+        # a slot at build time.
+        prefix, bare = key.split(".", 1)
+        for part, what in ((prefix, "prefix"), (bare, "key")):
+            if KEY_PARAM_SEP in part:
+                raise RegistryError(
+                    f"{origin}: config key '{key}' has a {what} containing "
+                    f"'{KEY_PARAM_SEP}', which is reserved as the "
+                    "namespace/parameter separator. Use single underscores "
+                    "inside names (for example 'batch_window')."
+                )
+            if part.startswith("_") or part.endswith("_"):
+                raise RegistryError(
+                    f"{origin}: config key '{key}' has a {what} that starts or "
+                    "ends with '_'. Leading/trailing underscores are disallowed "
+                    "so the namespace/parameter boundary stays unambiguous."
+                )
 
         if key in self._schema:
             raise RegistryError(

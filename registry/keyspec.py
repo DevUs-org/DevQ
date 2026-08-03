@@ -33,6 +33,29 @@ un-namespaced plugin keys. Namespacing keeps `qconfig` readable, makes
 the plugin boundary visible in published benchmark artifacts, and stops
 two independent plugins from colliding on a name like "window".
 
+    Additionally the registry forbids a prefix or key from containing
+    "___" (three underscores) or from starting/ending with "_". These
+    keep the config-key -> parameter-name rewrite below unambiguous.
+
+CONSTRUCTOR INJECTION — a declared key whose value the component wants at
+CONSTRUCTION time is passed to __init__ as a keyword argument. Because a
+Python parameter name cannot contain a dot, the dotted key is rewritten:
+the dot becomes "___", prefix PRESERVED (see flatten_key). So declare
+"qos.batch_window" and name the parameter "qos___batch_window":
+
+        CONFIG_SCHEMA = {"qos.batch_window": KeySpec(...)}
+        def __init__(self, ..., qos___batch_window=5): ...
+
+Preserving the prefix (rather than stripping to "batch_window") means a
+plugin may reuse a CORE key name for its own distinct quantity —
+"alloc.qubit_error_weight" injects as "alloc___qubit_error_weight",
+separate from core "qubit_error_weight" — and both reach the constructor.
+Declaring a key does NOT oblige the ctor to name it: a parameter the ctor
+omits is simply not injected (the key still cascades, validates, and
+shows in qconfig, and the component may read it at runtime instead).
+Everything OUTSIDE the constructor signature — qconfig, logs, errors,
+provenance — uses the dotted key; "___" appears only in parameter names.
+
 SCOPES — where in the cascade a key is resolved:
     "device"  resolved independently for every attached device, through
               the full four-level cascade (core -> provider -> global
@@ -81,6 +104,24 @@ from typing import Any, Callable, Sequence
 # Legal values for KeySpec.scope. Kept here rather than in the registry
 # because a plugin author reading this file needs them.
 SCOPES = frozenset({"device", "global", "common"})
+
+
+# Separator that joins a plugin key's namespace prefix to its bare name
+# when the dotted config key is rendered as a CONSTRUCTOR PARAMETER name.
+# A config key is dotted ("naqjs.eta"); a Python parameter cannot contain
+# a dot, so injection rewrites the dot to this token ("naqjs___eta") and
+# the plugin author names the ctor parameter to match. See flatten_key.
+#
+# Three underscores, not one, so the join cannot be confused with an
+# underscore that legitimately occurs INSIDE a prefix or key ("q_o_s",
+# "batch_window"). The registry additionally forbids a prefix or key from
+# containing this token, or from starting/ending with a single underscore,
+# which together make the dot<->token rewrite a bijection (see
+# param_to_key) — no two distinct dotted keys can ever collide on one
+# parameter name. This token is INTERNAL to the injection seam: every
+# user-facing surface (qconfig, event log, errors, provenance) shows the
+# dotted key, never this form.
+KEY_PARAM_SEP = "___"
 
 
 @dataclass(frozen=True)
@@ -217,3 +258,47 @@ def non_empty_string(value):
     if not value.strip():
         return "expected a non-empty string"
     return None
+
+
+# ── Config-key <-> constructor-parameter rewriting ────────────────────────────
+#
+# The single source of truth for how a dotted plugin config key becomes a
+# constructor parameter name, shared by the registration guard (which
+# rejects keys that would break the rewrite) and the build-time injector
+# (which applies it). Keeping both on ONE function guarantees the guard
+# and the injector can never disagree about the boundary.
+
+
+def flatten_key(dotted):
+    '''
+    Rewrite a dotted plugin config key to its constructor-parameter name.
+
+    "naqjs.eta" -> "naqjs___eta". The namespace prefix is preserved (not
+    stripped), so a plugin's own "alloc.qubit_error_weight" lands in a
+    DIFFERENT parameter ("alloc___qubit_error_weight") than the core
+    "qubit_error_weight" — the two coexist in one constructor instead of
+    contending for a single slot.
+
+    Only the first dot is the prefix boundary, matching the registry's own
+    "<prefix>.<rest>" split; any further dots (there should be none — the
+    registry forbids them) are left in the parameter name verbatim, which
+    would simply fail to match any real parameter.
+
+    Assumes the key satisfies the registry guards (contains no
+    KEY_PARAM_SEP, does not start/end with "_"); on a guard-legal key the
+    rewrite is invertible by param_to_key.
+    '''
+    return dotted.replace(".", KEY_PARAM_SEP, 1)
+
+
+def param_to_key(param):
+    '''
+    Inverse of flatten_key: "naqjs___eta" -> "naqjs.eta".
+
+    Provided for internal diagnostics that hold a parameter name and want
+    to report it in the user-facing dotted form. NOT used on any
+    user-facing render path (those carry the dotted key throughout and
+    never need to reverse). Splits on the FIRST separator only, which is
+    exact because the registry forbids the separator inside a prefix.
+    '''
+    return param.replace(KEY_PARAM_SEP, ".", 1)
