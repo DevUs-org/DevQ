@@ -90,9 +90,9 @@ per-job `execution_time` and `turnaround` fields that share those roots.
 **Execution throughput** — jobs that completed without rejection, over
 the span in which devices were actively working:
 
-$$\text{execution}\_\text{throughput} = \frac{|\text{completed, not rejected}|}{t_{\text{exec}}}$$
+$${\text{execution}\_\text{throughput}} = \frac{|\text{completed, not rejected}|}{t_{\text{exec}}}$$
 
-$$t_{\text{exec}} = \max_j(\text{resolved}\_\text{at}_j) - \min_j(\text{dispatched}\_\text{at}_j)$$
+$$t_{\text{exec}} = \max_j({\text{resolved}\_\text{at}}_{j}) - \min_j({\text{dispatched}\_\text{at}}_{j})$$
 
 both extrema taken over dispatched jobs. This is the internally coherent
 figure: numerator and both span endpoints range over the same
@@ -102,9 +102,9 @@ job dispatched.
 **Turnaround throughput** — all submitted jobs, over the span from the
 first submission to the last resolution:
 
-$$\text{turnaround}\_\text{throughput} = \frac{|\text{all submitted}|}{t_{\text{turn}}}$$
+$${\text{turnaround}\_\text{throughput}} = \frac{|\text{all submitted}|}{t_{\text{turn}}}$$
 
-$$t_{\text{turn}} = \max_j(\text{resolved}\_\text{at}_j) - \min_j(\text{submitted}\_\text{at}_j)$$
+$$t_{\text{turn}} = \max_j({\text{resolved}\_\text{at}}_{j}) - \min_j({\text{submitted}\_\text{at}}_{j})$$
 
 This answers "how fast did the whole batch clear," queue wait included.
 The span start, `min(submitted_at)`, exists for every job; the end,
@@ -126,7 +126,7 @@ Input: `summary` per-job rows only.
 Per job, the pure queue wait before running — the time spent enqueued
 before dispatch:
 
-$$\text{queue}\_\text{latency}_j = \text{dispatched}\_\text{at}_j - \text{submitted}\_\text{at}_j$$
+$${\text{queue}\_\text{latency}}_{j} = {\text{dispatched}\_\text{at}}_{j} - {\text{submitted}\_\text{at}}_{j}$$
 
 This is the `queue_latency` field already present in the per-job summary,
 so the metric is aggregation, not re-derivation. It is the wait *before*
@@ -189,7 +189,7 @@ nothing.
 Both fractions are taken against one **shared run window**, the
 execution-span
 
-$$t_{\text{exec}} = \max_j(\text{resolved}\_\text{at}_j) - \min_j(\text{dispatched}\_\text{at}_j)$$
+$$t_{\text{exec}} = \max_j({\text{resolved}\_\text{at}}_{j}) - \min_j({\text{dispatched}\_\text{at}}_{j})$$
 
 over all dispatched jobs — the same span as execution throughput. The
 pre-dispatch queue period is excluded because no device could have been
@@ -200,7 +200,7 @@ story, whereas the shared window keeps per-device fractions comparable to
 each other and to the system figure. The device-specific part lives in
 the numerator (a device's own intervals); the denominator is shared.
 
-$$\text{util}(d) = \frac{\bigcup_{j \text{ on } d} [\text{dispatched}\_\text{at}_j, \text{resolved}\_\text{at}_j)}{t_{\text{exec}}}$$
+$$\text{util}(d) = \frac{\bigcup_{j \text{ on } d} [{\text{dispatched}\_\text{at}}_{j}, {\text{resolved}\_\text{at}}_{j})}{t_{\text{exec}}}$$
 
 The system-wide figure is total union-busy across all devices over the
 window times the number of devices that ran work:
@@ -231,7 +231,7 @@ Input: `summary` per-job rows only.
 
 The fraction of submitted jobs the system terminally **refused**:
 
-$$\text{rejection}\_\text{rate} = \frac{|\text{REJECTED}|}{|\text{all submitted}|}$$
+$${\text{rejection}\_\text{rate}} = \frac{|\text{REJECTED}|}{|\text{all submitted}|}$$
 
 reported with its raw counts:
 
@@ -300,7 +300,7 @@ Each basis carries the per-device distribution (idle devices at `0`), the
 spread as a **population coefficient of variation**, and a convenience
 reading:
 
-$$\text{cv} = \frac{\sigma}{\mu}, \qquad \text{load}\_\text{balance} = \frac{1}{1 + \text{cv}}$$
+$$\text{cv} = \frac{\sigma}{\mu}, \qquad {\text{load}\_\text{balance}} = \frac{1}{1 + \text{cv}}$$
 
 where $\sigma$ is the **population** standard deviation (denominator $n$,
 not $n-1$: we measure the actual device set, not a sample from a larger
@@ -419,7 +419,7 @@ qualifying jobs, using the same nearest-rank p95 convention as queue
 latency. When no job qualifies, every aggregate field is `None`.
 ---
 
-## Cross-config comparison and the α/β sweep
+## Cross-config comparison and the weight sweep
 
 `benchmark/comparison.py` reads a finished matrix run and produces two
 views, both offline and pure in the same sense as the metrics above — they
@@ -444,14 +444,20 @@ without opening the log.
 
 ### The weight sweep — `sweep_comp.<axis>.json`
 
-`sweep(run_dir, session, axis, grid, bisect)` re-derives one session's
-decisions on one axis (`router` or `allocator`) across an α/β grid, **from
-the recorded scores**, and writes `sweep_comp.router.json` or
-`sweep_comp.allocator.json` (one artifact per axis, so a router sweep and
-an allocator sweep coexist). One axis at a time, because the shared-scope
-α/β feeds both the router yardstick and each device's allocator, so "sweep
-α/β" is ambiguous about which consumer — the axis argument disambiguates,
-as [`COST_MODEL.md`](COST_MODEL.md) describes.
+`sweep(run_dir, session_id, axis, coarse_m=20, bisect=False,
+registry_map=None)` re-derives one session's decisions on one axis
+(`router`, `allocator`, or `scheduler`) across that component's **weight-group
+simplex**, **from the recorded scores**, and writes `sweep_comp.router.json`,
+`sweep_comp.allocator.json`, or `sweep_comp.scheduler.json` (one artifact per
+axis, so sweeps of different axes coexist). The weight group of *n* terms is
+enumerated over the Scheffé {n, m} simplex-lattice, with `coarse_m` the lattice
+resolution *m*; at n=2 (the router and allocator, which sweep the shared qubit/
+edge pair) this lattice is exactly the historical (α, 1−α) grid. One axis at a
+time, because the shared-scope α/β feeds both the router yardstick and each
+device's allocator, so "sweep α/β" is ambiguous about which consumer — the axis
+argument disambiguates, as [`COST_MODEL.md`](COST_MODEL.md) describes. A scored
+scheduler's weight keys are plugin-specific, so the scheduler axis derives them
+from the component's `live_params()` rather than assuming the qubit/edge pair.
 
 The result carries two layers. The **primitive** is per recorded decision,
 the winner at each grid point — the honest raw result. The **aggregate**,
@@ -505,9 +511,11 @@ rather than sorted as a zero, the same honesty metrics.py gives an
 unmeasured population; ties break on session id for a deterministic order.
 
 **Intra-component — `present_sweep(sweep_result)`.** Reads out one
-session's α/β sweep: a refused sweep (`faithful: false`) is presented as a
+session's weight sweep: a refused sweep (`faithful: false`) is presented as a
 refusal carrying its reason, not dropped; a faithful sweep is presented as
-its flips — the α values where the winning distribution changes, the
-actionable output — plus the per-α distribution, with a `stable` flag when
-nothing flips across the whole grid. The *absolute* view (one session's
-own metric bundle) is not a mode: it is the 5.3 bundle, already shipped.
+its flips — the weight-vector points where the winning distribution changes,
+the actionable output — plus the per-point distribution, with a `stable` flag
+when nothing flips across the whole lattice. (At n=2 a point is the familiar
+(α, 1−α); at n≥3 it is the full weight vector.) The *absolute* view (one
+session's own metric bundle) is not a mode: it is the 5.3 bundle, already
+shipped.
