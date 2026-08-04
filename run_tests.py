@@ -3687,12 +3687,19 @@ def block_comparison():
     # because the sweep walks the whole (symmetric) simplex, so a reversed
     # mapping would leave the winner/flip SET unchanged and slip past the
     # sweep-level checks — only a direct coordinate->key assertion catches it.
-    # weight_keys is now resolved by the caller (an axis's hardcoded group, or
-    # a scored scheduler's live_params keys) and passed in explicitly.
-    alloc_keys = C._AXES["allocator"]["weight_group"]
+    # weight_keys is now resolved by the caller from the component's own
+    # live_params() (every axis derives it — router, allocator and scheduler
+    # alike), sorted for a stable lattice-coordinate -> key mapping. The
+    # built-in NoiseGraphAllocator's live_params() is exactly the qubit/edge
+    # split, so the derived keys reproduce the historical group.
+    from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
+    alloc_keys = sorted(NoiseGraphAllocator(
+        qubit_error_weight=0.1, edge_error_weight=0.9).live_params().keys())
     cp = C._cost_params((0.2, 0.8), "allocator", alloc_keys)
-    check(cp["qubit_error_weight"] == 0.2 and cp["edge_error_weight"] == 0.8,
-          "cost_params maps point[0]->qubit_error, point[1]->edge_error, in order")
+    check(cp[alloc_keys[0]] == 0.2 and cp[alloc_keys[1]] == 0.8,
+          "cost_params maps point coordinates onto the derived weight keys in order")
+    check(alloc_keys == ["edge_error_weight", "qubit_error_weight"],
+          "the built-in allocator's swept keys derive from its live_params()")
 
     # ── Router sweep + faithfulness anchor ────────────────────────────────
     rs = C.sweep(run_dir, router_sessions[0], "router",
@@ -3748,7 +3755,10 @@ def block_comparison():
 
         def _dist_at(point):
             c = {}
-            _ak = C._AXES["allocator"]["weight_group"]
+            # weight keys derive from the component's own live_params() now
+            # (weight_group is None for every axis), the same resolution the
+            # sweep uses; sorted for the stable coordinate -> key mapping.
+            _ak = sorted(eng.live_params().keys())
             for d in decs:
                 w = C._winner_at(eng, d["recorded_terms"], point, "allocator", _ak)
                 c[w] = c.get(w, 0) + 1
@@ -4636,6 +4646,43 @@ def block_router_scoring():
         check(swept == live,
               f"sweep from one recording matches live routing at α={a}: "
               f"swept d{swept}, live d{live}")
+
+    # TERMS-FIRST FIXED-WEIGHT RECOVERY. The queue/noise mix is a FIXED input
+    # kept out of live_params(); on a sweep replay it must be recovered from
+    # the RECORDED terms, not from the reconstructing engine. On a live routing
+    # field every device starts at zero queue pressure, so the queue weight
+    # cannot witness the difference there — a SYNTHETIC recorded field with
+    # differing queue pressures is needed. With min-max, d0 (queue 0, cost
+    # high) scores w_noise and d1 (queue high, cost 0) scores w_queue, so d0
+    # wins iff w_queue > 0.5. Record terms at w_queue=0.9 (d0 wins) and replay
+    # through an engine whose OWN w_queue is 0.1 (which, if wrongly used, would
+    # pick d1). A correct terms-first replay returns d0; the mutant that reads
+    # the engine's own weight returns d1.
+    synth = [
+        (0, {"queue_pressure": 0.0, "qubit_error_sum": 1.0, "edge_error_sum": 1.0,
+             "router_queue_weight": 0.9, "router_noise_weight": 0.1}),
+        (1, {"queue_pressure": 10.0, "qubit_error_sum": 0.0, "edge_error_sum": 0.0,
+             "router_queue_weight": 0.9, "router_noise_weight": 0.1}),
+    ]
+    wrong_engine = NoiseRouter(router_queue_weight=0.1, router_noise_weight=0.9)
+    win = wrong_engine.sweep_decision(synth, wrong_engine.live_params())
+    check(win == 0,
+          "a sweep recovers the fixed queue weight from the RECORDED terms "
+          "(0.9 -> d0), not the reconstructing engine's own weight (0.1 -> d1)")
+    # Converse: terms recorded at a LOW queue weight pick d1 even when replayed
+    # through an engine whose own weight is HIGH — proving the recovered value
+    # (not the engine's) drives the decision in both directions.
+    synth_lowq = [
+        (0, {"queue_pressure": 0.0, "qubit_error_sum": 1.0, "edge_error_sum": 1.0,
+             "router_queue_weight": 0.1, "router_noise_weight": 0.9}),
+        (1, {"queue_pressure": 10.0, "qubit_error_sum": 0.0, "edge_error_sum": 0.0,
+             "router_queue_weight": 0.1, "router_noise_weight": 0.9}),
+    ]
+    high_engine = NoiseRouter(router_queue_weight=0.9, router_noise_weight=0.1)
+    win2 = high_engine.sweep_decision(synth_lowq, high_engine.live_params())
+    check(win2 == 1,
+          "the converse: recorded low queue weight (0.1 -> d1) drives the "
+          "winner even through a high-weight engine — terms-first, both ways")
 
     # A non-scoring router reports nothing rather than inventing scores.
     from kernel.router.round_robin_router import RoundRobinRouter

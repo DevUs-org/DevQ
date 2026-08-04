@@ -76,6 +76,45 @@ arbitrate and no override warning. A caller who wants a seed the spec
 does not name constructs the provider themselves and attaches its device
 with `add_device()` instead.
 
+**Registering plugin components.** `register_providers` is one of a set —
+`run()` accepts a `register_*` map for every registrable kind, so a
+research baseline that lives outside core (a plugin scheduler, allocator or
+router) is registered into the run the same way its provider is:
+
+```python
+from benchmark.runner import run
+from research.baselines.qos_router import QOSRouter
+
+run("research/workloads/qos.json",
+    register_providers={"ibm.simulated": IBMSimulatedProvider},
+    register_routers={"qos": QOSRouter})
+```
+
+The full set is `register_providers`, `register_schedulers`,
+`register_allocators`, `register_routers`, and `register_frontends`. Each
+maps a registered name to the plugin **class** (never an instance — see
+[`REGISTRY.md`](REGISTRY.md)), and the name becomes a legal value for that
+kind's config key for the duration of the run.
+
+**Selecting which component a run uses.** A spec with `config: null`
+routes through the defaults (`noise` router, and so on). To drive a run
+through a *specific* named component — the usual case for a baseline
+comparison — pass `select=`, a map from kind to a **list** of names to
+run:
+
+```python
+run("research/workloads/qos.json",
+    register_providers={"ibm.simulated": IBMSimulatedProvider},
+    register_routers={"qos": QOSRouter},
+    select={"router": ["qos"]})
+```
+
+`select` names a session (or, with more than one name per kind, the matrix
+of sessions) by the registered component names — this is how a comparison
+script pins, say, `noise_graph` allocator × `packing` scheduler × the
+router under test, and runs the baseline against the default in one
+invocation. The value is a list even for a single name.
+
 ### Research workloads (`research/workloads/`)
 
 Separate from the shipped `benchmark/workloads/` fixtures above, the
@@ -90,7 +129,7 @@ research runners register it the same way shown above.
 |---|---|
 | `naqjs.json` | The minimal NAQJS scheduler workload — one `devq.simulated` device, three toy jobs with explicit shots. The fixture behind `research/naqjs_comparison.py`. |
 | `mapomatic.json` | The minimal Mapomatic allocator workload — one `devq.simulated` device, three toy jobs (2q and 3q) selecting the `mapomatic` allocator. The fixture behind `research/test_mapomatic.py`'s placement block. (Its fidelity-ranked comparison, `research/mapomatic_comparison.py`, runs on `qasmbench_small.json` instead, because fidelity needs the reference-capable `ibm.simulated` provider.) |
-| `qasmbench_small.json` | The full QASMBench small suite (43 circuits) across four IBM fake backends. Behind `research/naqjs_qasmbench_comparison.py` and `research/run_qasmbench_small.py`. Jobs specify no shots, so a scored scheduler's shots feature falls back to its plugin default or a neutral tie. |
+| `qos.json` | The minimal QOS router workload — three `devq.simulated` devices (random / linear / fully_connected) so the router has a genuine which-QPU choice, three toy jobs, selecting the `qos` router via top-level config. The fixture behind `research/test_qos.py`. (Its fidelity-ranked comparison, `research/qos_comparison.py`, and the composition demonstration, `research/qos_composition.py`, both run on `qasmbench_small.json` instead, because fidelity needs the reference-capable `ibm.simulated` provider — and a router needs multiple devices, which the four-device suite provides.) |
 | `qasmbench_contended.json` | Ten wide (4–5q) QASMBench jobs on a single 7-qubit device, so pairs cannot co-reside and jobs serialise — dispatch order determines completion. The high-contention half of the comparison-mode validation: it is the workload where scheduling has leverage, the contrast against the low-contention `qasmbench_small.json` run. |
 
 

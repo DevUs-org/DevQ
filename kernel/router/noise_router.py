@@ -60,12 +60,21 @@ class NoiseRouter(BaseRouter):
     # ── Sweepable hooks ───────────────────────────────────────────────────────
 
     def live_params(self):
-        '''This router's live scoring parameters — the sweep anchor.'''
+        '''This router's live SWEPT scoring parameters — the sweep anchor.
+
+        Only the qubit/edge cost split is returned: those are the weights a
+        sweep varies. The queue/noise mix (router_queue_weight,
+        router_noise_weight) is a FIXED scoring input, held constant by a
+        sweep, so it is deliberately kept OUT of live_params() — the same
+        contract NAQJS follows for its fixed eta/default_shots. Keeping fixed
+        inputs out is what lets the sweep derive the swept key set generically
+        from live_params() (docs/COST_MODEL.md), rather than each axis
+        hardcoding it. The fixed weights are still logged into each decision's
+        terms by _sweep_rank, so a replay recovers them from the recorded
+        run, not from this instance.'''
         return {
-            "router_queue_weight": self.router_queue_weight,
-            "router_noise_weight": self.router_noise_weight,
-            "qubit_error_weight" : self.qubit_error_weight,
-            "edge_error_weight"  : self.edge_error_weight,
+            "qubit_error_weight": self.qubit_error_weight,
+            "edge_error_weight" : self.edge_error_weight,
         }
 
     def _sweep_terms(self, decision):
@@ -138,8 +147,16 @@ class NoiseRouter(BaseRouter):
         p_norm = _min_max(pressures)
         c_norm = _min_max(costs)
 
-        w_queue = params["router_queue_weight"]
-        w_noise = params["router_noise_weight"]
+        # The queue/noise mix is a FIXED input, not a swept weight, so it is
+        # not in `params` (live_params() no longer carries it). On a REPLAY it
+        # is recovered from the recorded terms (every candidate logged it
+        # below); on the LIVE pass the terms do not carry it yet, so fall back
+        # to this instance's own value. Reading terms-first keeps a sweep
+        # faithful to the run's actual weights rather than this scoring
+        # engine's defaults.
+        first_terms = scored[0][1] if scored else {}
+        w_queue = first_terms.get("router_queue_weight", self.router_queue_weight)
+        w_noise = first_terms.get("router_noise_weight", self.router_noise_weight)
 
         ranked = []
         for (key, terms, (p_raw, c_raw)), p, c in zip(scored, p_norm, c_norm):

@@ -1,0 +1,48 @@
+{
+    "name": "qos",
+    "seed": 7,
+    "config": "research/configs/qos.config.json",
+    "devices": [
+        {
+            "id": "dev_a",
+            "provider": "devq.simulated",
+            "backend": {
+                "kind": "random",
+                "num_qubits": 7
+            }
+        },
+        {
+            "id": "dev_b",
+            "provider": "devq.simulated",
+            "backend": {
+                "kind": "linear",
+                "num_qubits": 7
+            }
+        },
+        {
+            "id": "dev_c",
+            "provider": "devq.simulated",
+            "backend": {
+                "kind": "fully_connected",
+                "num_qubits": 7
+            }
+        }
+    ],
+    "arrival": {
+        "pattern": "batch"
+    },
+    "jobs": [
+        {
+            "circuit": "test_circuits/bell.qasm",
+            "shots": 1024
+        },
+        {
+            "circuit": "test_circuits/ghz.qasm",
+            "shots": 2048
+        },
+        {
+            "circuit": "test_circuits/rotation.qasm",
+            "shots": 512
+        }
+    ]
+}

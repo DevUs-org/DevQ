@@ -62,18 +62,26 @@ _AXES = {
         "winner_key"   : "device",
         "cand_key"     : "device",
         "kind"         : "router",
-        # The swept weight-group, in the order a lattice point's coordinates
-        # map onto these keys. Both scored axes sweep the shared-scope qubit/
-        # edge cost split (COST_MODEL); position 0 -> qubit, 1 -> edge, which
-        # at n=2 reproduces the historical (alpha, 1-alpha) mapping exactly.
-        "weight_group" : ["qubit_error_weight", "edge_error_weight"],
+        # A scored router's swept weight keys come from its own live_params()
+        # (None = derive), so a plugin router with its OWN weight group (e.g.
+        # QOS's qos.fidelity_weight/qos.util_weight) is sweepable without a
+        # core edit — the same generic treatment the scheduler axis has. The
+        # built-in NoiseRouter's live_params() returns exactly the qubit/edge
+        # cost split, so deriving reproduces the historical group for it; its
+        # fixed queue/noise mix is kept out of live_params() and recovered from
+        # the recorded terms on replay.
+        "weight_group" : None,
     },
     "allocator": {
         "event"        : "allocate",
         "winner_key"   : "block",
         "cand_key"     : "block",
         "kind"         : "allocator",
-        "weight_group" : ["qubit_error_weight", "edge_error_weight"],
+        # Derived from live_params() (None), as the router and scheduler axes
+        # are — so a plugin allocator that scores on its own weight group is
+        # sweepable without a core edit. NoiseGraphAllocator's live_params()
+        # returns the qubit/edge split, reproducing the historical group.
+        "weight_group" : None,
     },
     "scheduler": {
         "event"        : "schedule",
@@ -573,18 +581,13 @@ def _cost_params(point, axis, weight_keys):
     in order. At n=2 the group is (qubit, edge), so point (a, 1-a) reproduces
     the historical (alpha, 1-alpha) mapping exactly. `weight_keys` is resolved
     by the caller — an axis's hardcoded group, or a scored scheduler's own
-    live_params() keys — so no plugin-specific key names live in this module.
-
-    The router additionally needs its queue/noise split, which the sweep holds
-    fixed (it sweeps the cost-model weight group, not the router's queue/noise
-    mix). The fixed 0.5 split matches the router default and is the recorded
-    run's own value for the shipped configs.
+    `weight_keys` is resolved
+    by the caller from the component's own live_params() — so no plugin-
+    specific key names live in this module, and a component's FIXED inputs
+    (a router's queue/noise mix, a scheduler's eta) are not swept: they stay
+    out of live_params() and are recovered from the recorded terms on replay.
     '''
-    params = dict(zip(weight_keys, point))
-    if axis == "router":
-        params["router_queue_weight"] = 0.5
-        params["router_noise_weight"] = 0.5
-    return params
+    return dict(zip(weight_keys, point))
 
 
 # ── Small shared helpers ──────────────────────────────────────────────────────

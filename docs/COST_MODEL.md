@@ -210,21 +210,42 @@ trajectory at arbitrary weights. Recovering behaviour past the first flip
 requires real re-execution at each weight point, which is a separate,
 heavier capability (a metric sweep), not this replay.
 
-**Three sweepable axes (Phase 5.6).** The router and allocator sweep the
-shared qubit/edge weight pair, whose keys are fixed and known. A scored
-*scheduler* (e.g. the NAQJS baseline) is the third axis, and it differs in
-two ways the sweep handles generically. First, its weight keys are
-plugin-specific (NAQJS's `naqjs.width_weight`/`naqjs.shots_weight`/`naqjs.seq_weight`), so they are not
-hardcoded — the scheduler axis leaves its weight group unset and derives the
-swept keys from the reconstructed component's `live_params()`, the contract's
-own declaration of the weights it scores with, so no plugin key names enter
-core. Second, a batch scheduler emits one `schedule` event per dispatched job
-in a cycle, all sharing one ranking snapshot; those collapse to a single
-sweep decision whose winner is the ranking's argmin, so a cycle's ranking is
-one decision the same way a router's single choice is. A research baseline is
-not globally registered, so the sweep is passed the same class map the run
-registered and rebuilds the component from it to replay — without it, the
-sweep refuses honestly rather than resolving the plugin name to nothing.
+**Three sweepable axes.** The router, allocator and scheduler axes are all
+swept the same way: each derives its swept weight keys from the reconstructed
+component's own `live_params()`, the contract's own declaration of the weights
+it scores with. No axis hardcodes a weight group, so **a plugin with its own
+weight group is sweepable on any axis without a core edit** — a scored plugin
+router (QOS's `qos.fidelity_weight`/`qos.util_weight`), a scored plugin
+allocator, or a scored plugin scheduler (NAQJS's
+`naqjs.width_weight`/`naqjs.shots_weight`/`naqjs.seq_weight`) alike. This is
+the uniform contract:
+
+> `live_params()` returns **exactly the swept weights**. A component's FIXED
+> scoring inputs — a scheduler's `naqjs.eta`/`naqjs.default_shots`, or the
+> router's `router_queue_weight`/`router_noise_weight` queue/noise mix — are
+> kept OUT of `live_params()`, so the sweep does not try to vary them. A
+> component still logs its fixed inputs into each decision's recorded terms,
+> so a replay recovers the run's actual fixed values from the log rather than
+> from the reconstructed scoring engine.
+
+Earlier, the router and allocator axes hardcoded the shared qubit/edge weight
+pair (which happened to be the built-ins' weights), and only the scheduler
+axis derived keys from `live_params()`; that asymmetry meant a plugin router
+or allocator with its *own* weights could not be swept. Deriving all three
+uniformly removes the special case. The built-in `NoiseRouter` and
+`NoiseGraphAllocator` return exactly the qubit/edge split from `live_params()`,
+so the derived keys reproduce the historical group for them; `NoiseRouter`'s
+fixed queue/noise mix is the model case for the "fixed inputs stay out of
+`live_params()`, recovered from recorded terms" half of the contract.
+
+Two further points the sweep handles generically. A batch scheduler emits one
+`schedule` event per dispatched job in a cycle, all sharing one ranking
+snapshot; those collapse to a single sweep decision whose winner is the
+ranking's argmin, so a cycle's ranking is one decision the same way a router's
+single choice is. And a research baseline is not globally registered, so the
+sweep is passed the same class map the run registered and rebuilds the
+component from it to replay — without it, the sweep refuses honestly rather
+than resolving the plugin name to nothing.
 
 **Plugin scheduler config keys (Phase 5.6).** A scheduler with knobs of its
 own declares them in `CONFIG_SCHEMA` under dotted `<prefix>.<key>` names

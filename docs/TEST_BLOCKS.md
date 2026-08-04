@@ -1520,10 +1520,15 @@ lattice/edge-graph contract is pinned directly as the regression anchor:
 the n=2 edge graph must be exactly the consecutive chain (so the
 generalisation leaves the historical two-term sweep untouched), the n=3
 graph is connected with no isolated points, and `_cost_params` maps a
-lattice point onto the weight-group keys **in order** (position 0 → qubit,
-1 → edge) — pinned directly because the sweep walks the whole symmetric
-simplex, so a reversed mapping would leave the winner/flip *set* unchanged
-and slip past the sweep-level checks. The allocator sweep must surface at
+lattice point onto the weight keys **in order** — pinned directly because
+the sweep walks the whole symmetric simplex, so a reversed mapping would
+leave the winner/flip *set* unchanged and slip past the sweep-level checks.
+The swept keys are **derived from the component's own `live_params()`**
+(sorted for a stable coordinate→key mapping), not from a hardcoded per-axis
+group: every axis — router, allocator, scheduler — resolves them the same
+way, so a plugin with its own weight group is sweepable without a core edit.
+The block pins that the built-in allocator's derived keys are exactly its
+`live_params()` pair. The allocator sweep must surface at
 least one weight-driven block-choice flip; each flip names its two
 lattice-edge endpoints as weight vectors, bisection localises it to a
 normalised weight vector on that edge, and — the tooth that catches an

@@ -203,6 +203,146 @@ exactly that. `measurements` (a list of `(qubit, clbit)` pairs) and
 `resets` (qubit indices) are read-only views derived from the stream,
 and `num_clbits` carries the declared classical-register width.
 
+---
+
+## Policies that span more than one component
+
+A published policy often couples decisions DevQ keeps in separate
+components. A whole-system scheduler from the literature may decide *which
+QPU* a job runs on (a **router** decision, spatial), *when and in what
+order* jobs run (a **scheduler** decision, temporal), and *where on the
+device* a circuit is placed (an **allocator** decision) — all as one
+integrated policy, because its source system draws no line between them.
+
+This is not a reason to conclude DevQ cannot express the policy, or to
+collapse it into a single oversized component. DevQ makes the scheduler,
+allocator, and router **independently pluggable**, and a session names one
+of each. So a policy that spans axes ports as **cooperating components** —
+a custom router for its spatial half, a custom scheduler for its temporal
+half — developed together and selected together in the same run. Each is a
+normal plugin under the contracts above; nothing new is required.
+
+DevQ does **not** enforce that such components be used as a set: a user
+remains free to pair your router with any scheduler, or run it alone. The
+coordination is yours to design and the user's to choose — but the axes are
+open, so "my policy also needs job scheduling" (or placement) is a reason to
+implement a scheduler (or allocator) *alongside* your router, not a reason
+to leave DevQ. The QOS baseline (`research/baselines/qos_router.py`) is a
+live example: its which-QPU spatial decision ports as a router, while the
+waiting-time/ordering half of the same paper is naturally a scheduler — two
+DevQ components expressing one published system.
+
+---
+
+## Runtime objects a component reads
+
+The sections above document what a component must **write** — the method it
+implements and the contract that method owes. A scoring or decision
+component also **reads**: DevQ hands it live runtime objects, and to score
+a candidate it must pull queue depth, calibration, or circuit shape off
+them. Those objects' read surfaces are collected here, because a plugin
+author writing `select()` or a scoring `schedule()` needs them and they are
+not otherwise discoverable without reading core. Only the
+**decision-relevant** surface is documented — each object carries more
+internal state, but what a plugin may rely on is listed below.
+
+**`DeviceContext`** — the federation unit, one per attached device
+(see [`ROADMAP.md`](ROADMAP.md) Phase 4). A router's `select(qcb,
+candidates)` receives a list of these as its candidates; each has already
+passed the job's `--exec`/`--no-exec` constraints and per-device
+feasibility.
+
+| Read | Is | Use |
+|---|---|---|
+| `.device` | `QuantumDevice` | the calibration accessors (`qubit_error`, `edge_error`, `t2`, …) — see the calibration table below |
+| `.queue_depth()` | → int | jobs waiting on this device (a method) |
+| `.running_jobs` | int | jobs currently executing; queue pressure is `queue_depth() + running_jobs` (see [`COST_MODEL.md`](COST_MODEL.md)) |
+| `.memory_manager` | `MemoryManager` | the device's pool and allocator binding (below) |
+| `.scheduler` | `BaseScheduler` | the device's scheduler instance |
+| `.name`, `.ref` | str | the user-assigned name and the stable device reference |
+
+**`QCB`** — the job control block, DevQ's per-job record. A router's
+`select(qcb, …)` and a scheduler's `enqueue(qcb)` both receive one.
+
+| Read | Is | Use |
+|---|---|---|
+| `.circuit` | `CircuitRep` | the job's circuit — walk it for a fidelity or duration estimate (its op-stream surface is documented above) |
+| `.shots` | int \| None | the job's own shot count, if it named one |
+| `.circuit_hash` | str | content identity, shared by identical circuits across devices |
+| `.max_qubit_error`, `.max_edge_error`, `.max_1q_gate_error` | float \| None | the job's placement thresholds, if any |
+| `.exec_on`, `.no_exec_on` | list \| None | the device constraints already applied to the candidate set |
+| `.v2p_map` | dict \| None | the allocator's placement, once made |
+| `.state` | str | the job's lifecycle state |
+
+**`MemoryManager`** — one per device, bundling the qubit pool and the
+device's allocator. A scoring component reads it through
+`context.memory_manager`; an allocator is bound to one.
+
+| Read | Is | Use |
+|---|---|---|
+| `.pool` | `QubitPool` | live qubit occupancy (below) |
+| `.allocator` | `BaseAllocator` | the device's configured allocator instance |
+| `.device` | `QuantumDevice` | the device it manages |
+
+**`QubitPool`** — `memory_manager.pool`, the live free/used state of a
+device's physical qubits. This is the surface a component reads for
+**instantaneous spatial occupancy** — for example a utilisation estimate
+at decision time, which the offline utilisation *metric*
+([`METRICS.md`](METRICS.md)) cannot supply because it is computed from
+completed-run intervals that do not yet exist when `select()` fires.
+
+| Read | Is | Use |
+|---|---|---|
+| `.free_qubits` | set | physical qubits currently free |
+| `.available()` | → list | the free physical qubits as a list; `len(pool.available())` is the free count |
+| `.allocate(...)`, `.free(...)` | — | reserve/release — the allocator's write surface (see the allocator contract above) |
+
+Live spatial occupancy is `(device.num_qubits - len(pool.available())) /
+device.num_qubits` — the fraction of the device's qubits in use right now,
+DevQ's decision-time analogue of a QPU spatial-utilisation term.
+
+### Inspecting a decision: `explain` and the recorded-terms surface
+
+Every **scoring** component — router, allocator, or scheduler with the
+`Sweepable` hooks implemented (below) — exposes the same three
+recorded-terms methods, derived by the base from its hooks so they cannot
+drift from the live decision:
+
+- `explain_decision(decision)` — the per-candidate score report at the
+  **live** weights, for the decision just made.
+- `explain_recorded(recorded_terms)` — the same report rebuilt from
+  **already-recorded** terms, for a component whose state has since moved
+  (an allocator that has reserved its block, so its pool no longer matches
+  the decision).
+- `sweep_decision(recorded_terms, params)` — re-decide from recorded terms
+  at **different** weights, the sweep's replay primitive.
+
+These are uniform across the three scoring kinds. A non-scoring policy
+leaves the hooks unimplemented and is honestly reported as not-explainable
+and not-sweepable.
+
+One method is **router-only**, by design rather than omission:
+
+- `explain(qcb, candidates)` — an on-demand, **pre-decision** score report:
+  given a job and a candidate set, show how the router *would* score them,
+  without making or recording a decision.
+
+A public pre-decision `explain()` is well-defined only when the decision's
+inputs are externally suppliable and the choice is queryable independent of
+live, mutating state — and only routing satisfies both. A router chooses
+among a candidate **set a caller can hand it**, and its choice is
+**sticky** (reused for later jobs of the same binding), so "how would you
+route this?" is a meaningful question to ask ahead of, or apart from, any
+one dispatch. An allocator chooses blocks against a **live pool** that
+moves as jobs are placed, so a pre-decision report would describe a pool
+state the caller cannot faithfully reconstruct — its honest analogue is
+`explain_recorded`, against the terms as they actually were. A scheduler's
+`schedule()` takes **no candidate argument at all** — it pulls from its
+bound queue — so there is no suppliable input a pre-decision `explain()`
+could receive. The asymmetry is therefore correct: all three explain
+decisions *after the fact* from recorded terms; only the router can
+honestly explain a hypothetical one *before* it.
+
 
 ### Reporting scores and sweeping weights: the `Sweepable` contract
 

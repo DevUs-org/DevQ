@@ -534,6 +534,48 @@ one, showing what a policy owes (an `allocate()` contract) and what it may
 honestly leave alone (the sweep hooks). **🎓 Learners**: a concrete,
 runnable instance of the qubit-selection heuristic real Qiskit ships.
 
+### 5.6 — Baseline plugins (QOS)
+**What it is.** The third published baseline, and the first for the *router*
+axis — completing the scored-axis set (scheduler, allocator, router). QOS
+([`REFERENCES.md`](REFERENCES.md); Giortamis et al., OSDI '25) is a whole
+quantum operating system; its spatial *which-QPU* decision — a fidelity
+estimate per candidate device, traded against waiting time and utilisation —
+is a router decision, and that is the slice DevQ ports. Where NAQJS scores a
+*scheduler* and Mapomatic an *allocator*, QOS scores a *router*, the third
+and last scored axis.
+
+**How it works in the core.** QOS lives under `research/`, built through the
+documented plugin API — `BaseRouter` + the `Sweepable` hooks + the
+`DeviceContext`/`QubitPool` read surface + the device calibration accessors
+— with **zero core edits to the plugin path**. Unlike Mapomatic, QOS *is* a
+scored, sweepable policy: it exposes `qos.fidelity_weight` ($c$) and
+`qos.util_weight` ($\beta$) and implements all three sweep hooks, scoring
+each device by QOS's Sec. 6 fidelity estimate and selecting with Sec. 8's
+relative-delta trade-off against the candidate field. Building it surfaced —
+and drove the fix for — a real gap: plugin-weight sweeping had been
+generalised for the scheduler axis only, so a plugin router with its own
+weights could not be swept; all three axes now derive their swept keys from
+`live_params()` uniformly (core, mutation-tested). QOS carries three recorded
+faithfulness caveats: a dropped crosstalk term (DevQ has no crosstalk
+calibration), a device-representative rather than per-mapping fidelity
+estimate (placement is the allocator's job, below the router), and an
+inverted utilisation sign (QOS rewards utilisation to serve its
+multi-programmer, which DevQ's router lacks, so the faithful port spreads
+load).
+
+**🔬 Researchers**: `research/qos_comparison.py` benchmarks QOS against the
+default NoiseRouter on the QASMBench small suite ranked on **fidelity**, then
+sweeps QOS's `(c, β)` weight space; the honest result is again a split — one
+router wins the median and mean, the other the worst-job fidelity and the
+load balance — surfaced, not collapsed. `research/qos_composition.py` then
+runs QOS, NAQJS and Mapomatic *together* as one stack, the concrete proof
+that three baselines authored against three papers compose across DevQ's axes
+with no core edit. **🛠️ Developers**: QOS is the worked example for a scored
+*router* plugin, and for porting a whole-system policy as a single axis — the
+counterpart to the "policies that span more than one component" note in
+[`EXTENDING.md`](EXTENDING.md). **🎓 Learners**: a runnable instance of how a
+cloud quantum OS decides which QPU runs your job.
+
 ### Phase 5 in one sentence
 Write an allocator against `BaseAllocator`, a router against `BaseRouter`,
 or a scheduler against `BaseScheduler`; register it with one line; benchmark

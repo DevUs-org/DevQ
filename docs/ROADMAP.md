@@ -272,14 +272,35 @@ above once Phase 5 ships:
   fixed-vs-tunable contrast with NoiseGraph's `alpha·Sq + beta·Se`. It
   needed **zero core edits**, confirming the unified schema→constructor
   wiring below delivered on its promise for the allocator path.
-  Still to come: the QOS (router) baseline for the full "DevQ vs QOS"
-  story. The generic schema→constructor wiring the scheduler axis
+  **QOS (the first scored router, `[QOS]`) has since landed** as a
+  `research/` plugin — a port of QOS's which-QPU decision (its Sec. 6
+  fidelity estimator feeding its Sec. 8 relative-delta trade-off),
+  benchmarked against the default NoiseRouter by
+  `research/qos_comparison.py` on the QASMBench small suite, ranked on
+  **fidelity** (the metric a router's which-QPU choice actually moves), with
+  a genuine weight sweep over its `qos.fidelity_weight`/`qos.util_weight`
+  space. It carries three recorded faithfulness caveats (dropped crosstalk
+  term, device-representative rather than per-mapping fidelity, and an
+  inverted utilisation sign — see `[QOS]`). It needed **zero core edits to
+  the plugin path**, but it *did* surface — and drive the fix for — a real
+  sweep-infrastructure gap: plugin-weight sweeping had been generalised for
+  the scheduler axis only, while the router and allocator axes still
+  hardcoded the built-ins' qubit/edge weight group, so a plugin router or
+  allocator with its *own* weights could not be swept. That is now fixed
+  uniformly: all three axes derive their swept keys from the component's
+  `live_params()` (the router and allocator `_AXES` entries flipped to
+  derive, `_cost_params` simplified, and NoiseRouter confirmed to keep its
+  fixed queue/noise mix out of `live_params()` and recover it terms-first on
+  replay), all covered and mutation-tested. With QOS landed, **all three
+  scored-axis baselines — scheduler (NAQJS), allocator (Mapomatic), router
+  (QOS) — are in.** A cross-axis composition demonstration
+  (`research/qos_composition.py`) runs all three together as one stack.
+  The generic schema→constructor wiring the scheduler axis
   introduced has since been **unified across all three build paths**
   (scheduler, allocator, and router now inject their `CONFIG_SCHEMA` keys
   through one shared mechanism, `_schema_kwargs`), with the parameter name
   derived by rewriting the namespace dot to `___` so a plugin key may reuse
-  a core name without collision — so that baseline needs no further core
-  wiring, only the plugin class itself.
+  a core name without collision.
 - **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer,
   folding in the comparison modes.
 - **5.8 — real hardware** 🔭 gated on credits and access.

@@ -52,6 +52,35 @@ like-for-like rather than a comparison of two differently-defined
 "fidelities". See [`METRICS.md`](METRICS.md) (fidelity) and
 [`ROADMAP.md`](ROADMAP.md).
 
+QOS's spatial *which-QPU* decision — its estimator (Sec. 6) predicting
+per-QPU fidelity, feeding its scheduler's formula-based policy (Sec. 8)
+that trades fidelity against waiting time and utilisation — is a DevQ
+*router* decision. DevQ ports it as a scored, sweepable router baseline
+(`research/baselines/qos_router.py`), the first scored **router** baseline
+(NAQJS `[NAQJS]` is a scheduler; Mapomatic `[Mapomatic]` is an allocator).
+It scores each candidate device by Sec. 6's numerical-cost fidelity and
+selects with Sec. 8's relative-delta trade-off, with `qos.fidelity_weight`
+($c$) and `qos.util_weight` ($\beta$) as its swept weights. This makes it
+the third scored axis and the honest contrast with the built-in
+`NoiseRouter`: QOS combines relative deltas against the candidate field
+where NoiseRouter min-max-normalises and additively weights, and QOS adds
+an explicit utilisation objective NoiseRouter has no analogue for.
+Faithfulness notes are recorded at the use-site (three caveats): Sec. 6's
+crosstalk error product is **dropped**, because DevQ's calibration model
+carries no crosstalk term and a fake backend publishes none, so a value
+would be fabricated rather than measured; the fidelity estimate is
+**device-representative** (the best available $n$-qubit region for the
+circuit's shape) rather than per-transpiled-mapping, because DevQ layers
+placement in the allocator *below* the router and a router has no mapping
+at decision time — the router-level analogue of NAQJS's unported stochastic
+stage and Mapomatic's VF2→BFS substitution; and Sec. 8's utilisation sign
+is **inverted** ($-\beta$), because QOS rewards utilisation to serve its
+multi-programmer (packing QPUs), machinery DevQ's router does not have, so
+the faithful port spreads load instead. A milder adaptation, the
+min-of-field reference for the relative deltas (DevQ scores candidates
+independently, not pairwise), is recorded in the class docstring. See
+[`COST_MODEL.md`](COST_MODEL.md) and [`ROADMAP.md`](ROADMAP.md).
+
 ### [NAQJS] — the first scored-scheduler baseline
 Wenjie Wu, Yiquan Wang, Ge Yan, Yuming Zhao, Bo Zhang, and Junchi Yan. "On
 Reducing the Execution Latency of Superconducting Quantum Processors via
