@@ -1,0 +1,97 @@
+========================================================================
+DevQ — RESULTS SUMMARY (numbers only)
+========================================================================
+
+------------------------------------------------------------------------
+1. REAL HARDWARE  (IBM, 2x Heron r2 — ibm_fez, ibm_marrakesh, 512 shots)
+   source: python -m research.run_real_hardware
+------------------------------------------------------------------------
+circuit       device          Hellinger    TVD
+------------------------------------------------------------------------
+bell          ibm_marrakesh      0.9959    0.0156
+deutsch_n2    ibm_marrakesh      0.9920    0.0176
+qaoa_n3       ibm_marrakesh      0.9807    0.1200
+iswap_n2      ibm_fez            0.9727    0.0273
+ghz           ibm_fez            0.9488    0.0508
+toffoli_n3    ibm_fez            0.9395    0.0605
+wstate_n3     ibm_marrakesh      0.9354    0.0729
+------------------------------------------------------------------------
+Hellinger:  min 0.9354   median 0.9727   mean 0.9664   max 0.9959
+Routing:    marrakesh 4  |  fez 3         load_balance (by_count) 0.875
+
+
+------------------------------------------------------------------------
+2a. NAQJS vs PACKING  (scheduler axis)
+    workload: qasmbench_contended.json  |  4x ibm.simulated
+    source: python -m research.naqjs_qasmbench_comparison
+------------------------------------------------------------------------
+metric                          naqjs       packing     winner
+------------------------------------------------------------------------
+throughput.execution (j/s)      9.2854      9.0179      naqjs
+throughput.turnaround (j/s)     8.9936      8.6962      naqjs
+queue_latency.median (s)        0.5713      0.4651      packing
+utilisation.system              0.9966      0.9872      naqjs
+------------------------------------------------------------------------
+weight sweep: 71 flip edges (width/shots/seq simplex)
+
+
+------------------------------------------------------------------------
+2b. MAPOMATIC vs NOISE_GRAPH  (allocator axis)
+    workload: qasmbench_small.json  |  headline: fidelity
+    source: python -m research.mapomatic_comparison
+------------------------------------------------------------------------
+metric                          mapomatic   noise_graph winner
+------------------------------------------------------------------------
+fidelity.hellinger.median       0.9053      0.8770      mapomatic
+fidelity.hellinger.mean         0.8531      0.8585      noise_graph
+fidelity.hellinger.min          0.2725      0.3076      noise_graph
+fidelity.tvd.median             0.1372      0.1299      noise_graph
+throughput.execution (j/s)      4.0134      4.0555      ~equal
+queue_latency.median (s)        10.9301     9.8510      noise_graph
+utilisation.system              0.9076      0.7824      mapomatic
+rejection_rate                  0.2143      0.2143      equal
+
+
+------------------------------------------------------------------------
+2c. QOS vs NOISE  (router axis)
+    workload: qasmbench_small.json  |  headline: fidelity
+    source: python -m research.qos_comparison
+------------------------------------------------------------------------
+metric                          qos         noise       winner
+------------------------------------------------------------------------
+fidelity.hellinger.median       0.8658      0.8770      noise
+fidelity.hellinger.mean         0.7973      0.8672      noise
+fidelity.hellinger.min          0.3569      0.3354      qos
+fidelity.tvd.median             0.1509      0.1299      noise
+throughput.execution (j/s)      3.9230      4.1302      noise
+queue_latency.median (s)        9.2570      10.6749     qos
+utilisation.system              0.9031      0.8004      qos
+rejection_rate                  0.2143      0.2143      equal
+
+
+------------------------------------------------------------------------
+2d. DevQ DEFAULTS vs COMPOSED BASELINES
+    workload: qasmbench_small.json  |  4x ibm.simulated
+    defaults  = noise / noise_graph / packing
+    composed  = mapomatic / qos / naqjs
+    source: python -m research.qos_composition
+------------------------------------------------------------------------
+metric                          defaults    composed    winner
+------------------------------------------------------------------------
+fidelity.hellinger.median       0.8857      0.8687      defaults
+fidelity.hellinger.mean         0.8685      0.8116      defaults (~)
+fidelity.hellinger.min          0.3354      0.2798      defaults (~)
+fidelity.tvd.median             0.1274      0.1348      defaults
+throughput.execution (j/s)      4.1452      4.0495      ~equal
+queue_latency.median (s)        10.8357     9.9204      composed
+utilisation.system              0.7961      0.8918      composed
+rejection_rate                  0.2143      0.2143      equal
+------------------------------------------------------------------------
+(~) = completion-order-sensitive; median is the firm number
+
+========================================================================
+Notes: simulated numbers vs a pinned calibration snapshot, not hardware.
+On real hardware only fidelity/routing/rejection/queue_latency are trusted;
+throughput/utilisation are IBM-queue-poisoned. Cite median (stable); mean
+and min wobble ~0.01 with completion order.
+========================================================================
