@@ -58,7 +58,7 @@ _REPO_ROOT = os.path.dirname(_HERE)
 from benchmark import runner as R
 from benchmark import metrics as M
 from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
-from research.providers.ibm.ibm_real_provider import IBMRealProvider
+from research.providers.ibm_real_provider import IBMRealProvider
 from frontends.qasm2.qasm2_frontend import QASM2Frontend
 from benchmark.reference import compute_ideals
 
