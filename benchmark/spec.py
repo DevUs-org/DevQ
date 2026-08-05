@@ -60,7 +60,8 @@ from devq import DevQError
 
 # Every key the parser understands, per level. Anything outside these
 # sets is an error — see _reject_unknown.
-_TOP_KEYS    = frozenset({"name", "seed", "config", "devices", "arrival", "jobs"})
+_TOP_KEYS    = frozenset({"name", "seed", "config", "devices", "arrival",
+                          "jobs", "secrets"})
 _DEVICE_KEYS = frozenset({"id", "provider", "backend", "config"})
 _JOB_KEYS    = frozenset({"circuit", "repeat", "max_qubit_error",
                           "max_edge_error", "max_1q_gate_error",
@@ -219,6 +220,29 @@ def validate_spec(spec, source="<spec>"):
     if "config" in spec and not isinstance(spec["config"], str):
         raise SpecError(f"{source}: 'config' must be a path string.")
 
+    # ── secrets ───────────────────────────────────────────────────────────
+    # A flat dict of provider-vocabulary keys to values, delivered to the
+    # provider constructor as one opaque dict. DevQ owns the RESOLUTION (the
+    # values are normally ${ENV_VAR} placeholders substituted by load_spec)
+    # and the LEAK-SAFETY (the block is stripped from the verbatim spec that
+    # reaches the log — see load_spec / build_session), but NOT the
+    # vocabulary: one provider's "token" is another's "key" or "endpoint",
+    # so DevQ never inspects the key names. Values must be strings, since a
+    # resolved placeholder always is; a non-string is a spec error, not a
+    # thing to coerce, because DevQ does not know what the value means.
+    if "secrets" in spec:
+        secrets = spec["secrets"]
+        if not isinstance(secrets, dict):
+            raise SpecError(f"{source}: 'secrets' must be an object mapping "
+                            f"provider-defined names to values.")
+        for k, v in secrets.items():
+            if not isinstance(v, str):
+                raise SpecError(
+                    f"{source}: secret '{k}' must be a string (normally a "
+                    f"${{ENV_VAR}} placeholder). DevQ does not interpret "
+                    f"secret values, so it cannot coerce a "
+                    f"{type(v).__name__}.")
+
     if not spec["devices"]:
         raise SpecError(f"{source}: 'devices' is empty — a run needs at "
                         f"least one device.")
@@ -349,27 +373,52 @@ def validate_spec(spec, source="<spec>"):
     return spec
 
 
-def resolve_seed(provider_entry, spec_seed, device_id):
+def _construct_provider(provider_entry, spec_seed, secrets):
     '''
-    Construct one device's provider with the spec's seed.
+    Construct one device's provider from the spec, passing the spec seed
+    and — only if the constructor accepts it — the resolved secrets dict.
 
-    Returns (provider_instance, seed_effective, seed_source, warning).
-    The warning slot is kept — and always None — because callers record
-    it in the log header, and there is no longer anything that can
-    conflict.
+    SEED is passed positionally-by-name when the spec supplies one, exactly
+    as before; an absent seed constructs the provider unseeded.
 
-    THIS USED TO BE A NEGOTIATION. Providers could be registered as
-    ready-made instances, so an instance might carry a seed of its own
-    while the spec asked for a different one, and the parser had to pick
-    a winner and warn about it. Providers are now CLASS-ONLY (see
-    docs/REGISTRY.md), so nothing exists to hold a competing seed at the
-    moment a spec is read: DevQ constructs the provider here, with this
-    seed, or unseeded if the spec gave none. A caller who wants a
-    different seed constructs the provider themselves and attaches the
-    device with add_device().
+    SECRETS are passed as ONE opaque dict to a `secrets` constructor
+    parameter, and ONLY when the provider's __init__ actually names that
+    parameter. A provider that wants spec-supplied credentials declares
+    `def __init__(self, seed=None, secrets=None)` and reads its own keys out
+    of the dict; every existing provider, whose __init__ names no `secrets`,
+    is constructed exactly as before and never sees the argument. This is
+    the same "inject only what the constructor names" discipline the
+    component schema→ctor wiring uses, and it is why adding this coupled
+    nothing: DevQ passes a dict, the provider owns the vocabulary inside it,
+    and a provider that does not opt in is untouched.
+
+    Secrets are delivered to the CONSTRUCTOR (not get_device) deliberately:
+    credentials authenticate the provider's whole session — one account
+    handle serving every backend it builds — not an individual device.
+
+    Returns (provider_instance, seed_effective, seed_source, warning). The
+    warning slot is kept — and always None — because nothing can conflict
+    under class-only registration.
     '''
-    instance = (provider_entry(seed=spec_seed) if spec_seed is not None
-                else provider_entry())
+    import inspect
+
+    kwargs = {}
+    if spec_seed is not None:
+        kwargs["seed"] = spec_seed
+
+    # Pass secrets only if the constructor names the parameter, so a
+    # provider that does not opt in is constructed exactly as before.
+    if secrets:
+        params = inspect.signature(provider_entry.__init__).parameters
+        accepts_secrets = (
+            "secrets" in params
+            or any(p.kind is inspect.Parameter.VAR_KEYWORD
+                   for p in params.values())
+        )
+        if accepts_secrets:
+            kwargs["secrets"] = secrets
+
+    instance = provider_entry(**kwargs)
     source = "spec" if spec_seed is not None else "unseeded"
     return instance, spec_seed, source, None
 
@@ -399,6 +448,11 @@ def build_session(spec, registry_owner, source="<spec>", verbatim=None):
     if verbatim is None:
         verbatim = spec
     spec_seed = spec.get("seed")
+    # Resolved secrets (values already env-substituted by load_spec) are
+    # delivered to every provider constructor that opts in. Session-level:
+    # credentials authenticate the account, not one device, so the same
+    # dict serves each device's provider.
+    secrets   = spec.get("secrets") or {}
     warnings  = []
     devices   = []
 
@@ -421,8 +475,8 @@ def build_session(spec, registry_owner, source="<spec>", verbatim=None):
                 f"names and never import by path."
             )
 
-        instance, seed_eff, seed_src, warning = resolve_seed(
-            provider_entry, spec_seed, device_id
+        instance, seed_eff, seed_src, warning = _construct_provider(
+            provider_entry, spec_seed, secrets
         )
         if warning:
             warnings.append(warning)
@@ -432,9 +486,17 @@ def build_session(spec, registry_owner, source="<spec>", verbatim=None):
         except SpecError:
             raise
         except Exception as exc:
+            # Do NOT echo the resolved backend dict: a placeholder-resolved
+            # value in it (an endpoint, or a secret a provider chose to put
+            # in backend rather than in the secrets block) would otherwise
+            # reach this SpecError, which callers LOG. Name the backend's
+            # keys — enough to locate the fault — never their resolved
+            # values. The verbatim spec in the log header still shows the
+            # ${...} placeholders for full context.
+            keys = ", ".join(sorted(entry["backend"])) or "(none)"
             raise SpecError(
                 f"{where}: provider '{name}' could not build a device from "
-                f"backend spec {entry['backend']!r}: "
+                f"its backend spec (keys: {keys}): "
                 f"{type(exc).__name__}: {exc}"
             ) from None
 
@@ -458,8 +520,24 @@ def build_session(spec, registry_owner, source="<spec>", verbatim=None):
 
     shell = dq.build(interactive=False)
 
+    # Mask the secrets block in the spec that reaches the log. Normally the
+    # verbatim already holds ${ENV_VAR} placeholders (load_spec keeps them
+    # literal), which are safe — an env-var NAME is not sensitive. But a
+    # spec that hardcoded a literal secret would otherwise log it verbatim,
+    # so we replace every secret value with a fixed marker regardless. The
+    # KEYS are kept (they are provider vocabulary, e.g. "token", not the
+    # secret) so the log still shows WHICH secrets a run used, never their
+    # values. A shallow copy suffices: only the top-level "secrets" entry is
+    # rebound, leaving the caller's verbatim object untouched.
+    logged_spec = verbatim
+    if isinstance(verbatim, dict) and "secrets" in verbatim:
+        logged_spec = dict(verbatim)
+        logged_spec["secrets"] = {
+            k: "***" for k in (verbatim["secrets"] or {})
+        }
+
     meta = {
-        "spec": verbatim,
+        "spec": logged_spec,
         # WHAT WAS REQUESTED, taken from the verbatim spec: a placeholder
         # spec shows "${DEVQ_SEED}" here, not 42. This keeps the field
         # true to its name and consistent with the verbatim `spec` beside

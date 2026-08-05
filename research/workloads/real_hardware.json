@@ -1,0 +1,64 @@
+{
+    "name": "real_hardware",
+    "seed": 7,
+    "config": "research/configs/real_hardware.config.json",
+    "secrets": {
+        "token": "${IBM_QUANTUM_TOKEN}"
+    },
+    "devices": [
+        {
+            "id": "real_a",
+            "provider": "ibm.real",
+            "backend": {
+                "backend_name": "${IBM_BACKEND_A}"
+            }
+        },
+        {
+            "id": "real_b",
+            "provider": "ibm.real",
+            "backend": {
+                "backend_name": "${IBM_BACKEND_B}"
+            }
+        },
+        {
+            "id": "real_c",
+            "provider": "ibm.real",
+            "backend": {
+                "backend_name": "${IBM_BACKEND_C}"
+            }
+        }
+    ],
+    "arrival": {
+        "pattern": "batch"
+    },
+    "jobs": [
+        {
+            "circuit": "test_circuits/bell.qasm",
+            "shots": 512
+        },
+        {
+            "circuit": "test_circuits/ghz.qasm",
+            "shots": 512
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/deutsch_n2.qasm",
+            "shots": 512
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/iswap_n2.qasm",
+            "shots": 512
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/wstate_n3.qasm",
+            "shots": 512
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/toffoli_n3.qasm",
+            "shots": 512
+        },
+        {
+            "circuit": "research/circuits/qasmbench/small/qaoa_n3.qasm",
+            "shots": 512
+        }
+    ]
+}

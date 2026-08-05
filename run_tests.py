@@ -2664,8 +2664,8 @@ def block_repo_hygiene():
     # headers across numpy, scipy and qiskit. Blocklisting virtualenv
     # directory names is the wrong fix: the next one is called .venv or
     # env. Naming what IS ours cannot go wrong that way.
-    OURS = ("benchmark", "circuits", "config", "hardware", "kernel",
-            "providers", "registry", "shell")
+    OURS = ("benchmark", "circuits", "config", "frontends", "hardware", "kernel",
+            "providers", "registry", "research", "shell")
     roots = [os.path.join(root, d) for d in OURS]
     untagged = []
 
