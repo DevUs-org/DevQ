@@ -61,7 +61,7 @@ None to fall back on a Qiskit-saved account (QiskitRuntimeService()).
 
 Usage (see research/run_real_hardware.py for the full proof-run):
 
-    from research.providers.ibm.ibm_real_provider import IBMRealProvider
+    from research.providers.ibm_real_provider import IBMRealProvider
     ibm = IBMRealProvider(token=os.environ["IBM_QUANTUM_TOKEN"])
     dev = ibm.get_device("ibm_sherbrooke")
 '''

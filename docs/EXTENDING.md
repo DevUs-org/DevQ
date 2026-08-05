@@ -89,6 +89,19 @@ If your provider is stochastic, accept `seed=None` in `__init__`, call
 `super().__init__(seed)`, and derive all randomness from a provider-local
 generator — see [Reproducibility & Seeding](CONFIGURATION.md#reproducibility--seeding).
 
+If your provider needs a **credential** (an API token, an endpoint) to
+reach real hardware or a remote service, add a `secrets=None` parameter to
+`__init__` and read your own keys out of it:
+`def __init__(self, seed=None, secrets=None)`, then
+`token = (secrets or {}).get("token")`. A spec-driven run supplies these
+through its top-level `secrets` block, which DevQ resolves from the
+environment and delivers here while keeping the resolved value out of every
+log (see [`WORKLOADS.md`](WORKLOADS.md)). You choose the key names — DevQ
+never inspects them — and a provider that names no `secrets` parameter is
+simply constructed without one. Put credentials here, never in a
+`get_device()` argument or a config key: both are logged in full, and this
+channel exists precisely so a secret is not.
+
 **Optionally, `reference_ideal(circuit)`** — the noiseless IDEAL
 distribution for a circuit, `{bitstring: probability}` at the same
 Option-B width `execute()` reports, or `None` if this provider cannot

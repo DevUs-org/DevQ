@@ -152,6 +152,75 @@ def _routing_summary(records):
     return rows
 
 
+def smoke(backend_env="IBM_BACKEND_A"):
+    '''
+    Submit ONE Bell circuit to ONE real backend and print the raw counts.
+
+    This exercises the single code path that dry-run cannot: the real
+    SamplerV2 submission — transpile with optimization_level=0 +
+    initial_layout, run on hardware, and read counts back via
+    result[0].data.c.get_counts(). That last step rests on the shared
+    lowering naming its classical register "c"; a wrong assumption there
+    returns empty counts, and it is far cheaper to learn that from one Bell
+    job (a few seconds of QPU time) than from a failed 7-circuit run. A
+    correct result is ~50/50 on "00" and "11".
+    '''
+    token = _require_env("IBM_QUANTUM_TOKEN")
+    backend_name = _require_env(backend_env)
+
+    fe  = QASM2Frontend()
+    cr  = fe.parse(os.path.join(_REPO_ROOT, "test_circuits/bell.qasm"))
+
+    ibm = IBMRealProvider(secrets={"token": token})
+    print(f"Smoke test: 1 Bell circuit -> {backend_name} @ 512 shots.")
+    print("Building device (pulls real calibration)…")
+    device = ibm.get_device(backend_name)
+
+    # on_attach normally runs when the kernel attaches the device; here we
+    # drive execute() directly, so give it the index-keyed session by hand.
+    device.index = 0
+    ibm.on_attach(device)
+
+    # Bell on 2 qubits: identity placement is fine for a smoke test — the
+    # point is the submit/counts path, not the allocator.
+    v2p_map = {0: 0, 1: 1}
+
+    print("Submitting… (this BLOCKS on IBM's real queue — may take a while)")
+    future = ibm.execute(cr, v2p_map, shots=512, device=device)
+    result = future.result()
+
+    print("\n" + "=" * 60)
+    if not result.success:
+        print("SMOKE FAILED — execute returned an error:")
+        print(f"  {result.error}")
+        print("The submit path is not working; do NOT run the full proof-run "
+              "yet.")
+        return result
+
+    counts = result.counts
+    total  = sum(counts.values()) or 1
+    print("SMOKE RESULT — raw counts from real hardware:")
+    for bits in sorted(counts, key=lambda b: -counts[b]):
+        bar = "#" * round(40 * counts[bits] / total)
+        print(f"  {bits}: {counts[bits]:5d}  {bar}")
+
+    # Sanity read: a Bell state should concentrate on 00 and 11.
+    good = counts.get("00", 0) + counts.get("11", 0)
+    frac = good / total
+    width_ok = all(len(b) == 2 for b in counts)
+    print(f"\n  '00'+'11' share: {frac:.1%} of shots "
+          f"(noiseless is 100%; real hardware loses some to noise).")
+    if frac > 0.6 and width_ok:
+        print("  Counts are shaped correctly (2-bit strings, mass on the Bell "
+              "peaks).\n  The submit/counts path works — the full proof-run "
+              "is safe to run.")
+    else:
+        print("  ⚠ Counts look off (wrong width, or mass not on 00/11). "
+              "Inspect before\n  running the full proof-run — this is exactly "
+              "what the smoke test is for.")
+    return result
+
+
 def run(dry_run=False):
     import shutil
     shutil.rmtree(OUT_DIR, ignore_errors=True)
@@ -216,42 +285,92 @@ def run(dry_run=False):
     fid = M.fidelity(records)
     routing = _routing_summary(records)
 
-    _report(routing, fid, ideals)
+    report_text = _report(routing, fid, ideals)
+    _persist_results(OUT_DIR, routing, fid, ideals, report_text)
     return {"routing": routing, "fidelity": fid}
 
 
-def _report(routing, fid, ideals):
+def _persist_results(out_dir, routing, fid, ideals, report_text):
+    '''
+    Write the interpreted result to disk, not just the terminal. A real run
+    costs QPU time and hours of queue waiting, so its RESULT — the routing
+    decision and per-circuit fidelity — must be durable and citable, not
+    scrollback. Two forms beside the run's raw log/manifest/metrics:
+
+      results.json — machine-readable (routing + fidelity), for the paper.
+      results.txt  — the exact human-readable table _report printed.
+
+    The raw measured counts already live in the run's .jsonl log in the same
+    directory; this adds the joined-with-ideal interpretation the log does
+    not itself carry (a real provider records no ideals — fidelity is joined
+    here against the simulated ideal).
+    '''
     label_by_hash = {h: d.get("label") for h, d in ideals.items()}
-    print("\n" + "=" * 72)
-    print("DevQ on REAL IBM hardware — routing + measured fidelity")
-    print("=" * 72)
-    print("Each circuit was routed across 3 physical QPUs by NoiseRouter "
-          "(real calibration),")
-    print("executed on the chosen device honouring allocator placement, and "
-          "scored vs a")
-    print("noiseless ideal from a separate simulated provider.\n")
+    rows = []
+    for r in routing:
+        rows.append({
+            "job_id"   : r["job_id"],
+            "circuit"  : label_by_hash.get(r["chash"], r["chash"]),
+            "device"   : r["device"],
+            "state"    : r["state"],
+            "hellinger": fid["per_job"].get(r["job_id"], {}).get("hellinger"),
+            "tvd"      : fid["per_job"].get(r["job_id"], {}).get("tvd"),
+        })
+    payload = {
+        "per_circuit": rows,
+        "hellinger"  : fid["hellinger"],
+        "tvd"        : fid["tvd"],
+    }
+    with open(os.path.join(out_dir, "results.json"), "w") as f:
+        json.dump(payload, f, indent=2)
+    with open(os.path.join(out_dir, "results.txt"), "w") as f:
+        f.write(report_text)
+    print(f"\nResults written to {out_dir}/ (results.json, results.txt) "
+          f"alongside the raw run log.")
+
+
+def _report(routing, fid, ideals):
+    '''Build the human-readable result table, print it, and return the text
+    so the caller can persist the exact same rendering to disk.'''
+    label_by_hash = {h: d.get("label") for h, d in ideals.items()}
+    n_devices = len({r["device"] for r in routing}) or 1
+    lines = []
+    def out(s=""):
+        print(s)
+        lines.append(s)
+
+    out("\n" + "=" * 72)
+    out("DevQ on REAL IBM hardware — routing + measured fidelity")
+    out("=" * 72)
+    out(f"Each circuit was routed across {n_devices} physical QPU(s) by "
+        f"NoiseRouter (real")
+    out("calibration), executed on the chosen device honouring allocator "
+        "placement,")
+    out("and scored vs a noiseless ideal from a separate simulated "
+        "provider.\n")
 
     per_job = fid["per_job"]
-    print(f"{'circuit':40s} {'device':10s} {'state':10s} {'Hellinger':>10s}")
-    print("-" * 72)
+    out(f"{'circuit':40s} {'device':14s} {'state':10s} {'Hellinger':>10s}")
+    out("-" * 76)
     for row in routing:
         label = label_by_hash.get(row["chash"], row["chash"])
         short = os.path.basename(label) if label else "?"
         h = per_job.get(row["job_id"], {}).get("hellinger")
         hstr = f"{h:.4f}" if h is not None else "  n/a"
-        print(f"{short:40s} {row['device']:10s} {row['state']:10s} {hstr:>10s}")
+        out(f"{short:40s} {row['device']:14s} {row['state']:10s} {hstr:>10s}")
 
-    print("-" * 72)
+    out("-" * 76)
     dist = fid["hellinger"]
     def f(x): return f"{x:.4f}" if x is not None else "n/a"
-    print(f"Hellinger fidelity across jobs: "
-          f"median={f(dist['median'])}  mean={f(dist['mean'])}  "
-          f"min={f(dist['min'])}  max={f(dist['max'])}")
-    print("\nInterpretation: higher is closer to the noiseless ideal. The "
-          "hand controls\n(Bell -> 00/11, GHZ -> 000/111, iswap -> 10, "
-          "toffoli -> 111) are the sanity\nanchors; a low control fidelity "
-          "points at the pipeline, a low benchmark\nfidelity is the real "
-          "device's noise.")
+    out(f"Hellinger fidelity across jobs: "
+        f"median={f(dist['median'])}  mean={f(dist['mean'])}  "
+        f"min={f(dist['min'])}  max={f(dist['max'])}")
+    out("\nInterpretation: higher is closer to the noiseless ideal. The "
+        "hand controls\n(Bell -> 00/11, GHZ -> 000/111, iswap -> 10, "
+        "toffoli -> 111) are the sanity\nanchors; a low control fidelity "
+        "points at the pipeline, a low benchmark\nfidelity is the real "
+        "device's noise.")
+    return "\n".join(lines)
 
 
 def main():
@@ -260,8 +379,15 @@ def main():
     ap.add_argument("--dry-run", action="store_true",
                     help="Validate wiring and compute ideals without touching "
                          "hardware or spending QPU time.")
+    ap.add_argument("--smoke", action="store_true",
+                    help="Submit ONE Bell circuit to ONE backend "
+                         "(IBM_BACKEND_A) and print raw counts — the cheap "
+                         "sanity check before the full run.")
     args = ap.parse_args()
-    run(dry_run=args.dry_run)
+    if args.smoke:
+        smoke()
+    else:
+        run(dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

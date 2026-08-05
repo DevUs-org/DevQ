@@ -76,6 +76,40 @@ arbitrate and no override warning. A caller who wants a seed the spec
 does not name constructs the provider themselves and attaches its device
 with `add_device()` instead.
 
+**Provider credentials — the `secrets` block.** A provider that needs a
+credential to run (an API token, an endpoint) receives it through a
+top-level `secrets` object, resolved from the environment by the same
+`${NAME}` placeholders and delivered to the provider's constructor:
+
+```json
+{
+  "name": "real_hardware",
+  "secrets": { "token": "${IBM_QUANTUM_TOKEN}" },
+  "devices": [ { "id": "d0", "provider": "ibm.real",
+                 "backend": { "backend_name": "${IBM_BACKEND_A}" } } ],
+  "jobs": [ ... ]
+}
+```
+
+Three things make this safe and general. **DevQ owns resolution:** the
+`${...}` values resolve at load like any other placeholder, and a missing
+variable fails at load, not three layers down. **DevQ owns leak-safety:**
+the resolved secret is delivered only to the constructor and never reaches
+disk — the `secrets` block is masked in the logged spec (its keys kept, its
+values shown as `***`), the verbatim log keeps the `${NAME}` literal, and
+device-build errors never echo resolved values. So the log shows *which*
+secrets a run used, never their values. **The provider owns the
+vocabulary:** DevQ passes the whole `secrets` dict as one opaque argument
+and never inspects the key names, so one provider's `token` is another's
+`key` or `endpoint`. A provider opts in by naming a `secrets` parameter in
+its constructor (`def __init__(self, seed=None, secrets=None)`) and reading
+its own keys out of the dict; a provider that names no such parameter is
+constructed exactly as before and never sees it. The `secrets` block is the
+one place a credential belongs — never a device `backend` field, never a
+config key, both of which are logged in full. See
+[`REGISTRY.md`](REGISTRY.md) for why credentials stay off the config
+cascade.
+
 **Registering plugin components.** `register_providers` is one of a set —
 `run()` accepts a `register_*` map for every registrable kind, so a
 research baseline that lives outside core (a plugin scheduler, allocator or

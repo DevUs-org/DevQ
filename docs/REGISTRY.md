@@ -136,6 +136,21 @@ carried its own seed, and a workload spec asking for a different one had
 to be reconciled against it — a conflict with no correct answer, only a
 documented winner.
 
+Direct construction is not the only way a credential reaches a provider,
+though — a **spec-driven** run cannot construct the provider by hand, since
+the runner builds it from the registered class. For that path a provider
+receives credentials through the spec's top-level `secrets` block, which
+DevQ resolves from the environment and delivers to the constructor while
+keeping the resolved value out of every logged artifact (see
+[`WORKLOADS.md`](WORKLOADS.md)). This does not weaken the class-only rule:
+DevQ still constructs the provider from its class, and the credential still
+never reaches the registry — it travels as an opaque constructor argument
+the registry never sees. The reason a credential goes here and **not** into
+a namespaced config key (the router's route) is that config keys cascade,
+validate, and appear in `qconfig` and the log — everything you want for a
+tunable weight and exactly what you must never do to a secret. Credentials
+stay off the cascade by design; the `secrets` block is their one channel.
+
 The common thread is worth stating on its own: **a registered instance
 is state that escaped the system's own resolution machinery.** Whatever
 that machinery is for — per-device isolation, the config cascade, spec
