@@ -1744,7 +1744,7 @@ queue is sweepable through the identical derived machinery. A mock
 id) proves explain and the sweep work for a scheduler subclass, while the
 three shipped schedulers — FCFS, ShortestDepth, Packing, none of which
 score — are asserted not-sweepable, the honest silence. The real scored
-consumer is the QOS baseline in Phase 5.6; nothing here fakes a scheduling
+consumer is the NAQJS baseline; nothing here fakes a scheduling
 parameter to exercise the seam.
 
 

@@ -333,7 +333,7 @@ A headless benchmark runner with a declarative workload spec and a
 structured event log **exists** — `benchmark/runner.py`, see
 [`docs/WORKLOADS.md`](docs/WORKLOADS.md). It is the better tool for a
 matrix comparison than driving shells by hand. There is **no `qbench`
-shell command**; that is a later phase, so check
+shell command**; it is not currently available, so check
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for current status before assuming
 one is available.
 

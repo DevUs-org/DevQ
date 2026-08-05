@@ -14,8 +14,8 @@ Each returns STRUCTURED data. `render_text(result, to=...)` turns either
 into a plain-text table or report and, given a path, writes it to a `.txt`
 file. The split is deliberate and matches the rest of the benchmark layer
 (metrics compute vs. write; the sweep's primitive vs. aggregate): the mode
-returns data so a second consumer — a test, a notebook, and the qbench
-shell in Phase 5.7, which "folds in the comparison modes" — renders it its
+returns data so a second consumer — a test, a notebook, and a future
+qbench shell, which would "fold in the comparison modes" — renders it its
 own way without parsing a string or calling a parallel path. The text
 renderer is one view over that data, not the data itself.
 

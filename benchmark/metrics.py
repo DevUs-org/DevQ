@@ -18,10 +18,11 @@ the reproducibility obligation (plain data, fixed conventions) that this
 module is written to satisfy.
 
 Implemented here: throughput, queue latency, utilisation, rejection
-rate, and load imbalance — the five offline metrics that close Phase
-5.3. Fidelity, the sixth metric, is deferred to Phase 5.4: it compares
-measured-bit distributions against an ideal or a noiseless reference
-run, and that reference machinery is 5.4 work.
+rate, and load imbalance — five offline metrics computed purely from a
+run's event log. Fidelity, the sixth metric, lives separately: it
+compares measured-bit distributions against an ideal or a noiseless
+reference run, and so depends on the reference-run machinery rather than
+on the event log alone.
 '''
 
 from statistics import mean, median
@@ -560,7 +561,7 @@ def write_metrics(run_dir):
     This is the thin writer, kept apart from the pure functions above:
     the comparative modes (inter/intra-component) load metrics.json to
     diff runs, so the artifact has a reason to exist independent of any
-    command. A future `qbench` (Phase 5.7) renders the SAME numbers to a
+    command. A future `qbench` shell renders the SAME numbers to a
     terminal by calling `compute`; it does not recompute them a second
     way, so there is one source of truth and the file and the view never
     drift.

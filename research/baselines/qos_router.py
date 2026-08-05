@@ -29,8 +29,8 @@ docs/REFERENCES.md [QOS]):
      docs/EXTENDING.md "Device calibration model"), and a Qiskit fake
      backend publishes no crosstalk data, so a synthesised value would be
      fabricated calibration, not a measurement.  The crosstalk product is
-     therefore omitted, not invented.  Closing this is the documented
-     "adding a calibration term" path, a future core sub-phase.
+     therefore omitted, not invented.  Closing this would follow the
+     documented "adding a calibration term" path.
 
   2. DEVICE-REPRESENTATIVE, MAPPING-FREE FIDELITY.  Paper Sec. 6 evaluates
      fidelity over a concrete transpiled layout (logical->physical mapping +

@@ -52,7 +52,8 @@ scheduler "winning". The utilisation ratio is stable; the decision-space
 SWEEP is deterministic and trustworthy. Treat the ranking block below as a
 demonstration of the comparison machinery, not as a performance claim; for a
 performance claim, run each scheduler N times and report mean ± noise floor
-on a CONTENDED workload (see the pending item in the session handoff).
+on a CONTENDED workload (see the deterministic-vs-wall-clock split in
+docs/METRICS.md).
 '''
 
 import os

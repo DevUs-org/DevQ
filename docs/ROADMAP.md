@@ -138,185 +138,59 @@ without touching DevQ core. Open research problems that live at the router
 layer: cross-backend shot aggregation, coherence-window scheduling, and
 work migration of WAITING jobs.
 
-Phase 5 closed once all three scored-axis baselines landed (5.6): the
-platform is a result, not just infrastructure. The sub-phase breakdown
-below is retained as a record of how it was built.
+Phase 5 closed once all three scored-axis baselines landed: the platform
+is a result, not just infrastructure. What it delivered:
 
-- **5.1 — determinism, registry, event log** ✅ seeded per-device
-  determinism, the component registry, and the structured event log with
-  two-clock timestamps.
-- **5.2 — spec and runner** ✅ workload specs, the run directory, and
-  `${}` spec placeholders that keep credentials out of logged artifacts.
-- **5.3 — metrics layer** ✅ throughput, queue latency, utilisation,
-  rejection rate and load imbalance, computed offline from a finished run
-  (see [`METRICS.md`](METRICS.md)). This closes 5.3: the metric layer is
-  the measuring surface, and the two pieces once tracked under it have
-  moved to where they actually belong — **fidelity** to 5.4 (it needs the
-  noiseless reference run, which is 5.4 machinery, so it cannot land
-  before that suite exists) and the two **comparison modes** that diff or
-  sweep to 5.5b (they present cross-session results, so they follow the
-  matrix and sweep engine they read from). The *absolute* view — one
-  session's own metric bundle — is not a separate mode: it is exactly the
-  metric bundle this sub-phase produces, so it shipped here in 5.3. Only
-  the inter-component (diff) and intra-component (sweep) modes remain,
-  and those are 5.5b.
-- **5.4 — noiseless reference run and fidelity** ◐ The reference-run
-  machinery and the **fidelity metric** are **done**: a reference-capable
-  provider produces each circuit's exact noiseless ideal
-  (`BaseProvider.reference_ideal`, implemented by `IBMSimulatedProvider`
-  via a density-matrix Aer path), the runner records ideals keyed by
-  circuit hash, and `fidelity()` computes Hellinger fidelity (matching
-  QOS's Qiskit definition) and TVD per job and per session — offline,
-  pure, and covered by the `fidelity` test block and eleven mutation
-  tests (see [`METRICS.md`](METRICS.md), [`TEST_BLOCKS.md`](TEST_BLOCKS.md),
-  [`MUTATION_TESTING.md`](MUTATION_TESTING.md)). The frontend blocker was
-  resolved earlier: the `qasm2` parser keeps gate parameters and both
-  providers honour real measurement, so parameterised circuits parse, run,
-  and yield the measured-bit distributions fidelity compares. **Remaining
-  before 5.5**: assembling the QASMBench workload set and running it
-  through the finished metric to gather numbers — a validation activity on
-  DevQ's machinery, not a change to it (QASMBench is workload data, cited
-  in [`REFERENCES.md`](REFERENCES.md), not a DevQ component).
-- **5.5a — comparison matrix and α/β sweep** ✅ the cross-config
-  analysis engine. Two parts. **The sweep** answers an α/β weight sweep
-  from one recorded run rather than by re-executing every job, and it was
-  built as a *general* capability rather than a router-only one: the
-  `Sweepable` contract (`kernel/sweep.py`) unifies `explain()` (the log's
-  score report) and the sweep into one set of hooks a scoring component
-  supplies once, inherited by `BaseRouter`, `BaseAllocator` and
-  `BaseScheduler` alike. Deciding this seam was general — rather than
-  wiring `explain()`/decomposition into the router alone and retrofitting
-  the other components later — was deliberate: the same "re-weight the
-  recorded raw terms" operation serves any scoring component, and building
-  it router-shaped would have meant tearing it up at the first allocator.
-  `NoiseRouter` and `NoiseGraphAllocator` sit on the contract, each logging
-  the α/β-free cost decomposition (`route` and the new `allocate` event)
-  and sweepable end-to-end from a recorded log with a faithfulness anchor;
-  the scheduler base carries the contract at router-parity though shipped
-  schedulers have no scoring parameter yet and report not-sweepable
-  honestly (the first scored scheduler is the NAQJS baseline in 5.6 — QOS,
-  earlier expected here, resolved to a spatial which-QPU decision and so is
-  a *router* baseline, not a scheduler).
-  Selectable matrix components (`matrix_configs(select=)` and CLI flags)
-  landed here too. **The engine** is `benchmark/comparison.py`:
-  `assemble_matrix` bundles every session's config, metrics and sweepable
-  axes into `comparison.json` (the inter-component surface), and `sweep`
-  re-derives one session's router or allocator decisions across an α/β grid
-  from the recorded scores into `sweep_comp.<axis>.json` — grid sampling
-  with opt-in bisection to localise flips, guarded by the faithfulness
-  anchor and skipping a non-scoring component with a reason. Both artifacts
-  are what the 5.5b modes read.
-- **5.5b — comparison modes** ✅ the reading surface over 5.5a, two
-  modes in `benchmark/comparison_modes.py`: inter-component
-  (`rank_sessions` orders the matrix's sessions by a metric) and
-  intra-component (`present_sweep` reads out one session's weight sweep — its
-  flips, or a refusal with its reason; α/β at 5.5b, generalised to the n-ary
-  simplex in 5.5c below). Each returns structured data with
-  a `render_text` view over it that can write a `.txt`, so the qbench
-  shell (if built) renders the same modes its own way rather than re-deriving
-  them. The *absolute* view — one session's own bundle — is not among
-  them: it is the 5.3 metric bundle, already shipped, so 5.5b is the two
-  genuine comparisons that need 5.5a's engine underneath.
-- **5.5c — n-ary weight sweep** ✅ generalises the sweep from the two-term
-  α/β grid to a component's full weight group of n terms, over the
-  **Scheffé {n, m} simplex-lattice** (`[Scheffe-Mixtures]`). Scale-invariance
-  makes the normalised simplex the faithful search space (weights matter
-  only up to direction), and the winner surface is piecewise-constant, so
-  the sweep enumerates the lattice and localises flips along its **edge
-  graph** by bisection (valid only along edges, never interior chords). At
-  n=2 the lattice is exactly the historical α/β grid and the edge graph the
-  consecutive chain, so the two-term sweep is unchanged — the regression
-  anchor. `sweep(coarse_m=…)` replaces the scalar grid; the schema moves to
-  weight-vector points (`{point, winner}` primitives, weight-vector flip
-  edges). The faithful claim is bounded to **first-flip sensitivity**: replay
-  is exact only up to the first decision that reads state a prior decision
-  mutated (a load-aware router or pool-depleting allocator couples through
-  evolving state), so DevQ treats all components uniformly under that bound
-  rather than over-claiming a full trajectory at arbitrary weights. Touches
-  `comparison.py`, `comparison_modes.py`, and the `comparison`/
-  `comparison_modes` blocks; two mutation survivors (a reversed weight
-  mapping, an inverted bisection) sharpened the tests.
-- **5.6 — baseline plugins** ✅ published baselines to compare against;
-  this is what turns the platform into a result. **NAQJS (the first scored
-  scheduler, `[NAQJS]`) has landed** as a `research/` plugin, proving the
-  plugin path end-to-end, including the never-before-exercised `schedule`
-  scoring seam. Two comparison scripts benchmark it against the default
-  Packing scheduler and sweep its three-weight simplex:
-  `research/naqjs_comparison.py` (the minimal `naqjs.json` workload) and
-  `research/naqjs_qasmbench_comparison.py` (the full QASMBench small suite
-  across four IBM fake backends). Building the scheduler axis completed the
-  sweep infrastructure 5.5c had wired only for router/allocator: the `_AXES`
-  scheduler entry, `live_params`-derived weight keys, plugin reconstruction
-  via an explicit class map, and batch-event dedup — all generic, all core,
-  all covered and mutation-tested. Running NAQJS on QASMBench also required
-  two corrections to the plugin path itself: a shots-feature fallback for
-  jobs that specify no shots (`_resolve_shots`, with a new `naqjs.default_shots`
-  key), and — the one deliberate **core edit** in this phase — generic
-  wiring in `dq.build` that injects a scheduler's dotted `CONFIG_SCHEMA` keys
-  into its constructor (previously scheduler config never reached the
-  constructor at all; only the sweep set the weights). The comparison **mode**
-  was validated with a low-vs-high-contention contrast (`qasmbench_small.json`
-  vs `qasmbench_contended.json`): identical machinery reports a tie when
-  scheduling cannot matter and a measurable, scheduler-attributable divergence
-  when it can — with the honest finding that single-run wall-clock throughput
-  is noise-dominated and needs mean ± noise floor over N runs for a defensible
-  performance number.
-  **Mapomatic (the first scored allocator, `[Mapomatic]`) has since
-  landed** as a `research/` plugin — a faithful port of its
-  product-of-fidelities layout score, benchmarked against the default
-  NoiseGraph allocator by `research/mapomatic_comparison.py` on the
-  QASMBench small suite, ranked on **fidelity** (the metric an allocator's
-  qubit choice actually moves). It is a *non-scoring* policy — its cost is
-  parameter-free, so it exposes no weight simplex to sweep, the deliberate
-  fixed-vs-tunable contrast with NoiseGraph's `alpha·Sq + beta·Se`. It
-  needed **zero core edits**, confirming the unified schema→constructor
-  wiring below delivered on its promise for the allocator path.
-  **QOS (the first scored router, `[QOS]`) has since landed** as a
-  `research/` plugin — a port of QOS's which-QPU decision (its Sec. 6
-  fidelity estimator feeding its Sec. 8 relative-delta trade-off),
-  benchmarked against the default NoiseRouter by
-  `research/qos_comparison.py` on the QASMBench small suite, ranked on
-  **fidelity** (the metric a router's which-QPU choice actually moves), with
-  a genuine weight sweep over its `qos.fidelity_weight`/`qos.util_weight`
-  space. It carries three recorded faithfulness caveats (dropped crosstalk
-  term, device-representative rather than per-mapping fidelity, and an
-  inverted utilisation sign — see `[QOS]`). It needed **zero core edits to
-  the plugin path**, but it *did* surface — and drive the fix for — a real
-  sweep-infrastructure gap: plugin-weight sweeping had been generalised for
-  the scheduler axis only, while the router and allocator axes still
-  hardcoded the built-ins' qubit/edge weight group, so a plugin router or
-  allocator with its *own* weights could not be swept. That is now fixed
-  uniformly: all three axes derive their swept keys from the component's
-  `live_params()` (the router and allocator `_AXES` entries flipped to
-  derive, `_cost_params` simplified, and NoiseRouter confirmed to keep its
-  fixed queue/noise mix out of `live_params()` and recover it terms-first on
-  replay), all covered and mutation-tested. With QOS landed, **all three
-  scored-axis baselines — scheduler (NAQJS), allocator (Mapomatic), router
-  (QOS) — are in.** A cross-axis composition demonstration
-  (`research/qos_composition.py`) runs all three together as one stack.
-  The generic schema→constructor wiring the scheduler axis
-  introduced has since been **unified across all three build paths**
-  (scheduler, allocator, and router now inject their `CONFIG_SCHEMA` keys
-  through one shared mechanism, `_schema_kwargs`), with the parameter name
-  derived by rewriting the namespace dot to `___` so a plugin key may reuse
-  a core name without collision.
-**Deferred, unnumbered ideas (not committed roadmap):**
+- **A structured event log and offline metrics** — every run emits a
+  structured event log with two-clock timestamps (a deterministic decision
+  clock and a host wall-clock), from which five metrics are computed
+  offline: throughput, queue latency, utilisation, rejection rate, and load
+  imbalance. A sixth, **fidelity** (Hellinger, matching QOS's definition,
+  with TVD alongside), compares each circuit's measured distribution to its
+  exact noiseless ideal, produced by a reference-capable provider. See
+  [`METRICS.md`](METRICS.md).
+- **A cross-config comparison and weight-sweep engine** — `assemble_matrix`
+  bundles every session's config and metrics into one comparison surface,
+  and the sweep re-derives a scoring component's decisions across its weight
+  space *from one recorded run* rather than by re-executing. The sweep is
+  general across the three scoring axes through the `Sweepable` contract
+  (`kernel/sweep.py`), and generalises from a two-term α/β grid to a
+  component's full n-term weight group over the **Scheffé simplex-lattice**
+  (`[Scheffe-Mixtures]`), localising winner-flips along the lattice edge
+  graph. Its faithfulness is bounded to first-flip sensitivity, stated
+  rather than over-claimed. Two reading modes sit over the engine:
+  inter-component (rank sessions by a metric) and intra-component (read out
+  a sweep's flips).
+- **Three scored baselines from the literature** — NAQJS (a scored
+  scheduler, `[NAQJS]`), Mapomatic (a scored allocator, `[Mapomatic]`), and
+  QOS (a scored router, `[QOS]`), each a `research/` plugin benchmarked
+  against the corresponding built-in and each carrying its recorded port
+  caveats. Together they cover all three scored axes, and a composition
+  demonstration runs all three as one stack. Building them proved the
+  plugin path end-to-end and drove the platform's config wiring to a single
+  generic mechanism: a plugin's dotted `CONFIG_SCHEMA` keys inject into its
+  constructor (dot rewritten to `___`, prefix kept so a plugin key may
+  reuse a core name), uniform across scheduler, allocator and router.
 
-- **`qbench` sub-shell** — a shell surface over the metrics and comparison
-  modes, for driving benchmark runs interactively rather than from Python.
-  Pulled out of the numbered roadmap: the metrics/comparison/sweep layer is
-  already verified to work from the research API, so a shell over it is an
-  ergonomic convenience for researchers, not a capability gap. It is also
-  quietly coupled to an **unbuilt capability** — a benchmarking shell that
-  cannot vary the device fleet mid-session is little more than a batch
-  script, so `qbench` really wants **in-session fleet mutation** (adding a
-  device, or changing a device's config, without rebuilding the session).
-  That mutation touches the config cascade, the registry, and live pool
-  state, and is unscoped. `qbench` should not be renumbered into the
-  roadmap until that capability is designed.
+The point of the layer is that a researcher writes an allocator against
+`BaseAllocator` or a router against `BaseRouter`, registers it, and
+benchmarks it against the built-ins **without touching DevQ core** — with
+the honest framing that quantum policy comparisons are methodologically
+fragile and DevQ's job is to make them reproducible, not to declare a
+winner. One methodological caveat is documented rather than papered over:
+wall-clock-derived metrics are noise-dominated on small uncontended
+workloads and need re-running and aggregating for a defensible number
+(see [`METRICS.md`](METRICS.md)). Open research problems that live at the
+router layer: cross-backend shot aggregation, coherence-window scheduling,
+and work migration of WAITING jobs.
 
-*(A prior "real hardware" sub-phase was dropped: it was gated on QPU
-credits/access that are not available.)*
+A **`qbench` interactive sub-shell** over the metrics and comparison modes
+was considered and deferred, unnumbered: the layer already works from the
+research API, so a shell is a convenience rather than a capability, and it
+is coupled to in-session device-fleet mutation (adding or reconfiguring a
+device without rebuilding the session) — an unscoped capability it should
+wait on. A prior "real hardware" sub-phase was dropped, gated on QPU
+credits that are not available.
 
 ### 🚧 Phase 6 — Interchangeable Frontends (foundation landed)
 Circuits enter DevQ through a **frontend**: a reader that lowers some

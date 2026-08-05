@@ -29,7 +29,7 @@ class BaseScheduler(Sweepable, ABC):
     FCFS is arrival order, SDF is circuit depth, Packing is greedy
     geometry — so they DO NOT implement the hooks and report not-sweepable
     honestly, the same silence as RoundRobinRouter. The contract is present
-    so the first scored scheduler (the QOS baseline, Phase 5.6) is
+    so the first scored scheduler (the NAQJS baseline) is
     sweepable without any base-class change; nothing here fakes a parameter
     to exercise it.
     '''
