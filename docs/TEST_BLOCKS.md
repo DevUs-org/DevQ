@@ -956,8 +956,27 @@ asserts the plugin value is `4.0` **and** that the core weight is not
 `4.0`, i.e. neither overwrote the other. A strip-the-prefix scheme would
 have collapsed both onto one parameter.
 
-Finally asserts the flattened `___` form is **internal**: `qconfig` shows
+Asserts the flattened `___` form is **internal**: `qconfig` shows
 only the dotted keys, never the parameter form.
+
+Finally it exercises the **un-injectable-key diagnostic** — the warning
+`build()` emits when a declared key reaches no constructor parameter,
+which is the plugin author's likeliest config mistake (a typo'd parameter
+whose value would otherwise silently vanish into the default). Three
+schedulers, each declaring one key and building a session:
+
+| case | key situation | warns? |
+|---|---|---|
+| typo | ctor names `typo___etaa`, schema declares `typo.eta` | **yes** |
+| runtime_read | key declared `runtime_read=True`, ctor names no parameter | no |
+| var_kwargs | ctor takes `**kwargs`, which absorbs the key | no |
+
+The typo case confirms the warning fires and **names the dotted key**, not
+the `___` parameter form (the internal-form rule holds even here). The
+other two confirm the deliberate escapes are silent: `runtime_read=True`
+is the author asserting the key is consumed at runtime, and a `**kwargs`
+constructor genuinely receives the key. All three still build a working
+session — the diagnostic never blocks construction.
 
 ### `plugin_normalise_group`
 

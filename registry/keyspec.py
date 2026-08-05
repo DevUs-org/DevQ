@@ -52,7 +52,11 @@ plugin may reuse a CORE key name for its own distinct quantity —
 separate from core "qubit_error_weight" — and both reach the constructor.
 Declaring a key does NOT oblige the ctor to name it: a parameter the ctor
 omits is simply not injected (the key still cascades, validates, and
-shows in qconfig, and the component may read it at runtime instead).
+shows in qconfig, and the component may read it at runtime instead). A key
+the ctor omits UNINTENTIONALLY — a misspelled parameter — would silently
+do nothing, so the build-time injector warns about any declared key it
+cannot inject. A key genuinely meant to be read at runtime is declared
+`runtime_read=True` to say so and silence that warning (see KeySpec).
 Everything OUTSIDE the constructor signature — qconfig, logs, errors,
 provenance — uses the dotted key; "___" appears only in parameter names.
 
@@ -144,12 +148,28 @@ class KeySpec:
                          sum to 1 after the cascade completes. The group
                          itself must be declared separately (see
                          NormaliseGroup); this field only names it.
+        runtime_read:    set True to declare that this key is consumed by
+                         the component at RUNTIME rather than injected into
+                         __init__. A declared key whose flattened parameter
+                         the constructor does not name is normally injected
+                         nowhere and would silently do nothing — so the
+                         build-time injector WARNS about it, on the theory
+                         that the author misspelled the parameter. Marking
+                         the key runtime_read is the author asserting "I
+                         read this myself, do not inject it", which
+                         suppresses that warning. The key still cascades,
+                         validates and shows in qconfig either way; this
+                         flag changes only whether the missing-parameter
+                         warning fires. Default False: a key the ctor does
+                         name is injected regardless of this flag, so the
+                         common (injected) case need never set it.
     '''
     scope:           str
     default:         Any
     validate:        Callable[[Any], str | None]
     label:           str
     normalise_group: str | None = None
+    runtime_read:    bool = False
 
 
 @dataclass(frozen=True)

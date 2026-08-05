@@ -2260,6 +2260,81 @@ def block_schema_ctor_injection():
               f"flatten_key rewrites only the first dot (got {_fk('a.b.c')!r})")
         check(_pk("a___b.c") == "a.b.c",
               f"param_to_key inverts the first separator (got {_pk('a___b.c')!r})")
+
+        # ── The un-injectable-key diagnostic ─────────────────────────────
+        # A declared key whose flattened name the ctor does NOT accept is
+        # the plugin author's most likely config mistake — it validates and
+        # cascades but reaches nothing. build() must WARN, naming the dotted
+        # key (never the "___" form), so the mistake is not silent. Three
+        # cases: (1) a typo'd ctor parameter WARNS; (2) runtime_read=True
+        # suppresses the warning (author reads the key at runtime); (3) a
+        # **kwargs ctor suppresses it (the key is in fact absorbed). None of
+        # these may crash the build.
+        from registry.keyspec import KeySpec as _KS, non_negative as _nn
+
+        # (1) TYPO — schema "typo.eta" but ctor names "typo___etaa".
+        class TypoScheduler(BaseScheduler):
+            LABEL = "Typo Scheduler"
+            CONFIG_SCHEMA = {"typo.eta": _KS("device", 1.0, _nn, "Typo eta")}
+            def __init__(self, memory_manager, process_table, typo___etaa=1.0):
+                super().__init__(memory_manager, process_table)
+                self.seen = typo___etaa
+            def schedule(self):
+                return []
+
+        # (2) RUNTIME-READ — same shape, but the key is declared
+        # runtime_read=True and the ctor deliberately names no parameter.
+        class RuntimeReadScheduler(BaseScheduler):
+            LABEL = "Runtime Read Scheduler"
+            CONFIG_SCHEMA = {
+                "rr.eta": _KS("device", 1.0, _nn, "RR eta", runtime_read=True)
+            }
+            def __init__(self, memory_manager, process_table):
+                super().__init__(memory_manager, process_table)
+            def schedule(self):
+                return []
+
+        # (3) VAR-KEYWORD — the ctor absorbs any parameter via **kwargs, so
+        # the declared key IS injectable and must not warn.
+        class VarKwScheduler(BaseScheduler):
+            LABEL = "VarKw Scheduler"
+            CONFIG_SCHEMA = {"vk.eta": _KS("device", 1.0, _nn, "VK eta")}
+            def __init__(self, memory_manager, process_table, **kwargs):
+                super().__init__(memory_manager, process_table)
+                self.kwargs = kwargs
+            def schedule(self):
+                return []
+
+        for label, sched_name, sched_cls, key, should_warn in [
+            ("typo",         "typo", TypoScheduler,        "typo.eta", True),
+            ("runtime_read", "rr",   RuntimeReadScheduler, "rr.eta",   False),
+            ("var_kwargs",   "vk",   VarKwScheduler,       "vk.eta",   False),
+        ]:
+            with open(path, "w") as f:
+                json.dump({"scheduler": sched_name, key: 0.5}, f)
+
+            buf = BoundedBuffer()
+            with _capture(buf):
+                dq2 = DevQ(config_path=path)
+                dq2.register_scheduler(sched_name, sched_cls)
+                sh2 = dq2.add_device(
+                    DevQSimulatedProvider(seed=SEED).get_device(
+                        "fully_connected", 5)
+                ).build()
+            out = buf.getvalue()
+
+            warned = ("Warning" in out) and (key in out)
+            check(warned == should_warn,
+                  f"{label}: un-injectable-key warning fired={warned}, "
+                  f"expected {should_warn}")
+            # Whatever the warning outcome, the session built (no crash) and
+            # the "___" form never leaked into the message.
+            check(sh2 is not None,
+                  f"{label}: build() still produced a session")
+            if warned:
+                check("___" not in out,
+                      f"{label}: warning names the dotted key, not the "
+                      f"'___' parameter form")
     finally:
         for f in os.listdir(tmpdir):
             os.unlink(os.path.join(tmpdir, f))

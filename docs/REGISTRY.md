@@ -194,10 +194,18 @@ value in. Declaring a schema key does **not** oblige your constructor to
 accept it — DevQ passes only the subset of your schema keys whose
 parameter names match actual `__init__` parameters (checked with
 `inspect.signature`). A key your constructor does not name is still
-cascaded, validated, and shown in `qconfig`; you simply read it at runtime
+cascaded, validated, and shown in `qconfig`; you read it at runtime
 instead of receiving it at construction. So the two styles compose: name a
 parameter to have the value injected (the NAQJS baseline does this for its
-weights and `eta`), or omit it and consult the resolved config yourself.
+weights and `eta`), or read the resolved config yourself. If you take the
+runtime route, declare the key `runtime_read=True` — otherwise DevQ treats
+a declared-but-unnamed key as a **misspelled parameter** and `build()`
+warns that the value will not be injected, since the far more common cause
+is a typo (`naqjs___eta` mistyped `naqjs__eta`) that would otherwise
+silently fall back to the constructor default. Naming a matching parameter
+needs no marker; the marker is only how you tell the deliberate
+runtime-read case apart from the typo. A constructor that takes `**kwargs`
+absorbs every declared key, so it never warns.
 
 Preserving the prefix (rather than stripping it to a bare name) means a
 plugin key may **reuse a core name** for its own distinct quantity:

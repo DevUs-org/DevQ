@@ -203,6 +203,18 @@ def _schema_kwargs(cls, config):
     declared key need not be ctor-injected; it may instead be read at
     runtime, and it still cascades and validates regardless.
 
+    A skipped key is the plugin author's most likely CONFIG mistake: the
+    declared key validated cleanly and cascaded, but its value reaches
+    nothing because the parameter name does not match (a typo in the ctor
+    signature, or a forgotten "___" rewrite). That failure is otherwise
+    invisible — the component builds with its default and the user's value
+    silently vanishes — so this function WARNS for every declared key it
+    cannot inject, UNLESS the key is declared `runtime_read=True` (the
+    author asserting the key is consumed at runtime, not via __init__) or
+    the ctor accepts **kwargs (which absorbs any parameter, so the key IS
+    injected). The warning names the dotted key, never the "___" form,
+    matching every other user-facing surface.
+
     This is the single generic mechanism behind all three component
     build paths (scheduler, allocator, router). Core keys that a build
     path passes explicitly (the noise/router weights) are NOT here; they
@@ -219,13 +231,28 @@ def _schema_kwargs(cls, config):
         dict of {parameter_name: value} ready to splat into cls(...).
     '''
     schema   = getattr(cls, "CONFIG_SCHEMA", None) or {}
-    accepted = inspect.signature(cls.__init__).parameters
-    return {
-        param: config[key]
-        for key in schema
-        for param in (flatten_key(key),)
-        if param in accepted
-    }
+    params   = inspect.signature(cls.__init__).parameters
+    accepted = set(params)
+    # A **kwargs parameter absorbs any keyword, so every declared key is
+    # in fact injectable and none should warn.
+    has_var_kw = any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+    kwargs = {}
+    for key in schema:
+        param = flatten_key(key)
+        if param in accepted:
+            kwargs[param] = config[key]
+        elif not has_var_kw and not schema[key].runtime_read:
+            print(
+                f"[Config] Warning: {cls.__name__} declares config key "
+                f"'{key}' but its constructor names no matching parameter "
+                f"— the value will not be injected. Name a parameter for "
+                f"'{key}' (its dot rewritten to the separator), or declare "
+                f"the key runtime_read=True if it is read at runtime."
+            )
+    return kwargs
 
 
 class DevQ:

@@ -147,9 +147,18 @@ additionally *injects* each schema key whose parameter name matches an
 `__init__` parameter, passing the resolved cascaded value in. The dotted
 key becomes the parameter name by rewriting the namespace dot to `___`,
 prefix kept (`naqjs.eta` → `naqjs___eta=`). Name the parameter to receive
-the value at construction, or omit it and read the resolved config at
-runtime — a declared key is cascaded, validated, and shown in `qconfig`
-either way. Keeping the prefix lets a plugin key safely reuse a core name
+the value at construction, or read the resolved config at runtime instead
+— a declared key is cascaded, validated, and shown in `qconfig` either
+way. If you mean to read it at runtime, declare it `runtime_read=True`:
+otherwise, a declared key whose parameter the constructor does not name is
+assumed to be a **misspelled parameter** and `build()` warns that the
+value will not be injected. The warning is the common footgun made
+visible — a key that validates and cascades but reaches nothing because
+`naqjs___eta` was typed `naqjs__eta` would, without it, silently fall back
+to the constructor default. Marking the key `runtime_read=True` says "I
+consume this myself" and silences the warning; a matching parameter needs
+no marker (naming it is proof enough that injection was intended).
+Keeping the prefix lets a plugin key safely reuse a core name
 for its own quantity (`myalloc.qubit_error_weight` →
 `myalloc___qubit_error_weight`, distinct from core `qubit_error_weight`).
 The NAQJS baseline (`research/baselines/naqjs_scheduler.py`) is a worked
