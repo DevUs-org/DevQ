@@ -796,7 +796,7 @@ the same directory, and nothing read its spec. A resolved `${SECRET}`
 there would ship just as surely. The same one-of-two-sites blind spot as
 P1: the guarded site passed and the unguarded twin went unnoticed. →
 `shipped_workloads` now asserts the manifest verbatim too. The lesson
-generalises to 5.8: every path that writes a spec to disk is a leak
+generalises: every path that writes a spec to disk is a leak
 site, and each needs its own assertion — one is not proxy for another.
 
 ---

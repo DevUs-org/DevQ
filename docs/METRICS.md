@@ -52,6 +52,47 @@ Aer simulator on the host CPU, not quantum runtime, and must be reported
 as policy-comparison figures under identical conditions, not as device
 timings.
 
+### Deterministic metrics vs. re-run-and-aggregate metrics
+
+The two clocks split the metrics into two kinds, and they must be read
+differently.
+
+**Decision-deterministic metrics** are fixed by the run's *decisions* —
+which device each job routed to, which qubits it was allocated, which
+jobs were rejected, in what order things were scheduled. Under a fixed
+seed DevQ guarantees those decisions are reproducible (same seed → same
+routing, allocation, and counts), so any metric derived purely from them
+is **identical across re-runs**: `rejection_rate`, the job/candidate
+counts, and `load_imbalance`'s **by_count** basis (which counts *jobs*
+per device, not busy time).
+
+**Wall-clock-derived metrics** are built on the `*_at` fields and so
+inherit the host CPU's non-determinism: `throughput` (both figures),
+`queue_latency`, `utilisation`'s busy-*time* statistics, and
+`load_imbalance`'s **by_busy_time** basis (which reuses utilisation's
+interval union). `load_imbalance` therefore straddles the split — its
+`by_count` reading is stable while its `by_busy_time` reading is not, and
+they are reported side by side precisely so a count-balanced,
+time-imbalanced fleet is visible. On a small workload with no contention
+the wall-clock metrics are **noise-dominated** — a single run can look
+faster or slower purely from OS scheduling jitter, and a lucky run can
+make one policy appear to beat another when the difference is noise. A
+single number here is not a defensible comparison.
+
+DevQ deliberately does **not** average these for you. The honest number
+is a methodological choice — how many runs, mean or median, what counts
+as the noise floor — that belongs to the researcher and the claim being
+made, not baked into the tool (baking one in would be DevQ making a
+statistics decision on your behalf, against the "DevQ makes comparisons
+honest, it does not make them for you" principle). The obligation on the
+tool is only that a single run be reproducible from its log; the
+obligation on **you**, when comparing policies on wall-clock-derived
+metrics, is to run each configuration N times under identical conditions
+and report a central tendency with its spread. Because the decisions are
+seed-fixed, the *only* thing varying across those N runs is the host
+timing you are trying to characterise — which is exactly what makes the
+re-run a clean measurement rather than a confound.
+
 ### Population rule
 
 Every derived timing is `None` for a job that never reached the relevant
@@ -496,7 +537,7 @@ artifacts above — pure presentation, deriving no new numbers. Each mode
 returns structured data; `render_text(result, to=path)` turns it into a
 plain-text table or report and, given a path, writes a `.txt`. The split
 is deliberate: the mode returns data so a second consumer — a test, a
-notebook, the `qbench` shell (5.7) — renders it its own way without
+notebook, a future `qbench` shell — renders it its own way without
 parsing a string, and the text renderer is one view over that data rather
 than the data itself.
 

@@ -609,16 +609,17 @@ orchestration layer beneath your circuits is verified, not merely written.
 Documented here so the boundary between what exists and what is coming is
 never ambiguous:
 
-- **Phase 5.6 — baseline plugins (continued)**: NAQJS (scored scheduler)
-  and Mapomatic (scored allocator) have shipped; still to come is QOS as a
-  router baseline, completing the "DevQ vs the literature" comparison set.
-  It extends the generic schema→constructor wiring — now unified across the
+- **Phase 5.6 — baseline plugins**: NAQJS (scored scheduler), Mapomatic
+  (scored allocator), and QOS (scored router) have all shipped, completing
+  the "DevQ vs the literature" comparison set across all three scored axes.
+  They ride the generic schema→constructor wiring — unified across the
   scheduler, allocator, and router build paths — that the scheduler axis
-  introduced.
-- **Phase 5.7 — `qbench`**: an interactive benchmarking sub-shell over the
-  metrics and comparison layers.
-- **Phase 5.8 — real hardware**: absolute fidelity, T1, and temporal drift
-  become real once execution runs on live devices.
+  introduced. This closed Phase 5.
+- **`qbench` (deferred, unnumbered)**: an interactive benchmarking sub-shell
+  over the metrics and comparison layers — a researcher convenience over an
+  already-working API, pulled from the numbered roadmap. It wants in-session
+  device-fleet mutation (an unscoped capability) to be worth building; see
+  [`ROADMAP.md`](ROADMAP.md).
 - **Phase 6 — interchangeable frontends**: Silq, Q#, Qiskit circuits behind
   the circuit-representation layer.
 - **Phase 7 — expanded providers**: real IBM hardware, Cirq, IonQ.

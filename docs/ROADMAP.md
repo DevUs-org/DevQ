@@ -126,11 +126,10 @@ scheduler):
   compute; all state mutation happens on the shell thread inside the
   kernel's resolution step, so the system needs no locks.
 
-### 🔬 Phase 5 — Research Benchmarking Mode (in progress)
+### ✅ Phase 5 — Research Benchmarking Mode (done)
 A research benchmarking layer: run circuit workloads through every
 router/scheduler/allocator combination and report comparative results
-(offline metrics, cross-config comparison, and weight sweeps today; a
-`qbench` shell over them is the final sub-phase, 5.7). The
+(offline metrics, cross-config comparison, and weight sweeps). The
 goal is for DevQ to serve as an **algorithm evaluation playground** for
 quantum scheduling and allocation researchers — write an allocator against
 `BaseAllocator` or a router against `BaseRouter`, register it with
@@ -139,9 +138,9 @@ without touching DevQ core. Open research problems that live at the router
 layer: cross-backend shot aggregation, coherence-window scheduling, and
 work migration of WAITING jobs.
 
-Phase 5 is tracked in sub-phases while it is in flight. This breakdown is
-a working tracker and will be collapsed back into the single description
-above once Phase 5 ships:
+Phase 5 closed once all three scored-axis baselines landed (5.6): the
+platform is a result, not just infrastructure. The sub-phase breakdown
+below is retained as a record of how it was built.
 
 - **5.1 — determinism, registry, event log** ✅ seeded per-device
   determinism, the component registry, and the structured event log with
@@ -214,7 +213,7 @@ above once Phase 5 ships:
   flips, or a refusal with its reason; α/β at 5.5b, generalised to the n-ary
   simplex in 5.5c below). Each returns structured data with
   a `render_text` view over it that can write a `.txt`, so the qbench
-  shell (5.7) renders the same modes its own way rather than re-deriving
+  shell (if built) renders the same modes its own way rather than re-deriving
   them. The *absolute* view — one session's own bundle — is not among
   them: it is the 5.3 metric bundle, already shipped, so 5.5b is the two
   genuine comparisons that need 5.5a's engine underneath.
@@ -237,7 +236,7 @@ above once Phase 5 ships:
   `comparison.py`, `comparison_modes.py`, and the `comparison`/
   `comparison_modes` blocks; two mutation survivors (a reversed weight
   mapping, an inverted bisection) sharpened the tests.
-- **5.6 — baseline plugins** 🚧 published baselines to compare against;
+- **5.6 — baseline plugins** ✅ published baselines to compare against;
   this is what turns the platform into a result. **NAQJS (the first scored
   scheduler, `[NAQJS]`) has landed** as a `research/` plugin, proving the
   plugin path end-to-end, including the never-before-exercised `schedule`
@@ -301,9 +300,23 @@ above once Phase 5 ships:
   through one shared mechanism, `_schema_kwargs`), with the parameter name
   derived by rewriting the namespace dot to `___` so a plugin key may reuse
   a core name without collision.
-- **5.7 — `qbench` command** 🔭 the shell surface over the metrics layer,
-  folding in the comparison modes.
-- **5.8 — real hardware** 🔭 gated on credits and access.
+**Deferred, unnumbered ideas (not committed roadmap):**
+
+- **`qbench` sub-shell** — a shell surface over the metrics and comparison
+  modes, for driving benchmark runs interactively rather than from Python.
+  Pulled out of the numbered roadmap: the metrics/comparison/sweep layer is
+  already verified to work from the research API, so a shell over it is an
+  ergonomic convenience for researchers, not a capability gap. It is also
+  quietly coupled to an **unbuilt capability** — a benchmarking shell that
+  cannot vary the device fleet mid-session is little more than a batch
+  script, so `qbench` really wants **in-session fleet mutation** (adding a
+  device, or changing a device's config, without rebuilding the session).
+  That mutation touches the config cascade, the registry, and live pool
+  state, and is unscoped. `qbench` should not be renumbered into the
+  roadmap until that capability is designed.
+
+*(A prior "real hardware" sub-phase was dropped: it was gated on QPU
+credits/access that are not available.)*
 
 ### 🚧 Phase 6 — Interchangeable Frontends (foundation landed)
 Circuits enter DevQ through a **frontend**: a reader that lowers some
