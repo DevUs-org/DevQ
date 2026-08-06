@@ -26,6 +26,13 @@
             "backend": {
                 "backend_name": "${IBM_BACKEND_C}"
             }
+        },
+        {
+            "id": "fake_a",
+            "provider": "ibm.simulated",
+            "backend": {
+                "backend_name": "FakeNairobiV2"
+            }
         }
     ],
     "arrival": {
@@ -34,31 +41,52 @@
     "jobs": [
         {
             "circuit": "test_circuits/bell.qasm",
-            "shots": 512
+            "shots": 512,
+            "no_exec_on": [
+                "fake_a"
+            ]
         },
         {
             "circuit": "test_circuits/ghz.qasm",
-            "shots": 512
+            "shots": 512,
+            "no_exec_on": [
+                "fake_a"
+            ]
         },
         {
             "circuit": "research/circuits/qasmbench/small/deutsch_n2.qasm",
-            "shots": 512
+            "shots": 512,
+            "no_exec_on": [
+                "fake_a"
+            ]
         },
         {
             "circuit": "research/circuits/qasmbench/small/iswap_n2.qasm",
-            "shots": 512
+            "shots": 512,
+            "no_exec_on": [
+                "fake_a"
+            ]
         },
         {
             "circuit": "research/circuits/qasmbench/small/wstate_n3.qasm",
-            "shots": 512
+            "shots": 512,
+            "no_exec_on": [
+                "fake_a"
+            ]
         },
         {
             "circuit": "research/circuits/qasmbench/small/toffoli_n3.qasm",
-            "shots": 512
+            "shots": 512,
+            "no_exec_on": [
+                "fake_a"
+            ]
         },
         {
             "circuit": "research/circuits/qasmbench/small/qaoa_n3.qasm",
-            "shots": 512
+            "shots": 512,
+            "no_exec_on": [
+                "fake_a"
+            ]
         }
     ]
 }

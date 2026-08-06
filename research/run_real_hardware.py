@@ -250,7 +250,7 @@ def run(dry_run=False):
     # Register the provider CLASS — DevQ constructs it and passes each
     # device's credentials in through the spec's resolved backend block
     # (${IBM_QUANTUM_TOKEN} etc.), so the token never reaches the log.
-    provider_map = {"ibm.real": IBMRealProvider}
+    provider_map = {"ibm.real": IBMRealProvider, "ibm.simulated": IBMSimulatedProvider}
 
     # Report each backend's real GLOBAL queue depth before running — context
     # for the routing story (the router does NOT see this; it routes on
