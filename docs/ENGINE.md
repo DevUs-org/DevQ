@@ -57,16 +57,6 @@ Equality matters in both directions: the engine must simulate everything the
 frontend can emit, and must not claim a gate the frontend cannot produce. The
 32 names break down as 19 one-qubit, 11 two-qubit, and 2 three-qubit gates.
 
-Custom `gate` definitions do not widen this set. The qasm2 frontend inlines
-every custom gate **recursively** at parse time — binding its formal
-parameters and qubits at each call site — so a `CircuitRep`'s instruction
-stream contains only builtin gate names by the time any consumer sees it. A
-circuit defining `gate entangle(θ) a,b { rz(θ) a; cx a,b; }` reaches the
-engine as a stream of `rz` and `cx`, not as an `entangle` op. The engine
-therefore needs no custom-gate machinery: covering `_BUILTIN_GATES` covers
-every circuit the parser can produce. (An `opaque` gate, which has no body to
-inline, is rejected by the frontend before it becomes a circuit at all.)
-
 Four of the 32 are exact rewrites of another gate and share its builder rather
 than duplicating a matrix — verified by matrix equality, not assumed:
 

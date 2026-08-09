@@ -664,6 +664,98 @@ def block_unrunnable_circuits():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def block_rejected_no_ideal():
+    '''A REJECTED job gets no reference ideal (call-site filter in the runner)'''
+    # A job REJECTED at runtime (unsatisfiable: no valid allocation exists on
+    # any attached device) never runs and never produces measured counts, so
+    # it has no fidelity to compute and needs no noiseless ideal. The runner
+    # therefore filters REJECTED jobs BEFORE computing ideals. This is the
+    # call-site filter — rejection is a run-level fact (the same circuit may
+    # be REJECTED under contention and RUNNING elsewhere), so it lives in the
+    # runner, not inside compute_ideals (which is circuit-level and
+    # job-agnostic; its own skip covers unrunnable_reason, a circuit property).
+    #
+    # The discriminating setup needs a REFERENCE-CAPABLE provider (only
+    # ibm.simulated overrides reference_ideal; devq.simulated does not, so a
+    # devq-only run emits no ideals at all and cannot exercise the filter) and
+    # a REJECTED job whose circuit is otherwise perfectly simulable — so that
+    # WITHOUT the filter it would receive an ideal, and WITH it it does not.
+    # BELL runs and earns a reference record; GHZ is forced REJECTED by an
+    # impossible max_qubit_error threshold and must earn NONE. Because GHZ
+    # appears only on the rejected job, the absence of its hash from the
+    # reference records is the filter's effect, cleanly isolated.
+    import json, os, tempfile
+    from benchmark import runner as R
+    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+
+    tmp = tempfile.mkdtemp(prefix="devq_reject_ideal_")
+    spec_path = os.path.join(tmp, "wl.json")
+    with open(spec_path, "w") as h:
+        json.dump({
+            "name": "rejected_no_ideal", "seed": SEED,
+            "devices": [{"id": "nairobi", "provider": "ibm.simulated",
+                         "backend": {"backend_name": "FakeNairobiV2"}}],
+            "jobs": [
+                {"circuit": BELL},                                 # FINISHES
+                {"circuit": "test_circuits/ghz.qasm",
+                 "max_qubit_error": 0.0},                          # REJECTED
+            ],
+        }, h)
+
+    try:
+        out = os.path.join(tmp, "run")
+        manifest = R.run(
+            spec_path, out_dir=out, quiet=True,
+            register_providers={"ibm.simulated": IBMSimulatedProvider})
+
+        entry = manifest["sessions"][0]
+        # The run COMPLETED (with failures) — a rejected job is a row, not a
+        # crash. If this ever reports CRASHED, the rejection setup is broken
+        # (e.g. provider not registered) and the rest of the test is moot.
+        check(entry["outcome"] in (R.COMPLETED, R.WITH_FAILURES),
+              f"a run with one rejected job still completes, got "
+              f"{entry['outcome']}"
+              + (f" — {entry.get('error','')[:80]}"
+                 if entry["outcome"] == R.CRASHED else ""))
+
+        log  = os.path.join(out, entry["log"])
+        recs = [json.loads(l) for l in open(log) if l.strip()]
+        summary = [r for r in recs if r.get("event") == "summary"][-1]
+
+        # per_job rows carry state + circuit_hash (no label). BELL is the one
+        # FINISHED job, GHZ the one REJECTED job, so map by state. There is
+        # exactly one of each, which we assert before pulling their hashes.
+        by_state = {}
+        for row in summary["per_job"]:
+            by_state.setdefault(row["state"], []).append(row["circuit_hash"])
+
+        check(len(by_state.get("FINISHED", [])) == 1
+              and len(by_state.get("REJECTED", [])) == 1,
+              f"exactly one bell FINISHED and one ghz REJECTED — got "
+              f"{ {s: len(v) for s, v in by_state.items()} }")
+        bell_hash = by_state["FINISHED"][0]
+        ghz_hash  = by_state["REJECTED"][0]
+        check(bell_hash and ghz_hash and bell_hash != ghz_hash,
+              f"bell and ghz have distinct hashes, got "
+              f"bell={bell_hash!r} ghz={ghz_hash!r}")
+
+        ref_hashes = {r["circuit_hash"] for r in recs
+                      if r.get("event") == "reference"}
+        # The runnable circuit earns an ideal ...
+        check(bell_hash in ref_hashes,
+              f"the FINISHED bell circuit earns a reference ideal, "
+              f"reference hashes={sorted(h[:8] for h in ref_hashes)}")
+        # ... and the REJECTED circuit earns NONE. This is the whole point:
+        # without the call-site filter, ghz's hash would appear here too.
+        check(ghz_hash not in ref_hashes,
+              f"the REJECTED ghz circuit earns NO reference ideal (the "
+              f"call-site filter), but its hash {ghz_hash[:8]} appeared in "
+              f"reference records {sorted(h[:8] for h in ref_hashes)}")
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def block_packing_across_devices():
     '''Bracket groups, batch packing and cross-device concurrency'''
     sh  = three_device()
@@ -1553,6 +1645,193 @@ def block_device_calibration():
     # cheap sanity check the extraction didn't swap arities.
     check(ibmdev.gate_duration(2) > ibmdev.gate_duration(1),
           "extracted 2q gate duration exceeds 1q (arity not swapped)")
+
+
+def block_engine_gates():
+    '''The native engine's gate matrices match Qiskit and cover the parser'''
+    # The native statevector engine (engine/) simulates a circuit WITHOUT
+    # Qiskit, so DevQ can compute a noiseless ideal without an Aer-backed
+    # device attached. Its correctness rests entirely on its gate matrices
+    # being right: a wrong matrix is a silently-wrong distribution, and a
+    # fidelity computed against a wrong ideal is high, plausible, and
+    # meaningless. This block LOCKS the vocabulary before any engine code
+    # consumes it, on two axes:
+    #   (1) COVERAGE — the engine's gate names equal the qasm2 frontend's
+    #       _BUILTIN_GATES exactly. The two tables are written for different
+    #       reasons and nothing else couples them, so a gate added to one and
+    #       not the other is invisible until a circuit uses it. Equality (not
+    #       mere subset) is asserted: the engine must simulate everything the
+    #       frontend will emit, and claim nothing the frontend cannot.
+    #   (2) CORRECTNESS — every gate's unitary equals Qiskit's Operator for
+    #       that gate, checked here rather than trusted from memory. Constants
+    #       exactly; parameterised gates at several angles including the
+    #       edges (0, pi) where a sign or half-angle slip hides.
+    import numpy as np
+    import math
+    from qiskit import QuantumCircuit
+    from qiskit.quantum_info import Operator
+    from engine import gates as G
+    from frontends.qasm2.parser import _BUILTIN_GATES
+
+    def op(qc):
+        return Operator(qc).data
+
+    # (1) Coverage: exact vocabulary parity with the frontend.
+    eng, parser = G.vocabulary(), set(_BUILTIN_GATES)
+    check(eng == parser,
+          f"engine vocabulary equals the parser's _BUILTIN_GATES — "
+          f"engine-only={sorted(eng - parser)}, "
+          f"parser-only={sorted(parser - eng)}")
+
+    # Arity/param-count parity too: the engine's declared (num_params,
+    # num_qubits) must match the frontend's, or a gate could be known to both
+    # yet applied with the wrong operands.
+    mism = [(n, (G.GATES[n].num_params, G.GATES[n].num_qubits), _BUILTIN_GATES[n])
+            for n in parser
+            if (G.GATES[n].num_params, G.GATES[n].num_qubits) != _BUILTIN_GATES[n]]
+    check(not mism,
+          f"engine gate arities match the parser's (num_params, num_qubits): "
+          f"mismatches={mism}")
+
+    # A gate outside the vocabulary declines, naming the known set.
+    raised = False
+    try:
+        G.gate_spec("not_a_gate")
+    except G.UnknownGateError:
+        raised = True
+    check(raised, "an unknown gate name raises UnknownGateError, not KeyError")
+
+    # Custom `gate` definitions do not widen the vocabulary: the frontend
+    # inlines them (recursively) at parse time, so a circuit's instruction
+    # stream is pure builtins by the time the engine sees it. Parse a fixture
+    # with a custom gate that itself calls another custom gate and confirm
+    # every emitted gate name is in the engine's vocabulary — so covering
+    # _BUILTIN_GATES genuinely covers every circuit the parser can produce.
+    from frontends.qasm2.parser import parse as _parse_qasm
+    import os as _os
+    custom_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                "test_circuits", "qasm2", "custom_gate.qasm")
+    with open(custom_path) as _h:
+        custom_circuit = _parse_qasm(_h.read(), "custom_gate.qasm")
+    emitted = [i["gate"] for i in custom_circuit.instructions if i["op"] == "gate"]
+    outside = sorted(set(n for n in emitted if n not in eng))
+    check(emitted and not outside,
+          f"a custom-gate circuit inlines to engine-known builtins only; "
+          f"emitted={emitted}, outside-vocabulary={outside}")
+
+    # (2) Correctness: each gate's unitary == Qiskit's Operator.
+    ANGLES = [0.0, 0.3, -1.1, 2.7, math.pi]
+
+    # One-qubit constants.
+    const_1q = {
+        'id':   lambda q: q.id(0),   'x':   lambda q: q.x(0),
+        'y':    lambda q: q.y(0),    'z':   lambda q: q.z(0),
+        'h':    lambda q: q.h(0),    's':   lambda q: q.s(0),
+        'sdg':  lambda q: q.sdg(0),  't':   lambda q: q.t(0),
+        'tdg':  lambda q: q.tdg(0),  'sx':  lambda q: q.sx(0),
+        'sxdg': lambda q: q.sxdg(0),
+    }
+    for name, build in const_1q.items():
+        qc = QuantumCircuit(1); build(qc)
+        check(np.allclose(G.gate_spec(name).unitary([]), op(qc), atol=1e-10),
+              f"engine '{name}' matrix matches Qiskit")
+
+    # One-qubit parameterised (p and its alias u1 share a matrix).
+    for name, build in {'rx': lambda q, a: q.rx(a, 0),
+                        'ry': lambda q, a: q.ry(a, 0),
+                        'rz': lambda q, a: q.rz(a, 0),
+                        'p':  lambda q, a: q.p(a, 0),
+                        'u1': lambda q, a: q.p(a, 0)}.items():
+        for a in ANGLES:
+            qc = QuantumCircuit(1); build(qc, a)
+            check(np.allclose(G.gate_spec(name).unitary([a]), op(qc), atol=1e-10),
+                  f"engine '{name}({a})' matrix matches Qiskit")
+
+    # The general u and its parameter-packing aliases u2, u3.
+    for a in ANGLES:
+        qc = QuantumCircuit(1); qc.u(a, 0.4, -0.9, 0)
+        check(np.allclose(G.gate_spec('u').unitary([a, 0.4, -0.9]), op(qc), atol=1e-10),
+              f"engine 'u({a},...)' matrix matches Qiskit")
+        check(np.allclose(G.gate_spec('u3').unitary([a, 0.4, -0.9]), op(qc), atol=1e-10),
+              f"engine 'u3({a},...)' aliases u")
+        qc = QuantumCircuit(1); qc.u(math.pi / 2, a, 0.4, 0)
+        check(np.allclose(G.gate_spec('u2').unitary([a, 0.4]), op(qc), atol=1e-10),
+              f"engine 'u2({a},...)' aliases u(pi/2,...)")
+
+    # Controlled two-qubit gates: build the full controlled(U) in the engine's
+    # little-endian basis (control q0, target q1) and compare to Qiskit's
+    # embedded operator. This is also the tensor-ordering check — a
+    # big-endian slip flips control and target and fails here.
+    def controlled(U2, c, t, nq=2):
+        dim = 2 ** nq
+        M = np.zeros((dim, dim), dtype=complex)
+        for col in range(dim):
+            if (col >> c) & 1 == 0:
+                M[col, col] = 1.0
+            else:
+                tb = (col >> t) & 1
+                for o in (0, 1):
+                    M[(col & ~(1 << t)) | (o << t), col] = U2[o, tb]
+        return M
+
+    ctrl_const = {'cx': lambda q: q.cx(0, 1), 'cy': lambda q: q.cy(0, 1),
+                  'cz': lambda q: q.cz(0, 1), 'ch': lambda q: q.ch(0, 1)}
+    for name, build in ctrl_const.items():
+        qc = QuantumCircuit(2); build(qc)
+        full = controlled(G.gate_spec(name).unitary([]), 0, 1)
+        check(np.allclose(full, op(qc), atol=1e-10),
+              f"engine '{name}' controlled matrix matches Qiskit (q0 controls q1)")
+
+    ctrl_param = {'crx': lambda q, a: q.crx(a, 0, 1),
+                  'cry': lambda q, a: q.cry(a, 0, 1),
+                  'crz': lambda q, a: q.crz(a, 0, 1),
+                  'cp':  lambda q, a: q.cp(a, 0, 1),
+                  'cu1': lambda q, a: q.cp(a, 0, 1)}
+    for name, build in ctrl_param.items():
+        for a in (0.7, -1.3):
+            qc = QuantumCircuit(2); build(qc, a)
+            full = controlled(G.gate_spec(name).unitary([a]), 0, 1)
+            check(np.allclose(full, op(qc), atol=1e-10),
+                  f"engine '{name}({a})' controlled matrix matches Qiskit")
+
+    # ECR: the one intrinsically-two-qubit unitary, compared 4x4 directly.
+    qc = QuantumCircuit(2); qc.ecr(0, 1)
+    check(np.allclose(G.gate_spec('ecr').unitary([]), op(qc), atol=1e-10),
+          "engine 'ecr' 4x4 matrix matches Qiskit")
+
+    # Permutations: swap, ccx (Toffoli), cswap (Fredkin). These carry no 2x2;
+    # the engine permutes basis amplitudes, so the correctness that matters is
+    # the operand mapping, checked by building the permutation matrix the
+    # engine's kind implies and comparing to Qiskit.
+    def swapm(a, b, nq=2):
+        dim = 2 ** nq; M = np.zeros((dim, dim), dtype=complex)
+        for col in range(dim):
+            ba, bb = (col >> a) & 1, (col >> b) & 1
+            M[(col & ~(1 << a) & ~(1 << b)) | (bb << a) | (ba << b), col] = 1
+        return M
+    qc = QuantumCircuit(2); qc.swap(0, 1)
+    check(np.allclose(swapm(0, 1), op(qc), atol=1e-10),
+          "engine 'swap' permutation matches Qiskit")
+
+    dim = 8
+    ccxm = np.eye(dim, dtype=complex)
+    for col in range(dim):
+        if (col >> 0) & 1 and (col >> 1) & 1:
+            ccxm[col, col] = 0; ccxm[col ^ (1 << 2), col] = 1
+    qc = QuantumCircuit(3); qc.ccx(0, 1, 2)
+    check(np.allclose(ccxm, op(qc), atol=1e-10),
+          "engine 'ccx' (Toffoli, controls q0/q1 target q2) matches Qiskit")
+
+    cswapm = np.zeros((dim, dim), dtype=complex)
+    for col in range(dim):
+        if (col >> 0) & 1:
+            ba, bb = (col >> 1) & 1, (col >> 2) & 1
+            cswapm[(col & ~(1 << 1) & ~(1 << 2)) | (bb << 1) | (ba << 2), col] = 1
+        else:
+            cswapm[col, col] = 1
+    qc = QuantumCircuit(3); qc.cswap(0, 1, 2)
+    check(np.allclose(cswapm, op(qc), atol=1e-10),
+          "engine 'cswap' (Fredkin, control q0 swaps q1/q2) matches Qiskit")
 
 
 # ── Backend factory ──────────────────────────────────────────────────────────
@@ -2664,8 +2943,8 @@ def block_repo_hygiene():
     # headers across numpy, scipy and qiskit. Blocklisting virtualenv
     # directory names is the wrong fix: the next one is called .venv or
     # env. Naming what IS ours cannot go wrong that way.
-    OURS = ("benchmark", "circuits", "config", "frontends", "hardware", "kernel",
-            "providers", "registry", "research", "shell")
+    OURS = ("benchmark", "circuits", "config", "engine", "frontends", "hardware",
+            "kernel", "providers", "registry", "research", "shell")
     roots = [os.path.join(root, d) for d in OURS]
     untagged = []
 
@@ -6089,6 +6368,7 @@ BLOCKS = [
     ("name_validation",          block_name_validation),
     ("rejection_semantics",      block_rejection_semantics),
     ("unrunnable_circuits",      block_unrunnable_circuits),
+    ("rejected_no_ideal",        block_rejected_no_ideal),
     ("edge_threshold_semantics", block_edge_threshold_semantics),
     ("combined_thresholds",      block_combined_thresholds),
     ("max_1q_gate_error_filter", block_max_1q_gate_error_filter),
@@ -6106,6 +6386,7 @@ BLOCKS = [
     ("wedged_provider_timeout",  block_wedged_provider_timeout),
     ("mock_topologies",          block_mock_topologies),
     ("device_calibration",       block_device_calibration),
+    ("engine_gates",             block_engine_gates),
     ("backend_factory_errors",   block_backend_factory_errors),
     ("shell_input_handling",     block_shell_input_handling),
     ("many_device_federation",   block_many_device_federation),

@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 67 sanity blocks in `run_tests.py`, covering
+Specification for the 69 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 67 blocks, one line each
+python run_tests.py              # all 69 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -264,6 +264,47 @@ What it pins:
 - **A genuine SPEC error still aborts.** A spec naming a missing circuit
   file fails the session — that is the user's spec being wrong, not a
   circuit DevQ declines, and must not be silently absorbed as a rejection.
+
+### `rejected_no_ideal`
+
+*A REJECTED job gets no reference ideal (call-site filter in the runner).*
+
+`unrunnable_circuits` proves a rejected job is a survivable row; this proves
+the runner does not waste a noiseless simulation on it. A REJECTED job
+(unsatisfiable: no valid allocation exists on any attached device) never
+runs and never produces measured counts, so it has no fidelity to compute
+and needs no ideal. The runner therefore filters REJECTED jobs *before*
+calling `compute_ideals`. This is a **call-site** filter, not a change to
+`compute_ideals` itself: rejection is a run-level fact — the same circuit
+may be REJECTED under contention here and RUNNING elsewhere — whereas
+`compute_ideals` is circuit-level and job-agnostic (its own skip covers
+`unrunnable_reason`, a property of the circuit, not of the run).
+
+The setup is chosen to isolate the filter's effect. It needs a
+reference-capable provider — only `ibm.simulated` overrides
+`reference_ideal`; a `devq.simulated`-only run emits no ideals at all and
+could not exercise the filter — and a REJECTED job whose circuit is
+otherwise perfectly simulable, so that *without* the filter it would earn
+an ideal and *with* it it does not. `bell` runs on `FakeNairobiV2`; `ghz`
+is forced REJECTED by an impossible `max_qubit_error: 0.0`. Because `ghz`
+appears only on the rejected job, the absence of its hash from the
+reference records is the filter's effect, cleanly separated from `bell`.
+
+What it pins:
+
+- **The run completes.** One rejected job is a row, not a crash; the
+  session outcome is completed/with-failures.
+- **One FINISHED, one REJECTED, distinct hashes.** `bell` finishes and
+  `ghz` rejects, and their content hashes differ — so the two ideals (if
+  any) are separable in the reference records.
+- **The runnable circuit earns an ideal.** `bell`'s hash appears in a
+  `reference` record — the fidelity yardstick is still produced for jobs
+  that actually ran. (A mutant that keeps only REJECTED jobs is killed
+  here: `bell` loses its ideal.)
+- **The REJECTED circuit earns NONE.** `ghz`'s hash is absent from every
+  `reference` record. This is the whole point — without the call-site
+  filter, `ghz`'s hash would appear here too. (A mutant that removes the
+  filter, or filters on the wrong state, is killed here.)
 
 ### `edge_threshold_semantics`
 
@@ -581,6 +622,43 @@ accessors (`qubit_error`, `gate_error`, `edge_error`, `t2`,
   — those are pinned-calibration-bound and belong to the fidelity
   references — including that the extracted 2q duration exceeds the 1q one
   (a cheap check the arities were not swapped).
+
+### `engine_gates`
+
+*The native engine's gate matrices match Qiskit and cover the parser.*
+
+The native statevector engine (`engine/`) simulates a circuit without
+Qiskit, so DevQ can produce a noiseless ideal without an Aer-backed device
+attached (see [`ENGINE.md`](ENGINE.md)). Its correctness rests entirely on
+its gate matrices being right — a wrong matrix is a silently-wrong ideal, and
+a fidelity computed against it is high, plausible, and meaningless — so this
+block locks the vocabulary before any engine code consumes it, on two axes.
+
+- **Coverage: exact vocabulary parity.** The engine's gate names equal the
+  qasm2 frontend's `_BUILTIN_GATES` exactly (32 names), and the per-gate
+  `(num_params, num_qubits)` arities match too. Equality, not subset: the
+  engine must simulate everything the frontend emits and claim nothing it
+  cannot. The two tables are written for different reasons and nothing else
+  couples them, so a gate added to one and not the other would be invisible
+  until a circuit used it. An unknown gate name raises `UnknownGateError`
+  (naming the known set), not a bare `KeyError`. A custom-gate fixture (whose
+  definition calls a second custom gate) is parsed and confirmed to inline to
+  engine-known builtins only — so covering `_BUILTIN_GATES` covers every
+  circuit the parser can produce, custom gates included.
+- **Correctness: every matrix equals Qiskit's `Operator`.** Each gate is
+  rebuilt through Qiskit and compared — constants exactly, parameterised
+  gates across several angles including the edges (0, π) where a sign or
+  half-angle slip hides. The controlled gates are compared as full
+  little-endian controlled-U matrices (control q0, target q1), which also
+  pins **tensor ordering**: a big-endian slip flips control and target and
+  fails here. `ecr` is compared as its 4x4; `swap`, `ccx` (Toffoli), and
+  `cswap` (Fredkin) as the permutation their kind implies.
+
+Because the block rebuilds each gate through Qiskit rather than trusting a
+remembered matrix, a matrix that drifts from Qiskit's definition — or a gate
+dropped from or added to the vocabulary — fails the suite. (Mutants that
+corrupt a constant, flip a parameterised builder's sign, or drop a gate are
+all killed here.)
 
 ### `backend_factory_errors`
 

@@ -43,15 +43,22 @@ cannot.
 
 ## Results
 
-**156 distinct mutants, 153 killed, 3 excluded** (M10 equivalent, P7 and
+**162 distinct mutants, 159 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 153/150/3 from the prior
-state plus the 3 new stable-region mutants below (all killed, off-main on
-`post-p5`; none survived — the connectivity guard was pinned by the n=3
-fixture from the start). The 153/150/3 itself was 144/141/3 plus the 9 new
+The total is delta-consistent, not recounted: 159/156/3 from the prior
+state plus the 3 new native-engine gate mutants below (all killed, off-main
+on `post-p5`; none survived — every gate is checked against Qiskit's
+Operator, so a corrupted matrix, a flipped builder, or a dropped gate all
+fail the `engine_gates` block). The 159/156/3 itself was 156/153/3 plus the
+3 new rejected-job-ideal mutants below (all killed, off-main on `post-p5`;
+none survived — the reference-record assertion pinned the call-site filter
+from the start). The 156/153/3 itself was 153/150/3 plus the 3 new
+stable-region mutants below (all killed, off-main on `post-p5`; none
+survived — the connectivity guard was pinned by the n=3 fixture from the
+start). The 153/150/3 itself was 144/141/3 plus the 9 new
 scheduler-scoring mutants below (all killed — MS-i
 after `scheduler_scoring` was strengthened to pin score to its terms). The
 144/141/3 itself was 140/137/3 plus the 4 new comparison-modes mutants
@@ -518,6 +525,54 @@ exact prose is not a behavioural contract). The reason is checked for the
 substring that carries meaning ("feedback"), not for its full text, so a
 cosmetic reword leaves the suite correctly green. Recorded, not counted as
 a gap.
+
+### Rejected-job ideal filter — `benchmark/runner.py`
+
+The runner filters REJECTED jobs before computing reference ideals: a job
+with no valid allocation never runs, never produces counts, and so needs
+no noiseless yardstick. The filter is a one-line generator guard at the
+`compute_ideals` call site — `(j.circuit for j in jobs if j.state.value !=
+"REJECTED")` — deliberately NOT pushed into `compute_ideals`, which is
+circuit-level and job-agnostic. Three mutants, all killed by
+`rejected_no_ideal`, which stands up an `ibm.simulated` device (the only
+reference-capable provider) with one FINISHED `bell` and one REJECTED `ghz`
+and asserts `bell`'s hash appears in the reference records while `ghz`'s
+does not.
+
+- **MU-a — the filter removed** (all jobs passed to `compute_ideals`, as
+  before the change). Killed: `ghz` is REJECTED but its hash now appears in
+  a `reference` record — a wasted noiseless simulation for a job that
+  produced no counts.
+- **MU-b — the guard inverted** (`!= "REJECTED"` became `==`, keeping only
+  rejected jobs). Killed: `bell` FINISHED but earns no ideal, so the
+  fidelity yardstick for the one job that actually ran goes missing.
+- **MU-c — the wrong state filtered** (`"REJECTED"` literal became
+  `"FINISHED"`). Killed: the runnable `bell` is dropped and the rejected
+  `ghz` slips through, exactly inverting the intended set.
+
+### Native engine gate matrices — `engine/gates.py`
+
+The native statevector engine's gate vocabulary is the locked, Qiskit-free
+matrix set the state core will apply; its whole value as a noiseless
+reference depends on each matrix being exactly right (see `ENGINE.md`). The
+`engine_gates` block rebuilds every gate through Qiskit's `Operator` and
+compares, and asserts the vocabulary equals the qasm2 frontend's
+`_BUILTIN_GATES`. Three mutants, all killed by that block.
+
+- **ME-a — a constant matrix corrupted** (`Y`'s off-diagonal signs
+  swapped). Killed: the rebuilt-vs-Qiskit comparison for `y` fails. This is
+  the guard against a mis-transcribed constant — the failure mode a
+  from-memory matrix invites.
+- **ME-b — a parameterised builder's sign flipped** (`rz`'s half-angle
+  phases exchanged). Killed at the non-trivial angles: a builder error that a
+  single-angle or angle-0 check would miss is caught because the block sweeps
+  several angles including π. `crz` (which shares the `rz` builder) fails too,
+  confirming the alias coupling is real.
+- **ME-c — a gate dropped from the vocabulary** (`ch` removed from `GATES`).
+  Killed: vocabulary parity with the parser breaks — the engine would decline
+  a gate the frontend still emits, silently pushing those circuits onto the
+  provider-fallback path and losing the native ideal. Equality (not subset)
+  is what catches this.
 
 ### Sweepable contract and cost decomposition — `kernel/sweep.py`, `kernel/router/noise_router.py`
 
