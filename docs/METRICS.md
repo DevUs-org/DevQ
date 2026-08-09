@@ -379,31 +379,48 @@ that.
 ### The ideal
 
 The ideal is a circuit's distribution on a perfect, noiseless machine —
-what the measured distribution is compared against. It is computed by a
-**reference-capable provider** (`BaseProvider.reference_ideal`), which a
-provider overrides if it can faithfully simulate a circuit noiselessly;
-`IBMSimulatedProvider` does, via a **noiseless Aer density-matrix**
-simulation reading exact probabilities. Density-matrix, not statevector,
-because it honours mid-circuit `reset` — a non-unitary operation whose
-post-reset reduced state can be *mixed* (a reset after entanglement leaves
-the partner qubit in a classical mixture), which a pure statevector cannot
-represent.
+what the measured distribution is compared against. It is sourced by a
+**three-tier precedence** in `benchmark/reference.compute_ideals`, applied
+per distinct circuit:
 
-Two properties make the ideal a clean artifact. It is **exact** (read from
-the density matrix, not sampled), so it carries no sampling noise and no
-reference seed to pin — `metrics.json` stays byte-reproducible. And it is
-a **property of the circuit, not the job or device**: one reference-capable
-provider computes it once per distinct circuit for the whole run, keyed by
-a content hash of the circuit (see `benchmark/reference.circuit_hash`), so
-two jobs running the same circuit on different devices share one ideal and
-their fidelities are comparable. The run records one `reference` record per
-distinct circuit; a provider that cannot simulate a given circuit
-contributes no ideal for it.
+1. an **attached reference-capable provider**
+   (`BaseProvider.reference_ideal`) wins outright for the run — a study that
+   deliberately attaches a reference backend gets exactly it.
+   `IBMSimulatedProvider` is one, via a **noiseless Aer density-matrix**
+   simulation reading exact probabilities.
+2. else DevQ's **core native statevector engine** (`engine/`, Qiskit-free)
+   computes the exact ideal for pure circuits within a qubit cap (20). This
+   is what frees a run from having to attach a reference-capable device (and
+   exclude it from routing on every job) purely to obtain ideals.
+3. else a **registered provider class** overriding `reference_ideal` is
+   instantiated unattached and used — for what the engine declines: a circuit
+   above the cap, or a **mixed-state** case a statevector cannot represent (a
+   reset after entanglement leaves the partner qubit in a classical mixture).
+   A density-matrix reference honours that; the statevector engine declines
+   it and this tier covers it.
 
-When no reference-capable provider ran (for example a `devq.simulated`-only
-session, whose uniform mock has no meaningful ideal), no ideals are
-recorded and fidelity is uniformly `None` — an honest undefined, not a
-fabricated score.
+Per-circuit fallback across tiers 2 and 3 is safe: a noiseless ideal is
+mathematically **unique**, and every tier returns normalised probabilities
+(never shot-quantised counts), so two tiers can never disagree on a circuit's
+ideal. The density-matrix path costs 2^n × 2^n against the statevector's 2^n,
+so the engine is the cheap exact primary for pure circuits and the
+density-matrix tier the fallback for genuinely mixed states — the right tool
+per circuit, not a degraded one.
+
+Two properties make the ideal a clean artifact. It is **exact** (read from a
+state vector or density matrix, not sampled), so it carries no sampling noise
+and no reference seed to pin — `metrics.json` stays byte-reproducible. And it
+is a **property of the circuit, not the job or device**: it is computed once
+per distinct circuit for the whole run, keyed by a content hash of the
+circuit (see `benchmark/reference.circuit_hash`), so two jobs running the
+same circuit on different devices share one ideal and their fidelities are
+comparable. The run records one `reference` record per distinct circuit; a
+circuit no tier can simulate contributes no ideal for it.
+
+When no tier produces an ideal for a circuit — no reference-capable provider
+attached, the engine declines it, and no registered provider covers it — no
+ideal is recorded and fidelity for that circuit is `None`: an honest
+undefined, not a fabricated score.
 
 ### The distance measures
 

@@ -110,6 +110,79 @@ alongside DevQ's other own packages.
   builders, alias resolution, the `GATES` registry, `gate_spec()` lookup
   (raising `UnknownGateError` for a name outside the vocabulary), and
   `vocabulary()`.
-- `engine/statevector.py` *(next layer)* — the state core: gate application,
-  reset, terminal measurement, and the `simulate()` (exact probabilities) /
-  `run()` (seeded sampled counts) surfaces.
+- `engine/statevector.py` — the state core: gate application by
+  bit-indexing (one-qubit, controlled, ecr, swap, ccx, cswap — reusing the
+  little-endian embedding verified in `engine_gates`), reset, terminal
+  measurement, `simulate()` returning the exact `{bitstring: probability}`
+  ideal at the Option-B classical width, and `run(circuit, shots, seed)`
+  returning seeded integer counts sampled from that exact distribution. It
+  implements the `BaseProvider` output contract directly — width via
+  `BaseProvider._counts_width`, clbit placement, and the measure-all
+  fallback — so its keys align with any provider's for a fidelity comparison,
+  without importing or depending on any provider.
+
+## simulate() versus run()
+
+`simulate()` returns exact probabilities — the noiseless *ideal*, the
+fidelity yardstick, seedless and deterministic. `run(circuit, shots, seed)`
+draws `shots` outcomes from that exact distribution and returns integer
+counts, the counts a noiseless execution of the circuit would produce. The
+two serve different roles: the ideal is what a measured distribution is
+*compared against*; sampled counts are a gate-honest noiseless *execution*
+for a caller who wants counts without an Aer-backed device (unlike the
+uniform mock `devq.simulated` returns, which does not interpret gates). The
+seed is explicit on `run()` because it is a standalone function, not a
+provider with a submission counter; a fixed seed reproduces counts exactly,
+and both surfaces propagate the engine's decline (`UnsupportedByEngine`,
+`UnknownGateError`) rather than swallowing it.
+
+## The engine as a reference source
+
+The engine's reason for existing is to free a run from having to attach a
+reference-capable device (and then exclude it from routing on every job with
+`no_exec_on`) purely to obtain ideals. It slots into `benchmark/reference.py`
+as the middle of a **three-tier precedence**, applied per circuit:
+
+1. an **attached** reference-capable provider wins outright for the run;
+2. else the **core native statevector engine** computes the exact ideal for
+   pure circuits within a qubit cap (`_ENGINE_MAX_QUBITS`, 20 — a 2^20
+   complex vector is 16 MB; the cap is a memory guard, not a correctness
+   one);
+3. else a **registered** provider class overriding `reference_ideal` is
+   instantiated unattached and used — for what the engine declines (an
+   entangled reset, or a circuit above the cap), internalising the dry-run
+   hand-roll.
+
+Per-circuit fallback between tiers 2 and 3 is safe because a noiseless ideal
+is mathematically unique and every tier returns normalised probabilities (not
+shot-quantised counts), so two tiers can never disagree on a given circuit's
+ideal. A density matrix costs 2^n × 2^n (16 TB at n=20) against the
+statevector's 2^n (16 MB), so the engine is the cheap exact primary for pure
+circuits and the density-matrix tier the fallback for the genuinely
+mixed-state cases — not a degraded engine, the right tool per circuit.
+
+## The reset boundary
+
+A `reset` returns a qubit to |0>. A statevector can represent that *exactly*
+only when the qubit is **separable** — its reduced state is pure, so the
+post-reset whole-register state is still a pure product |0> ⊗ (rest). The
+engine handles this common case (a leading reset, or a reset on a qubit not
+yet entangled) precisely, moving the qubit's population to |0> and
+renormalising.
+
+When the reset qubit is **entangled**, the reset leaves the rest of the
+register in a genuinely *mixed* state — resetting q0 of a Bell pair leaves q1
+in a 50/50 mixture whose correct ideal is `{"00": 0.5, "10": 0.5}`. A pure
+statevector cannot hold that; it would collapse it to `{"00": 1.0}`, a
+plausible and wrong ideal. So the engine detects this — forming the qubit's
+reduced density matrix and testing purity (`Tr(ρ²) == 1`) at the reset — and
+**declines** the circuit (`UnsupportedByEngine`) rather than emit the wrong
+distribution. The reference path then falls back to a reference-capable
+provider, or records no ideal (fidelity `None`) — the same honest handoff as
+an unknown gate. Simulate what can be simulated exactly; hand off what
+cannot.
+
+Post-measurement resets never reach the engine: a reset (or gate) on a qubit
+after it has been measured is mid-circuit measurement, rejected upstream by
+`CircuitRep.find_mid_circuit_measurement` before the circuit is ever
+simulated.

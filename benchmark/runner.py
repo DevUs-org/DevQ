@@ -202,7 +202,7 @@ def _run_one(spec, config, out_dir, session_id, register_providers=None,
             # circuits with at least one non-REJECTED job still get an ideal.
             runnable = (j.circuit for j in jobs
                         if j.state.value != "REJECTED")
-            ideals = compute_ideals(runnable, provider)
+            ideals = compute_ideals(runnable, provider, dq._registry)
 
             # A hash -> human label map, sourced from the jobs' stamped
             # labels (the spec path each circuit came from). Cosmetic: the

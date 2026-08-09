@@ -1834,6 +1834,199 @@ def block_engine_gates():
           "engine 'cswap' (Fredkin, control q0 swaps q1/q2) matches Qiskit")
 
 
+def block_engine_statevector():
+    '''The native statevector core simulates exact ideals matching Qiskit'''
+    # engine_gates locked the gate MATRICES against Qiskit; this block pins
+    # the statevector CORE that applies them — that a full circuit's exact
+    # measured-bit distribution (the noiseless ideal) matches Qiskit's, and
+    # that the core honours DevQ's output contract (Option-B width, clbit
+    # placement, measure-all fallback) and its reset boundary (exact on a
+    # separable qubit, declined on an entangled one, never silently wrong).
+    import numpy as np
+    from qiskit import QuantumCircuit
+    from qiskit.quantum_info import Statevector
+    from engine.statevector import simulate, UnsupportedByEngine
+    from engine.gates import UnknownGateError
+    from circuits.circuit_rep import CircuitRep
+
+    def qiskit_ideal(qc, width, measure_map):
+        # Exact probabilities from Qiskit's statevector, marginalised the
+        # same way the contract prescribes, so the two dicts are comparable.
+        full = np.abs(Statevector(qc).data) ** 2
+        out = {}
+        for index, p in enumerate(full):
+            if p < 1e-9:
+                continue
+            bits = ["0"] * width
+            for q, c in measure_map:
+                bits[width - 1 - c] = str((index >> q) & 1)
+            key = "".join(bits)
+            out[key] = out.get(key, 0.0) + float(p)
+        return out
+
+    def agree(eng, qk):
+        keys = set(eng) | set(qk)
+        return all(abs(eng.get(k, 0.0) - qk.get(k, 0.0)) < 1e-9 for k in keys)
+
+    # ── every gate kind, applied in a real circuit, matches Qiskit ────────
+    cases = []
+
+    cr = CircuitRep(2, 2); cr.add_gate("h", [0]); cr.add_gate("cx", [0, 1])
+    for q in range(2): cr.add_measure(q, q)
+    qc = QuantumCircuit(2); qc.h(0); qc.cx(0, 1)
+    cases.append(("bell", cr, qc, 2, [(0, 0), (1, 1)]))
+
+    cr = CircuitRep(3, 3)
+    cr.add_gate("h", [0]); cr.add_gate("cx", [0, 1]); cr.add_gate("cx", [1, 2])
+    for q in range(3): cr.add_measure(q, q)
+    qc = QuantumCircuit(3); qc.h(0); qc.cx(0, 1); qc.cx(1, 2)
+    cases.append(("ghz", cr, qc, 3, [(q, q) for q in range(3)]))
+
+    cr = CircuitRep(3, 3)
+    cr.add_gate("rx", [0], [0.7]); cr.add_gate("ry", [1], [1.3])
+    cr.add_gate("rz", [2], [2.1]); cr.add_gate("p", [0], [0.5])
+    cr.add_gate("cx", [0, 2])
+    for q in range(3): cr.add_measure(q, q)
+    qc = QuantumCircuit(3)
+    qc.rx(0.7, 0); qc.ry(1.3, 1); qc.rz(2.1, 2); qc.p(0.5, 0); qc.cx(0, 2)
+    cases.append(("rotations", cr, qc, 3, [(q, q) for q in range(3)]))
+
+    cr = CircuitRep(3, 3)
+    cr.add_gate("h", [0]); cr.add_gate("h", [1]); cr.add_gate("ccx", [0, 1, 2])
+    for q in range(3): cr.add_measure(q, q)
+    qc = QuantumCircuit(3); qc.h(0); qc.h(1); qc.ccx(0, 1, 2)
+    cases.append(("ccx", cr, qc, 3, [(q, q) for q in range(3)]))
+
+    cr = CircuitRep(3, 3)
+    cr.add_gate("x", [1]); cr.add_gate("h", [0]); cr.add_gate("cswap", [0, 1, 2])
+    for q in range(3): cr.add_measure(q, q)
+    qc = QuantumCircuit(3); qc.x(1); qc.h(0); qc.cswap(0, 1, 2)
+    cases.append(("cswap", cr, qc, 3, [(q, q) for q in range(3)]))
+
+    cr = CircuitRep(2, 2); cr.add_gate("x", [0]); cr.add_gate("swap", [0, 1])
+    for q in range(2): cr.add_measure(q, q)
+    qc = QuantumCircuit(2); qc.x(0); qc.swap(0, 1)
+    cases.append(("swap", cr, qc, 2, [(0, 0), (1, 1)]))
+
+    cr = CircuitRep(2, 2); cr.add_gate("h", [0]); cr.add_gate("ecr", [0, 1])
+    for q in range(2): cr.add_measure(q, q)
+    qc = QuantumCircuit(2); qc.h(0); qc.ecr(0, 1)
+    cases.append(("ecr", cr, qc, 2, [(0, 0), (1, 1)]))
+
+    # Interference case: h then ry on the SAME qubit. Starting from a
+    # superposition, ry's off-diagonal asymmetry shows up in the measured
+    # probabilities (h;ry(θ) and h;ry(θ)^T give different distributions),
+    # so this distinguishes the 1q application from a transposed one — a
+    # transpose-invariant gate on |0> alone would not.
+    cr = CircuitRep(1, 1); cr.add_gate("h", [0]); cr.add_gate("ry", [0], [0.7])
+    cr.add_measure(0, 0)
+    qc = QuantumCircuit(1); qc.h(0); qc.ry(0.7, 0)
+    cases.append(("h_then_ry", cr, qc, 1, [(0, 0)]))
+
+    for name, cr, qc, width, mmap in cases:
+        check(agree(simulate(cr), qiskit_ideal(qc, width, mmap)),
+              f"engine simulate('{name}') matches Qiskit's exact ideal")
+
+    # ── hand-computed anchor (no Qiskit) ──────────────────────────────────
+    cr = CircuitRep(2, 2); cr.add_gate("h", [0]); cr.add_gate("cx", [0, 1])
+    for q in range(2): cr.add_measure(q, q)
+    bell = simulate(cr)
+    check(abs(bell.get("00", 0) - 0.5) < 1e-9
+          and abs(bell.get("11", 0) - 0.5) < 1e-9
+          and "01" not in bell and "10" not in bell,
+          f"Bell ideal is 50/50 on 00/11, hand-known, got {bell}")
+
+    # ── output contract: clbit placement, Option-B width, fallback ────────
+    cr = CircuitRep(2, 2); cr.add_gate("x", [0])
+    cr.add_measure(0, 1); cr.add_measure(1, 0)
+    perm = simulate(cr)
+    check(perm == {"10": 1.0},
+          f"a measure maps each qubit to its own clbit position, got {perm}")
+
+    cr = CircuitRep(3, 2); cr.add_gate("x", [0]); cr.add_gate("x", [2])
+    cr.add_measure(0, 0); cr.add_measure(1, 1)
+    ob = simulate(cr)
+    check(ob == {"01": 1.0},
+          f"width is the declared classical register (Option B), got {ob}")
+
+    cr = CircuitRep(2, 2); cr.add_gate("x", [1])
+    fb = simulate(cr)
+    check(fb == {"10": 1.0},
+          f"a circuit with no measures falls back to measuring all, got {fb}")
+
+    # ── reset boundary: exact when separable, declined when entangled ─────
+    cr = CircuitRep(1, 1); cr.add_gate("x", [0]); cr.add_reset(0)
+    cr.add_measure(0, 0)
+    r1 = simulate(cr)
+    check(r1 == {"0": 1.0},
+          f"reset on a certainly-|1> separable qubit yields 0, got {r1}")
+
+    cr = CircuitRep(1, 1); cr.add_reset(0); cr.add_gate("h", [0])
+    cr.add_measure(0, 0)
+    r2 = simulate(cr)
+    check(abs(r2.get("0", 0) - 0.5) < 1e-9 and abs(r2.get("1", 0) - 0.5) < 1e-9,
+          f"a leading reset is exact; reset;h -> 50/50, got {r2}")
+
+    cr = CircuitRep(2, 2); cr.add_gate("h", [1]); cr.add_gate("x", [0])
+    cr.add_reset(0)
+    for q in range(2): cr.add_measure(q, q)
+    r3 = simulate(cr)
+    check(abs(r3.get("00", 0) - 0.5) < 1e-9 and abs(r3.get("10", 0) - 0.5) < 1e-9,
+          f"reset on a separable qubit is exact even with a peer in "
+          f"superposition, got {r3}")
+
+    cr = CircuitRep(2, 2); cr.add_gate("h", [0]); cr.add_gate("cx", [0, 1])
+    cr.add_reset(0)
+    for q in range(2): cr.add_measure(q, q)
+    declined = False
+    try:
+        simulate(cr)
+    except UnsupportedByEngine:
+        declined = True
+    check(declined,
+          "a reset on an entangled qubit is DECLINED (not collapsed to a "
+          "plausible-but-wrong pure-state ideal)")
+
+    # ── an unknown gate raises (caught by the caller for provider fallback)
+    cr = CircuitRep(1, 1); cr.add_gate("not_a_gate", [0])
+    raised = False
+    try:
+        simulate(cr)
+    except UnknownGateError:
+        raised = True
+    check(raised, "simulate raises UnknownGateError on an out-of-vocabulary gate")
+
+    # ── run(): seeded sampling on top of simulate() ───────────────────────
+    from engine.statevector import run
+    cr = CircuitRep(2, 2); cr.add_gate("h", [0]); cr.add_gate("cx", [0, 1])
+    for q in range(2): cr.add_measure(q, q)
+    c1 = run(cr, 1000, seed=42)
+    c2 = run(cr, 1000, seed=42)
+    c3 = run(cr, 1000, seed=43)
+    check(sum(c1.values()) == 1000,
+          f"run() returns integer counts summing to shots, got {sum(c1.values())}")
+    check(c1 == c2, "run() with a fixed seed is reproducible")
+    check(c1 != c3, "run() with a different seed gives a different draw")
+    check(set(c1) <= {"00", "11"},
+          f"run() samples only the true support (Bell -> 00/11), got {set(c1)}")
+    # Empirical frequencies converge to the exact distribution.
+    big = run(cr, 100000, seed=7)
+    exact = simulate(cr)
+    err = max(abs(big.get(k, 0) / 100000 - exact.get(k, 0))
+              for k in set(big) | set(exact))
+    check(err < 0.02,
+          f"run() frequencies converge to simulate()'s exact probs, max "
+          f"err {err:.4f}")
+    # shots must be a positive integer.
+    for bad in (0, -5, 10.5, "abc", True):
+        rejected = False
+        try:
+            run(cr, bad)
+        except ValueError:
+            rejected = True
+        check(rejected, f"run() rejects shots={bad!r}")
+
+
 # ── Backend factory ──────────────────────────────────────────────────────────
 
 def block_mock_topologies():
@@ -4892,6 +5085,110 @@ def block_fidelity():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def block_reference_tiers():
+    '''compute_ideals sources ideals by three-tier precedence: provider, engine, registry'''
+    # The ideal for a circuit can come from three places, tried in a fixed
+    # precedence per circuit: (1) an ATTACHED reference-capable provider wins
+    # outright; (2) else DevQ's CORE native statevector engine simulates it
+    # (no provider needed — the whole point: a run computes ideals with no
+    # reference device attached); (3) else a registered provider class
+    # overriding reference_ideal is instantiated unattached and used (for what
+    # the engine declines — an entangled reset, or a circuit above the qubit
+    # cap). Per-circuit fallback across tiers 2 and 3 is safe because a
+    # noiseless ideal is unique and every tier returns normalised
+    # probabilities, so there is no source disagreement to fear.
+    from benchmark.reference import (compute_ideals, circuit_hash,
+                                     _engine_ideal, _ENGINE_MAX_QUBITS)
+    from circuits.circuit_rep import CircuitRep
+    from registry.registry import Registry
+    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from providers.base_provider import BaseProvider
+
+    # A pure circuit the engine handles, and an entangled-reset circuit it
+    # declines (leaving q1 mixed — only a density-matrix source gets it right).
+    bell = CircuitRep(2, 2); bell.add_gate("h", [0]); bell.add_gate("cx", [0, 1])
+    for q in range(2): bell.add_measure(q, q)
+    ereset = CircuitRep(2, 2)
+    ereset.add_gate("h", [0]); ereset.add_gate("cx", [0, 1]); ereset.add_reset(0)
+    for q in range(2): ereset.add_measure(q, q)
+    bell_h, ereset_h = circuit_hash(bell), circuit_hash(ereset)
+
+    # ── Tier 2: no provider, no registry — the engine supplies the ideal ──
+    d = compute_ideals([bell], None, None)
+    check(bell_h in d,
+          "tier 2: with no provider attached, the core engine supplies the "
+          "ideal (a run needs no reference-capable device)")
+    ideal = d[bell_h]["ideal"]
+    check(abs(ideal.get("00", 0) - 0.5) < 1e-9
+          and abs(ideal.get("11", 0) - 0.5) < 1e-9,
+          f"tier 2: the engine's Bell ideal is the exact 50/50, got {ideal}")
+
+    # ── Tier 2 declines, no registry — honest absence, not a wrong ideal ──
+    d = compute_ideals([ereset], None, None)
+    check(ereset_h not in d,
+          "tier 2: an entangled-reset circuit the engine declines yields NO "
+          "ideal when no registry tier can cover it — an honest absence, not "
+          "the plausible-but-wrong collapsed distribution")
+
+    # ── Tier 3: engine declines, registry search covers it ────────────────
+    reg = Registry()
+    reg.register("provider", "ibm.simulated", IBMSimulatedProvider)
+    d = compute_ideals([ereset], None, reg)
+    check(ereset_h in d,
+          "tier 3: when the engine declines, a registered reference-capable "
+          "provider class is instantiated unattached and supplies the ideal")
+    ri = d[ereset_h]["ideal"]
+    # The correct entangled-reset ideal is the MIXED 00/10, exactly what a
+    # density-matrix reference gives and a statevector cannot — proof the
+    # tier-3 source, not a collapsed fallback, produced it.
+    check(abs(ri.get("00", 0) - 0.5) < 1e-9 and abs(ri.get("10", 0) - 0.5) < 1e-9
+          and abs(ri.get("01", 0)) < 1e-12,
+          f"tier 3: the density-matrix source gives the correct MIXED 00/10 "
+          f"ideal (not a statevector's collapsed 00), got {ri}")
+
+    # A registry with no reference-capable provider covers nothing.
+    reg_bare = Registry()
+    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    reg_bare.register("provider", "devq.simulated", DevQSimulatedProvider)
+    check(DevQSimulatedProvider.reference_ideal is BaseProvider.reference_ideal,
+          "the mock devq provider is not reference-capable (guards the tier-3 "
+          "capability probe)")
+    d = compute_ideals([ereset], None, reg_bare)
+    check(ereset_h not in d,
+          "tier 3: a registry with only a non-reference-capable provider "
+          "supplies nothing — the entry stays absent")
+
+    # ── Tier 1: an attached provider wins outright ────────────────────────
+    # With a provider passed, that provider computes the ideal even for a
+    # circuit the engine could have handled — tier 1 is not overridden by 2.
+    prov = IBMSimulatedProvider()
+    d = compute_ideals([bell], prov, reg)
+    check(bell_h in d,
+          "tier 1: an attached reference-capable provider supplies the ideal")
+
+    # ── the qubit cap routes big circuits past the engine ─────────────────
+    check(_ENGINE_MAX_QUBITS >= 20,
+          f"the engine qubit cap is a sane memory guard, got {_ENGINE_MAX_QUBITS}")
+    big = CircuitRep(_ENGINE_MAX_QUBITS + 1, _ENGINE_MAX_QUBITS + 1)
+    big.add_gate("h", [0])
+    check(_engine_ideal(big) is None,
+          "tier 2: a circuit above the qubit cap is declined by the engine "
+          "(so it routes to the registry tier), rather than allocating a "
+          "state vector too large to hold")
+    # And within the cap the engine answers.
+    small = CircuitRep(2, 2); small.add_gate("h", [0])
+    check(_engine_ideal(small) is not None,
+          "tier 2: a circuit within the cap is simulated by the engine")
+
+    # ── dedup: one ideal per distinct circuit, mixed sources coexist ──────
+    # A run mixing an engine circuit and a registry circuit gets both, each
+    # from its own tier — the per-circuit fallback in action.
+    d = compute_ideals([bell, ereset, bell], None, reg)
+    check(bell_h in d and ereset_h in d and len(d) == 2,
+          f"a run mixes tier-2 and tier-3 ideals per circuit, deduped to one "
+          f"each, got {len(d)} ideals")
+
+
 def block_router_scoring():
     '''Router weights change routing, and explain() matches select()'''
     # Every other routing block runs at the default 0.5/0.5, where the
@@ -6387,6 +6684,7 @@ BLOCKS = [
     ("mock_topologies",          block_mock_topologies),
     ("device_calibration",       block_device_calibration),
     ("engine_gates",             block_engine_gates),
+    ("engine_statevector",       block_engine_statevector),
     ("backend_factory_errors",   block_backend_factory_errors),
     ("shell_input_handling",     block_shell_input_handling),
     ("many_device_federation",   block_many_device_federation),
@@ -6424,6 +6722,7 @@ BLOCKS = [
     ("comparison_modes",         block_comparison_modes),
     ("stable_region",            block_stable_region),
     ("fidelity",                 block_fidelity),
+    ("reference_tiers",          block_reference_tiers),
     ("router_scoring",           block_router_scoring),
     ("sweepable_contract",       block_sweepable_contract),
     ("allocator_scoring",        block_allocator_scoring),

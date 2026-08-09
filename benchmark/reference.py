@@ -6,17 +6,27 @@ turns "what circuits ran" into "here is each circuit's ideal", so the
 fidelity metric has a noiseless yardstick to compare a noisy run against.
 
 WHAT THIS IS AND IS NOT. This module owns the vendor-NEUTRAL half of the
-reference run: identifying circuits, deciding which provider computes
-ideals, computing each distinct circuit's ideal once, and shaping the
-result into recordable data. It owns NONE of the quantum simulation —
-that is a provider capability (BaseProvider.reference_ideal), overridden
-by a provider that can faithfully simulate a circuit noiselessly
-(IBMSimulatedProvider, via a density-matrix Aer path). So this module has
-no qiskit import and no IBM import: it depends on the provider INTERFACE,
-never on any concrete provider, and DevQ core ships it without dragging a
-simulator in. A run with no reference-capable provider simply produces no
-ideals, and fidelity is then reported as None — the population rule, an
-honest undefined rather than a fake number.
+reference run: identifying circuits, choosing where each circuit's ideal
+comes from, computing each distinct circuit's ideal once, and shaping the
+result into recordable data. Ideals come from a three-tier precedence: an
+ATTACHED reference-capable provider wins outright for a run; failing that,
+DevQ's own CORE native statevector engine (Qiskit-free) computes the exact
+ideal for pure circuits within a qubit cap; failing that, a registered
+provider class overriding reference_ideal is instantiated unattached and
+used. The module still imports no concrete provider and no Qiskit — tier 1
+depends on the provider INTERFACE, tier 2 on the core engine, and tier 3
+resolves a provider through the registry only when reached, so DevQ core
+ships without dragging a simulator in unless a study registers one. A circuit
+no tier can handle simply produces no ideal, and fidelity is then reported as
+None — the population rule, an honest undefined rather than a fake number.
+
+The three-tier model is what frees a run from having to attach a
+reference-capable device (and then exclude it from routing on every job) just
+to obtain ideals: with no provider attached, the core engine supplies them.
+Per-circuit fallback between the engine and the registry tier is safe because
+a noiseless ideal is mathematically unique and every tier returns normalised
+probabilities, so a cross-device fidelity comparison for a given circuit is
+never split across two disagreeing sources.
 
 WHY A CONTENT HASH KEYS THE IDEAL. The ideal is a property of the
 CIRCUIT, not of the job or the device: two jobs running the same circuit
@@ -109,50 +119,139 @@ def select_reference_provider(providers):
 
 # ── computing a run's ideals ─────────────────────────────────────────────
 
-def compute_ideals(circuits, provider):
+# The native statevector engine allocates a 2**n complex state vector, so
+# memory is the ceiling: n=20 is 16 MB, n=24 is 256 MB. Above this the engine
+# declines and the registry-search tier (a density-matrix provider, or
+# whatever a study registered) takes over — a density matrix is 2**n x 2**n
+# and far costlier (16 TB at n=20), so the cheap exact statevector is the
+# right primary for pure circuits. The cap is a soft memory guard, not a
+# correctness one: a noiseless ideal is unique, identical wherever computed.
+_ENGINE_MAX_QUBITS = 20
+
+
+def _engine_ideal(circuit):
     '''
-    Compute the ideal for each DISTINCT circuit once, keyed by hash.
+    Tier 2: the exact ideal from DevQ's native statevector engine, or None if
+    the engine cannot handle this circuit (above the qubit cap, or a reset /
+    construct it declines). Core and Qiskit-free — this is what lets a run
+    compute ideals with no reference-capable provider attached.
+
+    None is not an error; it is the engine saying "not mine", so the caller
+    falls through to the registry tier.
+    '''
+    if circuit.num_qubits > _ENGINE_MAX_QUBITS:
+        return None
+    # Local import: keep the engine dependency at the tier that uses it, and
+    # charge nothing to a caller (a tier-1 run) that never reaches here.
+    from engine.statevector import simulate, UnsupportedByEngine
+    from engine.gates import UnknownGateError
+    try:
+        return simulate(circuit)
+    except (UnsupportedByEngine, UnknownGateError):
+        return None
+
+
+def _registry_reference_ideal(circuit, registry):
+    '''
+    Tier 3: find a registered provider CLASS overriding reference_ideal,
+    instantiate it unattached, and use it for this circuit. Internalises the
+    "dry-run" hand-roll — standing up a reference-capable provider off to the
+    side purely to compute an ideal — so a caller never has to.
+
+    Reached only when the engine returned None (a circuit above the qubit cap,
+    or a reset / mid-circuit construct a statevector cannot represent), so the
+    heavyweight provider (a density-matrix Aer path) is constructed lazily and
+    only when actually needed. Returns the ideal, or None if no registered
+    provider is reference-capable or the chosen one cannot simulate this
+    circuit either.
+    '''
+    if registry is None:
+        return None
+    from providers.base_provider import BaseProvider
+    try:
+        names = registry.names("provider")
+    except Exception:
+        return None
+    for name in names:
+        cls = registry.get("provider", name)
+        if getattr(cls, "reference_ideal", None) is BaseProvider.reference_ideal:
+            continue  # not reference-capable
+        try:
+            provider = cls()                            # unattached, seedless
+            ideal = provider.reference_ideal(circuit)   # ideals are deterministic
+        except Exception:
+            continue
+        if ideal is not None:
+            return ideal
+    return None
+
+
+def compute_ideals(circuits, provider, registry=None):
+    '''
+    Compute the ideal for each DISTINCT circuit once, keyed by hash, via a
+    three-tier precedence — attached provider, native engine, registry.
+
+    For each distinct circuit:
+
+      1. ATTACHED reference-capable provider — if `provider` is not None (a
+         run that attached one, e.g. IBM/Aer), it computes every ideal and the
+         other tiers are not consulted. A study that deliberately picks a
+         reference backend gets exactly it.
+      2. else CORE native statevector — the engine computes the exact ideal
+         for pure circuits within its qubit cap. This frees a run from needing
+         an attached reference-capable device: no provider, ideals still
+         appear.
+      3. else REGISTRY search — when the engine returns None (above the cap,
+         or a reset / mid-circuit construct it declines), a registered
+         provider class overriding reference_ideal is instantiated unattached
+         and used. Internalises the dry-run hand-roll.
+
+    Per-circuit fallback across tiers 2 and 3 is SAFE and does not break the
+    "one ideal per circuit" guarantee: a noiseless ideal is mathematically
+    unique, so any correct engine yields the identical distribution, and every
+    tier returns normalised probabilities (never shot-quantised counts), so
+    there is no sampling artifact for two tiers to disagree on. Tier 1 wins
+    outright only because a run that attaches a specific reference provider has
+    asked for it by name.
 
     `circuits` is any iterable of CircuitReps (typically one per submitted
-    job, with heavy repetition — a repeat:20 workload runs one circuit 20
-    times). Deduplicating by hash means the noiseless simulation runs once
-    per distinct circuit, not once per job.
-
-    A provider that returns None for a given circuit (cannot simulate it —
-    a gate it does not know, or an unavailable Aer path) contributes no
-    ideal for that hash: the entry is simply absent, and fidelity for jobs
-    on that circuit is later reported as None. An absent ideal is not a
-    zero distribution.
+    job, with heavy repetition); deduplicating by hash computes each distinct
+    circuit's ideal once, not once per job.
 
     Args:
         circuits : iterable of CircuitRep
-        provider : the reference-capable provider chosen for the run, or
-                   None (in which case no ideals are produced at all).
+        provider : the attached reference-capable provider (tier 1), or None.
+        registry : the run's component registry, for the tier-3 search. None
+                   disables tier 3 (older callers pass nothing and keep tiers
+                   1 and 2).
 
     Returns:
-        dict {circuit_hash: {"ideal": {bitstring: prob}, "label": str|None}}
-        — the label is filled by the caller that knows each circuit's
-        source path; this function leaves it None, since a CircuitRep does
-        not carry its own source. Only hashes with a non-None ideal appear.
+        dict {circuit_hash: {"ideal": {bitstring: prob}, "label": str|None}}.
+        The label is filled by the caller that knows each circuit's source
+        path. Only hashes with a non-None ideal from some tier appear.
     '''
     ideals = {}
-    if provider is None:
-        return ideals
-
     for circuit in circuits:
         key = circuit_hash(circuit)
         if key in ideals:
             continue
         # A circuit the frontend marked unrunnable (classical control,
-        # mid-circuit measurement) will be REJECTED by the kernel and will
-        # never produce measured counts, so it has no fidelity to compute —
-        # and computing its ideal is not just wasted work but can fail
-        # outright (the density-matrix reference may reject a construct the
-        # circuit only reaches because it is unrunnable). Skip it: no ideal,
-        # exactly as for a circuit whose provider returns None.
+        # mid-circuit measurement) will be REJECTED by the kernel and never
+        # produce measured counts, so it has no fidelity to compute — and
+        # computing its ideal can fail outright. Skip it: no ideal, exactly as
+        # for a circuit no tier can simulate.
         if getattr(circuit, "unrunnable_reason", None) is not None:
             continue
-        ideal = provider.reference_ideal(circuit)
+
+        if provider is not None:
+            # Tier 1: the attached reference-capable provider wins outright.
+            ideal = provider.reference_ideal(circuit)
+        else:
+            # Tier 2: the native engine; Tier 3: the registry search.
+            ideal = _engine_ideal(circuit)
+            if ideal is None:
+                ideal = _registry_reference_ideal(circuit, registry)
+
         if ideal is None:
             continue
         ideals[key] = {"ideal": ideal, "label": None}

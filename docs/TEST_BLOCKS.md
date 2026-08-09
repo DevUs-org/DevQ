@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 69 sanity blocks in `run_tests.py`, covering
+Specification for the 71 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 69 blocks, one line each
+python run_tests.py              # all 71 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -659,6 +659,39 @@ remembered matrix, a matrix that drifts from Qiskit's definition — or a gate
 dropped from or added to the vocabulary — fails the suite. (Mutants that
 corrupt a constant, flip a parameterised builder's sign, or drop a gate are
 all killed here.)
+
+### `engine_statevector`
+
+*The native statevector core simulates exact ideals matching Qiskit.*
+
+`engine_gates` locked the gate matrices; this pins the state core that
+applies them (see [`ENGINE.md`](ENGINE.md)). It checks three things.
+
+- **Full-circuit ideals match Qiskit.** One representative circuit per gate
+  kind — 1q constant/param, controlled, `ecr`, `swap`, `ccx`, `cswap`, plus
+  an `h; ry` interference case — is simulated and compared to Qiskit's exact
+  statevector probabilities, marginalised identically. The interference case
+  matters: a transpose-invariant gate on |0> alone cannot tell a correct 1q
+  application from a transposed one, but `h; ry(θ)` can, so it catches an
+  index slip a Bell/GHZ-only suite would miss. A hand-computed Bell anchor
+  (50/50 on 00/11) backs the Qiskit comparison.
+- **The output contract holds.** A permuted measure map places each qubit's
+  outcome at its own clbit position; Option-B width uses the declared
+  classical register (3 qubits, `c[2]` → 2-bit strings); a circuit with no
+  measures falls back to measuring all qubits. These pin the same width and
+  bit-placement rules a provider must honour, so the engine's keys align with
+  a provider's for a fidelity comparison.
+- **The reset boundary is exact or honest.** A reset on a separable qubit is
+  simulated exactly (including the certainly-|1> case, where the population
+  must MOVE to |0> rather than be discarded, and the peer-in-superposition
+  case). A reset on an *entangled* qubit — which leaves the rest mixed, a
+  state no statevector can hold — is DECLINED (`UnsupportedByEngine`), never
+  collapsed to a plausible-but-wrong pure-state ideal. An out-of-vocabulary
+  gate raises `UnknownGateError`, the caller's cue to fall back.
+
+(Mutants that transpose the one-qubit application, disable the
+entangled-reset detection, or drop the clbit-position reversal in
+marginalisation are all killed here.)
 
 ### `backend_factory_errors`
 
@@ -1782,6 +1815,38 @@ GHZ fidelity ≤ mean Bell fidelity** under the same noise — GHZ's ideal
 concentrates on two of eight strings, so noise smears it harder than
 Bell's two of four, the exact case Hellinger is chosen to handle
 honestly.
+
+### `reference_tiers`
+
+*`compute_ideals` sources ideals by a three-tier precedence.*
+
+The ideal for a circuit is sourced per circuit by a fixed precedence (see
+[`METRICS.md`](METRICS.md) and [`ENGINE.md`](ENGINE.md)), and this block
+pins each tier and the boundaries between them.
+
+- **Tier 2 (engine) with no provider.** With no reference-capable provider
+  attached and no registry, the core statevector engine supplies the ideal —
+  the whole point of the engine, a run computing ideals with no reference
+  device — and its Bell ideal is the exact 50/50.
+- **Honest absence when a tier declines with nothing behind it.** An
+  entangled-reset circuit the engine declines, with no registry tier to cover
+  it, yields NO ideal — an honest absence, not the plausible-but-wrong
+  collapsed distribution a statevector would compute.
+- **Tier 3 (registry search).** When the engine declines and a registry is
+  present, a registered provider class overriding `reference_ideal` is
+  instantiated unattached and supplies the ideal. For the entangled reset it
+  returns the correct MIXED 00/10 — proof a density-matrix source, not a
+  collapsed fallback, produced it. A registry holding only a
+  non-reference-capable provider (the mock `devq.simulated`) supplies nothing.
+- **Tier 1 (attached provider) wins outright.** With a provider passed, that
+  provider computes the ideal even for a circuit the engine could have
+  handled — tier 1 is not overridden by tier 2.
+- **The qubit cap.** A circuit above `_ENGINE_MAX_QUBITS` is declined by the
+  engine (routing it to the registry tier) rather than allocating a state
+  vector too large to hold; within the cap the engine answers.
+- **Mixed sources per run.** A run mixing an engine circuit and a
+  registry-only circuit gets both, each from its own tier, deduped to one
+  ideal each — the per-circuit fallback in action.
 
 
 ### `router_scoring`

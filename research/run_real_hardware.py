@@ -24,13 +24,15 @@ where it was validated; real hardware is a spot-check that the platform runs
 on a physical QPU.
 
 WHERE THE IDEAL COMES FROM. A real QPU cannot produce a noiseless ideal
-(IBMRealProvider.reference_ideal returns None), so fidelity is computed
-against an ideal from a SEPARATE simulated provider held here. The ideal is a
-property of the CIRCUIT, not the device — noiseless means backend-independent
-— so one IBMSimulatedProvider on any backend produces every ideal. This is
-the exact vendor-neutral inversion the provider contract describes; the
-run's log carries the real measured counts, and this script joins them to
-locally-computed ideals through the shipped, pure fidelity() metric.
+(IBMRealProvider.reference_ideal returns None), so the attached ibm.real
+devices are not reference-capable. DevQ's three-tier reference path handles
+this automatically: with no reference-capable provider attached, it computes
+each circuit's ideal from the core statevector engine (tier 2) or, for what
+the engine declines, from a registered reference-capable provider (tier 3 —
+ibm.simulated, registered below). The runner emits those ideals as `reference`
+records straight into the run's log, so this script computes no ideals itself
+— it just runs the shipped fidelity() metric over the log, which already
+holds both the real measured counts and the ideals.
 
 CREDENTIALS AND BACKENDS come from the environment, resolved via the spec's
 ${} placeholders (backend names) and passed to the provider instance (token):
@@ -43,8 +45,7 @@ ${} placeholders (backend names) and passed to the provider instance (token):
 
 The token never reaches disk: it is passed to the provider instance, not
 written into the spec, and the spec logs backend names as ${...} placeholders
-(the Phase 5.2 leak-safe mechanism). Add --dry-run to validate wiring and
-compute ideals WITHOUT touching hardware or spending QPU time.
+(the Phase 5.2 leak-safe mechanism).
 '''
 
 import argparse
@@ -60,22 +61,9 @@ from benchmark import metrics as M
 from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 from research.providers.ibm_real_provider import IBMRealProvider
 from frontends.qasm2.qasm2_frontend import QASM2Frontend
-from benchmark.reference import compute_ideals
 
 WORKLOAD = os.path.join(_HERE, "workloads", "real_hardware.json")
 OUT_DIR  = os.path.join(_HERE, "results", "real_hardware")
-
-# The curated circuit set, by spec path. Kept here too so --dry-run can
-# compute ideals without running the spec.
-CURATED = [
-    "test_circuits/bell.qasm",
-    "test_circuits/ghz.qasm",
-    "research/circuits/qasmbench/small/deutsch_n2.qasm",
-    "research/circuits/qasmbench/small/iswap_n2.qasm",
-    "research/circuits/qasmbench/small/wstate_n3.qasm",
-    "research/circuits/qasmbench/small/toffoli_n3.qasm",
-    "research/circuits/qasmbench/small/qaoa_n3.qasm",
-]
 
 
 def _require_env(name):
@@ -90,37 +78,17 @@ def _require_env(name):
     return val
 
 
-def _ideals_for_curated():
+def _labels_from_records(records):
     '''
-    Compute the noiseless ideal for each curated circuit, keyed by circuit
-    hash, using a standalone simulated provider. The ideal is device-
-    independent, so any fake backend serves; FakeSherbrooke is arbitrary.
-    Returns the {hash: {"ideal":..., "label":...}} map compute_ideals
-    produces, with labels filled from the spec paths.
+    hash -> human label, read from the `reference` records the run emitted.
+
+    The three-tier reference path stamps each reference record with the
+    circuit's source-path label, so the log itself carries the hash->label
+    map; this pulls it out for the report, replacing the old local ideal
+    computation that used to hold the labels.
     '''
-    sim = IBMSimulatedProvider(seed=0)
-    fe  = QASM2Frontend()
-    circuits, labels = [], {}
-    for path in CURATED:
-        cr = fe.parse(os.path.join(_REPO_ROOT, path))
-        circuits.append(cr)
-        from benchmark.reference import circuit_hash
-        labels[circuit_hash(cr)] = path
-    ideals = compute_ideals(circuits, sim)
-    for chash, data in ideals.items():
-        data["label"] = labels.get(chash)
-    return ideals
-
-
-def _reference_records(ideals):
-    '''Turn the ideal map into log-shaped reference records the shipped
-    fidelity() metric reads, identical to what the runner emits for a
-    reference-capable provider.'''
-    return [
-        {"event": "reference", "circuit_hash": chash,
-         "ideal": data["ideal"], "label": data.get("label")}
-        for chash, data in ideals.items()
-    ]
+    return {r["circuit_hash"]: r.get("label")
+            for r in records if r.get("event") == "reference"}
 
 
 def _load_log_records(out_dir):
@@ -156,10 +124,9 @@ def smoke(backend_env="IBM_BACKEND_A"):
     '''
     Submit ONE Bell circuit to ONE real backend and print the raw counts.
 
-    This exercises the single code path that dry-run cannot: the real
-    SamplerV2 submission — transpile with optimization_level=0 +
-    initial_layout, run on hardware, and read counts back via
-    result[0].data.c.get_counts(). That last step rests on the shared
+    This exercises the real SamplerV2 submission end to end — transpile with
+    optimization_level=0 + initial_layout, run on hardware, and read counts
+    back via result[0].data.c.get_counts(). That last step rests on the shared
     lowering naming its classical register "c"; a wrong assumption there
     returns empty counts, and it is far cheaper to learn that from one Bell
     job (a few seconds of QPU time) than from a failed 7-circuit run. A
@@ -221,42 +188,30 @@ def smoke(backend_env="IBM_BACKEND_A"):
     return result
 
 
-def run(dry_run=False):
+def run():
     import shutil
     shutil.rmtree(OUT_DIR, ignore_errors=True)
     os.makedirs(OUT_DIR, exist_ok=True)
-
-    # Ideals first — needed in both modes, and computing them is free (local
-    # noiseless simulation), so --dry-run can validate the whole non-hardware
-    # half of the pipeline.
-    ideals = _ideals_for_curated()
-    print(f"Computed {len(ideals)} noiseless ideals for {len(CURATED)} "
-          f"curated circuits (device-independent, via a simulated provider).")
-
-    if dry_run:
-        print("\n[--dry-run] Skipping hardware submission. Ideals per circuit:")
-        for chash, data in ideals.items():
-            top = sorted(data["ideal"].items(), key=lambda kv: -kv[1])[:3]
-            top_str = ", ".join(f"{k}:{v:.3f}" for k, v in top)
-            print(f"  {data.get('label'):55s} -> {top_str}")
-        print("\nWiring OK. Set IBM_QUANTUM_TOKEN and IBM_BACKEND_A/B/C, drop "
-              "--dry-run to run on hardware.")
-        return None
 
     token = _require_env("IBM_QUANTUM_TOKEN")
     for name in ("IBM_BACKEND_A", "IBM_BACKEND_B", "IBM_BACKEND_C"):
         _require_env(name)
 
-    # Register the provider CLASS — DevQ constructs it and passes each
-    # device's credentials in through the spec's resolved backend block
-    # (${IBM_QUANTUM_TOKEN} etc.), so the token never reaches the log.
+    # Register both provider CLASSES. The attached devices run on ibm.real,
+    # which is NOT reference-capable (a real QPU has no noiseless ideal), so
+    # the runner's three-tier reference path supplies the ideals itself:
+    # tier 2 (the core statevector engine) for pure circuits, tier 3 (a
+    # registered reference-capable provider — ibm.simulated here) for what
+    # the engine declines. Registering ibm.simulated is what makes tier 3
+    # available; DevQ computes every ideal and emits a `reference` record per
+    # distinct circuit into the run's log. No ideal is computed in this file.
     provider_map = {"ibm.real": IBMRealProvider, "ibm.simulated": IBMSimulatedProvider}
 
     # Report each backend's real GLOBAL queue depth before running — context
     # for the routing story (the router does NOT see this; it routes on
     # calibration/noise, per its contract). Uses a throwaway authenticated
     # instance since the run's own provider is built internally by the runner.
-    print("\nReal backend global queue depths (world queue, informational):")
+    print("Real backend global queue depths (world queue, informational):")
     probe = IBMRealProvider(secrets={"token": token})
     for envname in ("IBM_BACKEND_A", "IBM_BACKEND_B", "IBM_BACKEND_C"):
         bname = os.environ[envname]
@@ -278,19 +233,19 @@ def run(dry_run=False):
     finally:
         os.chdir(prev)
 
-    # Join measured counts (in the log) to locally-computed ideals and run
-    # the shipped fidelity metric over the combined records.
+    # The log already carries the measured counts AND the `reference` records
+    # (ideals) the three-tier path emitted, so the shipped fidelity metric
+    # runs over the log records directly — no local ideal join.
     records = _load_log_records(OUT_DIR)
-    records += _reference_records(ideals)
     fid = M.fidelity(records)
     routing = _routing_summary(records)
 
-    report_text = _report(routing, fid, ideals)
-    _persist_results(OUT_DIR, routing, fid, ideals, report_text)
+    report_text = _report(routing, fid, records)
+    _persist_results(OUT_DIR, routing, fid, records, report_text)
     return {"routing": routing, "fidelity": fid}
 
 
-def _persist_results(out_dir, routing, fid, ideals, report_text):
+def _persist_results(out_dir, routing, fid, records, report_text):
     '''
     Write the interpreted result to disk, not just the terminal. A real run
     costs QPU time and hours of queue waiting, so its RESULT — the routing
@@ -301,11 +256,11 @@ def _persist_results(out_dir, routing, fid, ideals, report_text):
       results.txt  — the exact human-readable table _report printed.
 
     The raw measured counts already live in the run's .jsonl log in the same
-    directory; this adds the joined-with-ideal interpretation the log does
-    not itself carry (a real provider records no ideals — fidelity is joined
-    here against the simulated ideal).
+    directory, along with the `reference` records the three-tier reference
+    path emitted; this adds the joined-with-ideal interpretation (fidelity per
+    circuit) the log does not itself carry.
     '''
-    label_by_hash = {h: d.get("label") for h, d in ideals.items()}
+    label_by_hash = _labels_from_records(records)
     rows = []
     for r in routing:
         rows.append({
@@ -329,10 +284,10 @@ def _persist_results(out_dir, routing, fid, ideals, report_text):
           f"alongside the raw run log.")
 
 
-def _report(routing, fid, ideals):
+def _report(routing, fid, records):
     '''Build the human-readable result table, print it, and return the text
     so the caller can persist the exact same rendering to disk.'''
-    label_by_hash = {h: d.get("label") for h, d in ideals.items()}
+    label_by_hash = _labels_from_records(records)
     n_devices = len({r["device"] for r in routing}) or 1
     lines = []
     def out(s=""):
@@ -376,9 +331,6 @@ def _report(routing, fid, ideals):
 def main():
     ap = argparse.ArgumentParser(
         description="Curated proof-run on real IBM hardware.")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="Validate wiring and compute ideals without touching "
-                         "hardware or spending QPU time.")
     ap.add_argument("--smoke", action="store_true",
                     help="Submit ONE Bell circuit to ONE backend "
                          "(IBM_BACKEND_A) and print raw counts — the cheap "
@@ -387,7 +339,7 @@ def main():
     if args.smoke:
         smoke()
     else:
-        run(dry_run=args.dry_run)
+        run()
 
 
 if __name__ == "__main__":

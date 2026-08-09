@@ -43,22 +43,23 @@ cannot.
 
 ## Results
 
-**162 distinct mutants, 159 killed, 3 excluded** (M10 equivalent, P7 and
+**171 distinct mutants, 168 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 159/156/3 from the prior
-state plus the 3 new native-engine gate mutants below (all killed, off-main
-on `post-p5`; none survived — every gate is checked against Qiskit's
-Operator, so a corrupted matrix, a flipped builder, or a dropped gate all
-fail the `engine_gates` block). The 159/156/3 itself was 156/153/3 plus the
-3 new rejected-job-ideal mutants below (all killed, off-main on `post-p5`;
-none survived — the reference-record assertion pinned the call-site filter
-from the start). The 156/153/3 itself was 153/150/3 plus the 3 new
-stable-region mutants below (all killed, off-main on `post-p5`; none
-survived — the connectivity guard was pinned by the n=3 fixture from the
-start). The 153/150/3 itself was 144/141/3 plus the 9 new
+The total is delta-consistent, not recounted: 165/162/3 from the prior
+state plus 6 new mutants below — 3 on the three-tier reference precedence
+(`benchmark/reference.py`, killed by `reference_tiers`) and 3 on the
+engine's seeded sampling (`run()` in `engine/statevector.py`, killed by
+`engine_statevector`). The 165/162/3 itself was 162/159/3 plus the 3
+statevector-core mutants (all killed; every gate application compared to
+Qiskit, the `h; ry` interference case pinning the index mapping). The
+162/159/3 was 159/156/3 plus the 3 native-engine gate mutants (all killed
+against Qiskit's Operator). The 159/156/3 was 156/153/3 plus the 3
+rejected-job-ideal mutants (all killed; reference-record assertion). The
+156/153/3 was 153/150/3 plus the 3 stable-region mutants (all killed;
+connectivity guard). The 153/150/3 itself was 144/141/3 plus the 9 new
 scheduler-scoring mutants below (all killed — MS-i
 after `scheduler_scoring` was strengthened to pin score to its terms). The
 144/141/3 itself was 140/137/3 plus the 4 new comparison-modes mutants
@@ -573,6 +574,69 @@ compares, and asserts the vocabulary equals the qasm2 frontend's
   a gate the frontend still emits, silently pushing those circuits onto the
   provider-fallback path and losing the native ideal. Equality (not subset)
   is what catches this.
+
+### Native engine statevector core — `engine/statevector.py`
+
+The state core applies the locked gates to a state vector and reads off the
+exact ideal. Its correctness is pinned by `engine_statevector`, which
+compares full-circuit distributions to Qiskit and asserts the reset
+boundary. Three mutants, all killed.
+
+- **MSV-a — the one-qubit application transposed** (`u[0,1]` and `u[1,0]`
+  swapped, applying U^T instead of U). Killed by the `h; ry` interference
+  case. This one is instructive: a Bell/GHZ/rotation-from-|0> suite does NOT
+  catch it, because those gates are transpose-invariant at the probability
+  level (`ry(θ)|0>` and `ry(θ)^T|0>` have identical measured probabilities).
+  Applying `ry` to a qubit already in superposition (`h; ry`) makes the
+  off-diagonal asymmetry observable, and the mutant dies. The interference
+  case was added specifically after this mutant survived the symmetric suite.
+- **MSV-b — the entangled-reset detection disabled** (the separability
+  purity test forced to always report separable). Killed: the Bell-then-reset
+  circuit is no longer declined but simulated as a collapsed pure state,
+  yielding `{"00": 1.0}` where the honest engine raises `UnsupportedByEngine`.
+  This is the guard that keeps the engine from emitting a plausible, wrong
+  ideal instead of handing off.
+- **MSV-c — the clbit-position reversal dropped in marginalisation**
+  (`bits[width-1-clbit]` became `bits[clbit]`). Killed: the permuted
+  measure-map and Option-B width cases place bits at the wrong string
+  positions, so the bitstrings no longer match Qiskit's rendering — the
+  engine's keys would not line up with a provider's for a fidelity join.
+
+### Engine seeded sampling — `engine/statevector.py` `run()`
+
+`run(circuit, shots, seed)` draws integer counts from `simulate()`'s exact
+distribution. Three mutants, all killed by `engine_statevector`'s `run()`
+assertions.
+
+- **MRUN-a — the multinomial draw zeroed** (`multinomial(shots, p)` became
+  `multinomial(0, p)`). Killed: the counts no longer sum to `shots`.
+- **MRUN-b — the shots validation removed**. Killed: `run()` no longer
+  rejects `shots=0`, negative, non-integer, or `True`, so the malformed-shots
+  assertions fail.
+- **MRUN-c — the seed ignored** (`default_rng(seed)` became
+  `default_rng(None)`). Killed: a fixed seed no longer reproduces the draw,
+  so the reproducibility assertion (`run(seed=42) == run(seed=42)`) fails.
+
+### Reference tier precedence — `benchmark/reference.py`
+
+`compute_ideals` sources each circuit's ideal by a three-tier precedence
+(attached provider, core engine, registry search). Three mutants, all killed
+by `reference_tiers`.
+
+- **MRT-a — the qubit cap disabled** (`num_qubits > _ENGINE_MAX_QUBITS`
+  forced False, so the engine never declines a large circuit). Killed: a
+  circuit above the cap is no longer routed past the engine — the cap is the
+  memory guard that keeps the engine from allocating a state vector too large
+  to hold, and the block asserts an over-cap circuit is declined.
+- **MRT-b — the tier-3 capability probe inverted** (`is
+  BaseProvider.reference_ideal` became `is not`, so it picks
+  NON-reference-capable providers and skips capable ones). Killed: the
+  entangled-reset circuit no longer gets its density-matrix ideal from the
+  registry — a non-capable provider is chosen instead and produces nothing.
+- **MRT-c — the engine→registry fallthrough removed** (the
+  `_registry_reference_ideal` call after the engine returns None deleted).
+  Killed: tier 3 is never reached, so the entangled-reset circuit stays
+  absent even when a reference-capable provider is registered.
 
 ### Sweepable contract and cost decomposition — `kernel/sweep.py`, `kernel/router/noise_router.py`
 
