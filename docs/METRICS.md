@@ -510,6 +510,24 @@ than grid-limited. Bisection uses only the same sweep hooks, so it stays
 component-agnostic — no closed-form per-component breakpoint math, which
 could not generalise to a third-party scoring component.
 
+The aggregate also emits one derived recommendation:
+`centroid_of_largest_stable_region`, a weight vector chosen to be maximally
+robust to perturbation, with `region_size` alongside. It is built on the same
+lattice edge graph the flips walk: drop every flip edge (an edge whose two
+endpoints have different winner distributions), take the connected components
+of what remains — each a maximal region over which the decision does not
+change — pick the largest, and return the componentwise mean of its weight
+vectors, renormalised to sum 1. The region is **connected**, not merely
+same-winner: same-winner points can be scattered across the simplex, and a
+centroid over a disconnected set can land in a gap on or near a flip, so
+connectivity is what keeps the recommendation inside a real basin. The field
+is named honestly — it is the region's centroid, not a proven
+distance-to-boundary maximiser (that is the Chebyshev center, a possible later
+refinement) — and `region_size` is the tell: a fully stable sweep degrades to
+the whole-simplex barycenter over a large region, while a fragmented one
+reports a small `region_size` that signals the recommendation should be
+distrusted.
+
 The sweep borrows the session's component purely as a scoring engine: it
 reconstructs the registered class by name (from the session config) and
 calls its `Sweepable` hooks on the logged terms, computing no score
@@ -556,7 +574,10 @@ session's weight sweep: a refused sweep (`faithful: false`) is presented as a
 refusal carrying its reason, not dropped; a faithful sweep is presented as
 its flips — the weight-vector points where the winning distribution changes,
 the actionable output — plus the per-point distribution, with a `stable` flag
-when nothing flips across the whole lattice. (At n=2 a point is the familiar
-(α, 1−α); at n≥3 it is the full weight vector.) The *absolute* view (one
+when nothing flips across the whole lattice. It also surfaces the aggregate's
+`centroid_of_largest_stable_region` and `region_size`, and `render_text`
+prints the recommended weight beneath the flips. (At n=2 a point is the
+familiar (α, 1−α); at n≥3 it is the full weight vector.) The *absolute* view
+(one
 session's own metric bundle) is not a mode: it is the 5.3 bundle, already
 shipped.

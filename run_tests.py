@@ -4230,11 +4230,16 @@ def block_comparison_modes():
     stable = {"session_id": "s", "axis": "router", "faithful": True,
               "coarse_m": 20, "bisect": True,
               "aggregate": {"flips": [],
+                            "centroid_of_largest_stable_region": [0.5, 0.5],
+                            "region_size": 21,
                             "winner_distribution": [
                                 {"point": [0.0, 1.0], "dist": {"1": 5}}]}}
     ps = M.present_sweep(stable)
     check(ps["sweepable"] and ps["stable"] and ps["flips"] == [],
           "a faithful sweep with no flips is reported stable")
+    check(ps["centroid_of_largest_stable_region"] == [0.5, 0.5]
+          and ps["region_size"] == 21,
+          "present_sweep surfaces the recommended centroid and its region size")
 
     # Faithful with a flip: the flip is surfaced. between/at are weight
     # vectors (lattice-edge endpoints and the localised point on the edge).
@@ -4269,6 +4274,13 @@ def block_comparison_modes():
     stable_txt = M.render_text(ps)
     check("stable" in stable_txt,
           "the renderer detects a sweep result and reads out stability")
+    check("recommended weight" in stable_txt and "0.5" in stable_txt,
+          "the sweep text prints the recommended centroid weight")
+
+    # A refused sweep never carries a centroid — there is no region to
+    # recommend over.
+    check("centroid_of_largest_stable_region" not in pr,
+          "a refused sweep carries no recommended centroid")
 
     # writing to a path produces a file with exactly the returned text.
     with tempfile.TemporaryDirectory() as d:
@@ -4278,6 +4290,83 @@ def block_comparison_modes():
         with open(path) as h:
             check(h.read() == returned,
                   "the file holds exactly the returned text")
+
+
+def block_stable_region():
+    '''The sweep's robust-weight recommendation: centroid of the largest
+    connected constant-decision region'''
+    # _stable_region_centroid is a pure function of the lattice and the
+    # per-point winner distribution. Fixtures use small lattices with
+    # hand-computed answers so the region-finding, the connectivity rule,
+    # the largest-wins choice, the deterministic tie-break, and the
+    # renormalised centroid are all checked against known values — not
+    # against whatever a live sweep happens to produce.
+    from benchmark.comparison import (_stable_region_centroid,
+                                       _int_lattice)
+
+    def lattice(n, m):
+        ip = _int_lattice(n, m)
+        pts = [tuple(k / m for k in c) for c in ip]
+        return ip, pts
+
+    # ── n=2, m=4: the 5-point chain (0,1) .. (1,0) ────────────────────────
+    ip, pts = lattice(2, 4)
+
+    # Fully stable: one region of all 5 points, centroid is the chain
+    # barycenter (0.5, 0.5).
+    c, sz = _stable_region_centroid(ip, pts, [{"A": 1}] * 5)
+    check(sz == 5 and c == [0.5, 0.5],
+          f"a fully stable sweep recommends the whole-region barycenter, "
+          f"got {c} over {sz}")
+
+    # One flip splits the chain into a 3-point region [0,.25,.5] and a
+    # 2-point region [.75,1]; the larger (left) wins, centroid at .25.
+    c, sz = _stable_region_centroid(
+        ip, pts, [{"A": 1}, {"A": 1}, {"A": 1}, {"B": 1}, {"B": 1}])
+    check(sz == 3 and c == [0.25, 0.75],
+          f"the larger of two regions is chosen, got {c} over {sz}")
+
+    # Two equal-size (2-point) regions with a singleton between them; the
+    # tie breaks toward the lower-index region (the left one), deterministic.
+    c, sz = _stable_region_centroid(
+        ip, pts, [{"A": 1}, {"A": 1}, {"C": 1}, {"B": 1}, {"B": 1}])
+    check(sz == 2 and c == [0.125, 0.875],
+          f"a size tie breaks toward the canonical-lowest region, got {c}")
+
+    # The distribution is a multiset, not a single winner: {A:1,B:1} and
+    # {A:2} are different regions even though A appears in both.
+    c, sz = _stable_region_centroid(
+        ip, pts, [{"A": 1, "B": 1}] * 2 + [{"A": 2}] * 3)
+    check(sz == 3,
+          f"regions are keyed by the full winner distribution, not one "
+          f"winner, got region size {sz}")
+
+    # ── n=3, m=3: the 10-point triangle, connectivity guard ───────────────
+    ip, pts = lattice(3, 3)
+    check(len(pts) == 10, "the n=3 m=3 lattice has 10 points")
+
+    # Fully stable -> the simplex barycenter (1/3, 1/3, 1/3).
+    c, sz = _stable_region_centroid(ip, pts, [{"A": 1}] * 10)
+    check(sz == 10 and all(abs(x - 1 / 3) < 1e-5 for x in c),
+          f"a fully stable triangle recommends its barycenter, got {c}")
+
+    # Connectivity guard: the three CORNERS share winner A but are pairwise
+    # non-adjacent. A "same winner anywhere" rule would merge them into a
+    # size-3 region; the CONNECTED rule must keep them as three singletons,
+    # so the size-7 interior/edge bulk (winner B) is the recommendation.
+    dist = [{"B": 1}] * 10
+    for i, comp in enumerate(ip):
+        if 3 in comp:              # a corner: one coordinate carries all mass
+            dist[i] = {"A": 1}
+    c, sz = _stable_region_centroid(ip, pts, dist)
+    check(sz == 7,
+          f"disconnected same-winner points are NOT merged; the connected "
+          f"bulk wins, got region size {sz}")
+
+    # ── Degenerate input ──────────────────────────────────────────────────
+    c, sz = _stable_region_centroid([], [], [])
+    check(c is None and sz == 0,
+          "an empty lattice yields no recommendation rather than crashing")
 
 
 def block_fidelity():
@@ -6052,6 +6141,7 @@ BLOCKS = [
     ("metrics",                  block_metrics),
     ("comparison",               block_comparison),
     ("comparison_modes",         block_comparison_modes),
+    ("stable_region",            block_stable_region),
     ("fidelity",                 block_fidelity),
     ("router_scoring",           block_router_scoring),
     ("sweepable_contract",       block_sweepable_contract),

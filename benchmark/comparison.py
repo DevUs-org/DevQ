@@ -463,13 +463,82 @@ def _aggregate(engine, decisions, int_pts, points, axis, weight_keys, bisect):
                 "to"     : _dist_jsonable(dist[j]),
             })
 
+    centroid, region_size = _stable_region_centroid(int_pts, points, dist)
+
     return {
         "winner_distribution": [
             {"point": [round(x, 6) for x in p], "dist": _dist_jsonable(c)}
             for p, c in zip(points, dist)
         ],
         "flips": flips,
+        "centroid_of_largest_stable_region": centroid,
+        "region_size": region_size,
     }
+
+
+def _stable_region_centroid(int_pts, points, dist):
+    '''
+    Recommend a weight vector maximally robust to perturbation: the centroid of
+    the largest CONNECTED constant-decision region of the swept simplex.
+
+    A region is a set of lattice points sharing one winner distribution; two
+    points join it only if they are lattice-ADJACENT and agree — the same edge
+    graph the flips walk, minus the flip edges (endpoints whose distributions
+    differ). Connectivity is the point: same-distribution points can be
+    disconnected, and a centroid over a disconnected set can land in a gap on or
+    near a flip. Restricting to one connected component keeps the centroid inside
+    a real basin.
+
+    Returns (centroid, region_size): centroid is the componentwise mean of the
+    component's normalised weight vectors, renormalised to sum 1 (already 1 up to
+    float error, since every point sums to 1; renormalised so the invariant is
+    exact), rounded like every other point in the aggregate. region_size is the
+    component's point count, emitted alongside so a 3-point basin reads weaker
+    than a 30-point one; a fully stable sweep degrades to the whole-simplex
+    barycenter, a fragmented one to a small region_size that signals distrust.
+
+    NOT optimal_weights: this is the centroid, not a proven distance-to-boundary
+    maximiser (that is the Chebyshev center, a later refinement).
+    '''
+    if not points:
+        return None, 0
+
+    # Same edge graph as the flips, keeping only edges whose endpoints agree —
+    # the constant-decision adjacency. dist[] is the winner multiset per point.
+    adj = {i: [] for i in range(len(points))}
+    for i, j in _lattice_edges(int_pts):
+        if dist[i] == dist[j]:
+            adj[i].append(j)
+            adj[j].append(i)
+
+    # Connected components of that graph, in canonical point order.
+    seen = [False] * len(points)
+    best = None
+    for start in range(len(points)):
+        if seen[start]:
+            continue
+        stack, comp = [start], []
+        seen[start] = True
+        while stack:
+            u = stack.pop()
+            comp.append(u)
+            for v in adj[u]:
+                if not seen[v]:
+                    seen[v] = True
+                    stack.append(v)
+        # Largest wins; ties break on lowest member index (canonical order), so
+        # the recommendation is deterministic run to run.
+        key = (len(comp), -min(comp))
+        if best is None or key > best[0]:
+            best = (key, comp)
+
+    comp = best[1]
+    n = len(points[0])
+    mean = [sum(points[p][k] for p in comp) / len(comp) for k in range(n)]
+    total = sum(mean)
+    if total:
+        mean = [x / total for x in mean]
+    return [round(x, 6) for x in mean], len(comp)
 
 
 def _dist_jsonable(counts):

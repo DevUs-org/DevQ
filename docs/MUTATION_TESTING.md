@@ -43,13 +43,16 @@ cannot.
 
 ## Results
 
-**153 distinct mutants, 150 killed, 3 excluded** (M10 equivalent, P7 and
+**156 distinct mutants, 153 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 144/141/3 from the prior
-state plus the 9 new scheduler-scoring mutants below (all killed — MS-i
+The total is delta-consistent, not recounted: 153/150/3 from the prior
+state plus the 3 new stable-region mutants below (all killed, off-main on
+`post-p5`; none survived — the connectivity guard was pinned by the n=3
+fixture from the start). The 153/150/3 itself was 144/141/3 plus the 9 new
+scheduler-scoring mutants below (all killed — MS-i
 after `scheduler_scoring` was strengthened to pin score to its terms). The
 144/141/3 itself was 140/137/3 plus the 4 new comparison-modes mutants
 below (all killed — MM-b
@@ -660,6 +663,32 @@ Two survived first and drove the block's refusal assertions:
   contradicts its own scores, which the anchor must refuse. A guard that
   only acts on bad input needs bad input to be tested — no honest run can
   witness it.
+
+### Stable-region recommendation — `benchmark/comparison.py`
+
+Off-main (`post-p5`). The sweep's robust-weight recommendation:
+`_stable_region_centroid`, the centroid of the largest connected
+constant-decision region. Three mutants, all killed; block `stable_region`.
+
+- **MR-a — the connectivity restriction dropped** (the region-adjacency
+  guard `if dist[i] == dist[j]` inverted to `!=`, so flip edges are kept and
+  agreeing edges dropped). Killed: with the constant-decision edges removed
+  the region collapses to singletons, so the fully-stable fixture no longer
+  recommends the whole-region barycenter and its `region_size` assertion
+  fails. This is the load-bearing guard — same-winner points that are not
+  lattice-adjacent must not be merged, or the centroid can land in a gap on
+  or near a flip. The n=3 triangle fixture is what makes it witnessable: on
+  the n=2 chain, same-winner regions are always contiguous, so a mutant that
+  ignored connectivity would survive there.
+- **MR-b — smallest region chosen** (`key > best[0]` became `key <`). Killed
+  by the single-flip split fixture, whose two regions differ in size: the
+  recommendation must come from the larger (3-point) region, not the smaller
+  (2-point) one.
+- **MR-c — the tie-break direction flipped** (`-min(comp)` became
+  `min(comp)`). Killed by the two-equal-regions fixture: with a genuine
+  size tie, the recommendation must be deterministic and land in the
+  canonical-lowest region, so reversing the key surfaces the wrong region's
+  centroid.
 
 ### Comparison modes — `benchmark/comparison_modes.py`
 

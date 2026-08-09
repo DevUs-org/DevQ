@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 66 sanity blocks in `run_tests.py`, covering
+Specification for the 67 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 66 blocks, one line each
+python run_tests.py              # all 67 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -1619,6 +1619,37 @@ Two mutation survivors sharpened it. Ranking by a non-scalar leaf and the
 tie-break both needed a case that forced the discriminating behaviour —
 without the non-scalar path the numeric guard in `_dig` could be removed
 undetected, and without equal-valued sessions the tie-break key was free.
+
+
+### `stable_region`
+
+Covers the sweep's robust-weight recommendation — `_stable_region_centroid`
+in `benchmark/comparison.py`, which the aggregate emits as
+`centroid_of_largest_stable_region` with `region_size` alongside (see
+[`METRICS.md`](METRICS.md)). Pure function of the lattice and the per-point
+winner distribution, so the block uses small lattices with hand-computed
+answers rather than a live run. On the n=2 m=4 chain: a fully stable sweep
+recommends the whole-region barycenter `(0.5, 0.5)`; one flip splits the
+chain and the larger of the two regions is chosen; two equal-size regions
+break the tie toward the canonical-lowest region, deterministically; and a
+region keyed by the full winner **distribution** (`{A:1,B:1}` vs `{A:2}`)
+stays distinct even when a winner appears in both, so the region is not
+collapsed by a single-winner shortcut. On the n=3 m=3 triangle: a fully
+stable sweep recommends the simplex barycenter `(1/3, 1/3, 1/3)`, and — the
+connectivity guard — three corners sharing one winner but pairwise
+non-adjacent are kept as three singletons rather than merged, so the size-7
+connected bulk wins. An empty lattice yields no recommendation rather than
+crashing.
+
+The connectivity guard is the load-bearing case: it is what distinguishes
+the **connected**-region rule from a "same winner anywhere" rule, and it is
+where a disconnected centroid could otherwise land in a gap on or near a
+flip. The n=3 fixture is required for it — the n=2 chain cannot exhibit
+disconnected same-winner points, so a mutant that dropped the connectivity
+restriction would survive on the chain alone. The largest-wins choice and
+the tie-break direction are each pinned by their own fixture: a mutant
+selecting the smallest region, or breaking the tie toward the higher-index
+region, fails the split and tie cases respectively.
 
 
 ### `fidelity`
