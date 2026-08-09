@@ -58,7 +58,6 @@ _REPO_ROOT = os.path.dirname(_HERE)
 
 from benchmark import runner as R
 from benchmark import metrics as M
-from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 from research.providers.ibm_real_provider import IBMRealProvider
 from frontends.qasm2.qasm2_frontend import QASM2Frontend
 
@@ -205,7 +204,7 @@ def run():
     # the engine declines. Registering ibm.simulated is what makes tier 3
     # available; DevQ computes every ideal and emits a `reference` record per
     # distinct circuit into the run's log. No ideal is computed in this file.
-    provider_map = {"ibm.real": IBMRealProvider, "ibm.simulated": IBMSimulatedProvider}
+    provider_map = {"ibm.real": IBMRealProvider}
 
     # Report each backend's real GLOBAL queue depth before running — context
     # for the routing story (the router does NOT see this; it routes on
