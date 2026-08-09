@@ -27,12 +27,14 @@ WHERE THE IDEAL COMES FROM. A real QPU cannot produce a noiseless ideal
 (IBMRealProvider.reference_ideal returns None), so the attached ibm.real
 devices are not reference-capable. DevQ's three-tier reference path handles
 this automatically: with no reference-capable provider attached, it computes
-each circuit's ideal from the core statevector engine (tier 2) or, for what
-the engine declines, from a registered reference-capable provider (tier 3 —
-ibm.simulated, registered below). The runner emits those ideals as `reference`
-records straight into the run's log, so this script computes no ideals itself
-— it just runs the shipped fidelity() metric over the log, which already
-holds both the real measured counts and the ideals.
+each circuit's ideal from the core statevector engine (tier 2), or — for a
+circuit the engine declines (an entangled reset, or > 20 qubits) — from a
+registered reference-capable provider (tier 3). This curated set is seven
+small, pure circuits the engine handles entirely, so tier 2 supplies every
+ideal and tier 3 is not needed or wired here. The runner emits those ideals
+as `reference` records straight into the run's log, so this script computes no
+ideals itself — it just runs the shipped fidelity() metric over the log, which
+already holds both the real measured counts and the ideals.
 
 CREDENTIALS AND BACKENDS come from the environment, resolved via the spec's
 ${} placeholders (backend names) and passed to the provider instance (token):
@@ -196,14 +198,20 @@ def run():
     for name in ("IBM_BACKEND_A", "IBM_BACKEND_B", "IBM_BACKEND_C"):
         _require_env(name)
 
-    # Register both provider CLASSES. The attached devices run on ibm.real,
+    # Register only the real provider. The attached devices run on ibm.real,
     # which is NOT reference-capable (a real QPU has no noiseless ideal), so
-    # the runner's three-tier reference path supplies the ideals itself:
-    # tier 2 (the core statevector engine) for pure circuits, tier 3 (a
-    # registered reference-capable provider — ibm.simulated here) for what
-    # the engine declines. Registering ibm.simulated is what makes tier 3
-    # available; DevQ computes every ideal and emits a `reference` record per
-    # distinct circuit into the run's log. No ideal is computed in this file.
+    # the runner's three-tier reference path supplies the ideals itself. For
+    # this curated set — seven small, pure circuits (no reset, all <= 3
+    # qubits) — tier 2, the core statevector engine, computes every ideal, so
+    # no reference-capable provider needs to be attached OR registered. That
+    # is the whole point: the fake device and its per-job no_exec_on that this
+    # run once needed are gone. DevQ emits a `reference` record per distinct
+    # circuit into the run's log; no ideal is computed in this file.
+    #
+    # Tier 3 (a registered reference-capable provider, for a circuit the engine
+    # declines — an entangled reset, or > 20 qubits) is intentionally NOT wired
+    # here, because nothing in this curated set reaches it. A run that added
+    # such a circuit would register ibm.simulated in this map to supply tier 3.
     provider_map = {"ibm.real": IBMRealProvider}
 
     # Report each backend's real GLOBAL queue depth before running — context
