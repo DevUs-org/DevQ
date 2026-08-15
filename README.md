@@ -130,7 +130,7 @@ Hardware provider   DevQSimulatedProvider · IBMSimulatedProvider · [Cirq, IonQ
 
 Every pluggable layer has a documented and validated contract:
 - `BaseProvider` — providers implement exactly `get_device()` + `execute()`
-- `BaseAllocator` — allocators implement `allocate(circuit, device, pool, max_qubit_error=None, max_edge_error=None)`; optionally override `feasible()` (default provided) to classify unsatisfiable jobs
+- `BaseAllocator` — allocators implement `allocate(circuit, device, pool, max_qubit_error=None, max_edge_error=None, max_1q_gate_error=None)`; optionally override `feasible()` (default provided) to classify unsatisfiable jobs
 - `BaseScheduler` — schedulers implement `schedule()`, returning the jobs processed in a cycle — dispatched (RUNNING) and/or rejected (REJECTED)
 - `BaseRouter` — routers implement `select(qcb, candidates)`, choosing among feasible candidate devices; the base class handles device constraints, per-device feasibility, and rejection-reason aggregation
 

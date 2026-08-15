@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 71 sanity blocks in `run_tests.py`, covering
+Specification for the 73 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 71 blocks, one line each
+python run_tests.py              # all 73 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -1214,6 +1214,65 @@ parse exception aborting a whole workload. The block asserts both: the
 mark is set with the right reason, and a clean terminally-measured circuit
 is left unflagged. A closing end-to-end check runs a parameterised fixture
 through a real provider to confirm the lowered circuit executes.
+
+---
+
+### `expr_unary_power_precedence`
+
+*Unary minus binds looser than `^`: `-2^2` == `-(2^2)`, and `^` stays right-associative.*
+
+A regression witness for a **latent** precedence bug in the QASM2
+expression evaluator (`frontends/qasm2/expression.py`). The grammar read
+`power := unary ('^' power)?` with `unary` sitting *below* `power`, so
+`_power` consumed a leading minus as part of its base before ever seeing
+`^`. That made `-2^2` evaluate as `(-2)^2 == 4` instead of the standard
+`-(2^2) == -4`. It stayed invisible because no shipped circuit ever put a
+negative base under `^` — the only `^` in any fixture is `2^3` — so the
+suite was green while the evaluator was silently wrong for any signed
+base, exactly the kind of quiet numerical error that would corrupt a gate
+angle without crashing. The fix reorders the grammar so unary minus binds
+*looser* than `^` (`unary := '-' unary | power`, `power := atom ('^'
+unary)?`), while an explicit sign written *after* `^` is still parsed as
+the exponent's own sign.
+
+Because evaluation is deterministic (no wall-clock), the block asserts
+exact hand-computed values. Its witness cases are the ones the bug got
+wrong — `-2^2 == -4`, `-3^2 == -9`, `2*-3^2 == -18` — and three guards
+pin the properties a careless fix would break: a non-negated base is
+unchanged (`2^2 == 4`); `^` stays right-associative (`2^3^2 == 512`, not
+`64`); and a signed exponent still parses (`2^-2 == 0.25`, `-2^-2 ==
+-0.25`). Reverting the grammar reorder makes `-2^2` return `4.0` and the
+block fails on its first assertion.
+
+---
+
+### `allocator_contract_1q_param`
+
+*Registry allocator signature check requires `max_1q_gate_error`.*
+
+A regression witness for a contract-enforcement gap in the registry
+(`registry/registry.py`). The runtime always invokes an allocator's
+`allocate()`/`feasible()` with `max_1q_gate_error` — `base_scheduler`,
+the router, and `memory_manager` all pass it, and the base allocator's
+documented contract lists it — but the registry's Level-3 method-signature
+check declared only `(circuit, device, pool, max_qubit_error,
+max_edge_error)`. So an externally written allocator that took the
+registry's *stated* required parameters but omitted `max_1q_gate_error`
+passed registration and then crashed at runtime with an unexpected-keyword
+`TypeError`, deep in a scheduling loop rather than at register time — the
+worst possible failure locus for a plugin author. The fix adds
+`max_1q_gate_error` to the declared `allocate`/`feasible` required params
+so the mismatch is caught loudly at registration.
+
+The block reads the required-parameter lists straight from the registry's
+own `_build_kinds()` table (the source of truth the Level-3 check
+consumes), asserting `max_1q_gate_error` is required for both methods. It
+then exercises the end a plugin author feels: an under-specified allocator
+is rejected at registration, a conforming one registers cleanly, and — to
+confirm the requirement is symmetric — an allocator that drops the
+parameter from `feasible` alone is also rejected. Reverting the registry
+lists makes registration silently accept the under-specified allocator and
+the block fails.
 
 ---
 

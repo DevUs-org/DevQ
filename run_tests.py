@@ -6437,6 +6437,166 @@ def block_qasm2_parser():
           "a parameterised circuit runs end to end without error")
 
 
+def block_expr_unary_power_precedence():
+    '''Unary minus binds looser than ^: -2^2 == -(2^2), and ^ stays right-assoc'''
+    # Regression witness for a latent precedence bug in the QASM2 expression
+    # evaluator. The grammar had `power := unary ('^' power)?` with unary
+    # BELOW power, so `_power` consumed the leading minus as part of its base
+    # before ever seeing `^`. That made -2^2 evaluate as (-2)^2 == 4 instead
+    # of the standard -(2^2) == -4. No shipped circuit used a negative base
+    # under `^` (the only `^` in the fixtures is 2^3), so the suite stayed
+    # green while the evaluator was silently wrong for any signed base — the
+    # exact kind of quiet numerical error that corrupts a gate angle without
+    # crashing. The fix reorders the grammar so unary minus sits ABOVE power
+    # (binds looser) while an explicit sign after `^` is still parsed as the
+    # exponent's own sign. Evaluation is deterministic, so exact hand-computed
+    # values are fair game (no wall-clock anywhere).
+    from frontends.qasm2.tokenizer import tokenize
+    from frontends.qasm2.parser import TokenCursor
+    from frontends.qasm2 import expression as E
+    import math
+
+    def ev(src):
+        c = TokenCursor(tokenize(src + ";"))
+        return E.evaluate(c, {})
+
+    def approx(a, b):
+        return abs(a - b) < 1e-9
+
+    # ── The bug's exact witness: negative base under ^ ──────────────────
+    check(approx(ev("-2^2"), -4.0),
+          f"-2^2 == -(2^2) == -4 (was 4 when unary bound tighter than ^), "
+          f"got {ev('-2^2')}")
+    check(approx(ev("-3^2"), -9.0),
+          f"-3^2 == -(3^2) == -9, got {ev('-3^2')}")
+    # unary minus threading through a product: 2*-3^2 == 2*-(3^2) == -18
+    check(approx(ev("2*-3^2"), -18.0),
+          f"2*-3^2 == 2*(-(3^2)) == -18, got {ev('2*-3^2')}")
+
+    # ── Mutant guard 1: a NON-negated base must be unchanged (2^2 == 4).
+    # A naive "just negate the whole power" fix would wrongly flip this.
+    check(approx(ev("2^2"), 4.0),
+          f"2^2 == 4 unaffected by the unary reordering, got {ev('2^2')}")
+
+    # ── Mutant guard 2: ^ must stay RIGHT-associative (2^3^2 == 2^9 == 512,
+    # not (2^3)^2 == 64). A fix that made the exponent parse via _atom
+    # instead of _unary would break right-associativity.
+    check(approx(ev("2^3^2"), 512.0),
+          f"2^3^2 == 2^(3^2) == 512 (right-assoc preserved), got {ev('2^3^2')}")
+
+    # ── Mutant guard 3: a sign AFTER ^ is the exponent's own sign, still
+    # honoured (2^-2 == 0.25). A fix that forbade a signed exponent to keep
+    # -2^2 correct would break this.
+    check(approx(ev("2^-2"), 0.25),
+          f"2^-2 == 0.25 (signed exponent still parses), got {ev('2^-2')}")
+    # and both together: -2^-2 == -(2^-2) == -0.25
+    check(approx(ev("-2^-2"), -0.25),
+          f"-2^-2 == -(2^-2) == -0.25, got {ev('-2^-2')}")
+
+    # ── The pre-existing positive-base fixture still evaluates as before ─
+    check(approx(ev("2^3"), 8.0), f"2^3 == 8 (the shipped fixture), got {ev('2^3')}")
+
+
+def block_allocator_contract_1q_param():
+    '''Registry allocator signature check requires max_1q_gate_error'''
+    # Regression witness for a contract-enforcement gap. The runtime always
+    # invokes an allocator's allocate()/feasible() with max_1q_gate_error
+    # (base_scheduler, router, memory_manager all pass it, and the base
+    # allocator's documented contract lists it), but the registry's Level-3
+    # method-signature check declared only (circuit, device, pool,
+    # max_qubit_error, max_edge_error). So an externally written allocator
+    # that took the registry's STATED required params but omitted
+    # max_1q_gate_error passed registration and then crashed at runtime with
+    # an unexpected-keyword TypeError — the worst failure locus for a plugin
+    # author (deep in a scheduling loop, not at register time). The fix adds
+    # max_1q_gate_error to the declared allocate/feasible required params so
+    # the mismatch is caught loudly at registration.
+    from registry.registry import _build_kinds
+
+    # Pull the allocator kind's declared required method params straight from
+    # the registry's own spec table (the same _build_kinds() a live Registry
+    # calls in __init__), so this asserts the SOURCE OF TRUTH the Level-3
+    # check reads, not a copy.
+    spec = _build_kinds()
+    check("allocator" in spec,
+          "registry exposes the allocator component-kind spec")
+    alloc_methods = spec["allocator"].methods
+
+    # ── The fix: both allocate and feasible now require max_1q_gate_error ─
+    check("max_1q_gate_error" in alloc_methods["allocate"],
+          f"allocate's required params include max_1q_gate_error, "
+          f"got {alloc_methods['allocate']}")
+    check("max_1q_gate_error" in alloc_methods["feasible"],
+          f"feasible's required params include max_1q_gate_error, "
+          f"got {alloc_methods['feasible']}")
+
+    # ── Behavioural guard: an under-specified allocator (registry's OLD
+    # stated contract, no 1q param) is now REJECTED at registration, and a
+    # correct one is accepted. This is the end the plugin author feels.
+    from kernel.memory.allocators.base_allocator import BaseAllocator
+
+    class UnderSpecifiedAllocator(BaseAllocator):
+        def allocate(self, circuit, device, pool,
+                     max_qubit_error=None, max_edge_error=None):
+            return {}
+        def feasible(self, circuit, device,
+                     max_qubit_error=None, max_edge_error=None):
+            return None
+
+    class ConformingAllocator(BaseAllocator):
+        def allocate(self, circuit, device, pool,
+                     max_qubit_error=None, max_edge_error=None,
+                     max_1q_gate_error=None):
+            return {}
+        def feasible(self, circuit, device,
+                     max_qubit_error=None, max_edge_error=None,
+                     max_1q_gate_error=None):
+            return None
+
+    # ── Mutant guard 1: the under-specified allocator FAILS registration.
+    dq = DevQ()
+    rejected = False
+    try:
+        dq.register_allocator("under.spec", UnderSpecifiedAllocator)
+    except Exception:
+        rejected = True
+    check(rejected,
+          "an allocator whose allocate() omits max_1q_gate_error is rejected "
+          "at registration, not at runtime")
+
+    # ── Mutant guard 2: a conforming allocator still registers cleanly (the
+    # tightened contract must not reject legitimate allocators).
+    dq2 = DevQ()
+    accepted = True
+    try:
+        dq2.register_allocator("conforming.alloc", ConformingAllocator)
+    except Exception:
+        accepted = False
+    check(accepted,
+          "a conforming allocator with max_1q_gate_error registers cleanly")
+
+    # ── Mutant guard 3: the requirement is symmetric across both methods —
+    # dropping 1q from feasible only must also be caught.
+    class OneMethodShort(BaseAllocator):
+        def allocate(self, circuit, device, pool,
+                     max_qubit_error=None, max_edge_error=None,
+                     max_1q_gate_error=None):
+            return {}
+        def feasible(self, circuit, device,
+                     max_qubit_error=None, max_edge_error=None):
+            return None
+
+    dq3 = DevQ()
+    half_rejected = False
+    try:
+        dq3.register_allocator("half.short", OneMethodShort)
+    except Exception:
+        half_rejected = True
+    check(half_rejected,
+          "an allocator whose feasible() omits max_1q_gate_error is also "
+          "rejected (the requirement covers both methods)")
+
+
 def block_devq_measurement():
     '''devq.simulated distributes over the classical-register width'''
     # devq.simulated does not interpret gates — it returns a uniform
@@ -6708,6 +6868,8 @@ BLOCKS = [
     ("qregistry",                block_qregistry),
     ("frontend_dispatch",        block_frontend_dispatch),
     ("qasm2_parser",             block_qasm2_parser),
+    ("expr_unary_power_precedence", block_expr_unary_power_precedence),
+    ("allocator_contract_1q_param", block_allocator_contract_1q_param),
     ("devq_measurement",         block_devq_measurement),
     ("ibm_measurement",          block_ibm_measurement),
     ("counts_width_contract",    block_counts_width_contract),
