@@ -1,5 +1,7 @@
 # DevQ — A Microkernel & Job Orchestrator for the Quantum World
 
+Copyright 2026 Devjyot Singh Sidhu
+
 DevQ is an open-source quantum execution middleware that applies classical
 operating-system abstractions to quantum computing: a microkernel with a
 process table, noise-aware qubit allocators, pluggable job schedulers, a
@@ -27,6 +29,12 @@ DevQ(DevQSimulatedProvider().get_device("random", 10)).start()
 Attaching multiple backends is one chained call per device:
 
 ```python
+from devq import DevQ
+from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+
+ibm = IBMSimulatedProvider()
+
 DevQ(config_path="~/devq.config.json") \
     .register_provider("ibm.simulated", IBMSimulatedProvider) \
     .add_device(DevQSimulatedProvider().get_device("random", 7)) \
@@ -102,7 +110,7 @@ Every source file carries a tag in its module docstring describing its role:
 
 ## Architecture
 
-Seven layers, strict separation of concerns — each layer talks only to its
+Eight layers, strict separation of concerns — each layer talks only to its
 immediate neighbours. Two-level scheduling, the classical cluster pattern:
 the **router** decides *which* device a job runs on; each device's local
 **scheduler** decides *when* it runs there. The kernel never knows which
@@ -111,7 +119,7 @@ providers know nothing about job IDs or lifecycle states.
 
 ```
 User layer          qrun · qsubmit · qrunpack · qdevices · QShell CLI
-Circuit rep         CircuitRep · QASM parser · get_depth() · [Silq, Q#, Qiskit …]
+Circuit rep         CircuitRep · OpenQASM 2.0 parser · get_depth() · [additional frontends planned]
 DevQ kernel         ProcessTable · QCB · federation host (step / futures)
 Device router       NoiseRouter (default) · RoundRobin — binds job → device
 Device context      per-device: MemoryManager · QubitPool · Scheduler
@@ -120,7 +128,7 @@ Device abstraction  BaseProvider · QuantumDevice · load_device()
 Hardware provider   DevQSimulatedProvider · IBMSimulatedProvider · [Cirq, IonQ …]
 ```
 
-Every pluggable layer has an enforced contract:
+Every pluggable layer has a documented and validated contract:
 - `BaseProvider` — providers implement exactly `get_device()` + `execute()`
 - `BaseAllocator` — allocators implement `allocate(circuit, device, pool, max_qubit_error=None, max_edge_error=None)`; optionally override `feasible()` (default provided) to classify unsatisfiable jobs
 - `BaseScheduler` — schedulers implement `schedule()`, returning the jobs processed in a cycle — dispatched (RUNNING) and/or rejected (REJECTED)
@@ -143,9 +151,9 @@ qubit indices remain local to their device everywhere in the system.
 | 2 | ✅ | Qubit allocation — static, graph, noise-aware |
 | 3 | ✅ | Job scheduling — FCFS, SDF, packing |
 | 4 | ✅ | Distributed scheduling — device federation, pluggable router |
-| 5 | 🔬 | Research benchmarking mode — *in progress* |
-| 6 | 🔭 | Interchangeable frontends — Silq, Q#, Qiskit circuits |
-| 7 | 🔭 | Expanded provider ecosystem — real IBM hardware, Cirq, IonQ |
+| 5 | ✅ | Research benchmarking mode — comparative evaluation, offline metrics, and weight sweeps |
+| 6 | 🔬 | Interchangeable frontends — OpenQASM 2.0 available; Silq, Q#, and broader frontend support planned |
+| 7 | 🔬 | Expanded provider ecosystem — IBM real-hardware integration available; additional providers planned |
 | 8 | 💡 | Claims validation — algorithms ship executable claims a reviewer can run |
 | 9 | 💡 | Component distribution — a shared index, with claims re-verified on install |
 
@@ -181,11 +189,14 @@ becomes the parameter name with the namespace dot rewritten to `___`
 (`mine.batch_window` → `mine___batch_window`), see
 [`docs/REGISTRY.md`](docs/REGISTRY.md).
 
-Contracts are checked **at registration**, not when the component is
-eventually constructed: the ABC, the constructor signature DevQ will call,
-the methods the kernel invokes, and any declared configuration. DevQ's own
-components register through this same path, so the extension path cannot
-rot while the shipped system keeps working.
+Plugin contracts are validated **at registration**, before the component
+is used by the kernel: the ABC, the constructor signature DevQ will call, the
+methods the kernel invokes, and any declared configuration. DevQ's own
+components register through this same path, so the extension path cannot rot
+while the shipped system keeps working.
+
+Additional semantic and conformance checks are being hardened as part of the
+ongoing plugin contract work.
 
 Full reference — the contract each kind implements and what is optional:
 [`docs/EXTENDING.md`](docs/EXTENDING.md); registration, config scopes,
@@ -215,7 +226,15 @@ together they are the authoritative description of DevQ.
 | [`docs/REFERENCES.md`](docs/REFERENCES.md) | External works DevQ cites or builds on — papers, dependencies, benchmark suites, data provenance, and citation keys |
 | [`AGENTS.md`](AGENTS.md) | Orientation for AI coding assistants — task-oriented routing into the documents above |
 
+
 ---
+
+## License
+
+DevQ's original source code is licensed under the Apache License, Version 2.0.
+See [`LICENSE`](LICENSE). Third-party software and benchmark data retain their
+respective licenses; see [`docs/REFERENCES.md`](docs/REFERENCES.md) and the
+applicable license and notice files for attribution and provenance.
 
 ## Acknowledgements
 
@@ -250,6 +269,6 @@ open-source `qiskit-ibm-runtime` fake backends; its noisy results reflect
 a **pinned past calibration snapshot**, not live hardware. DevQ depends on
 Qiskit, Qiskit Aer, qiskit-ibm-runtime, NetworkX, and the OpenQASM 2.0
 language, and draws benchmark circuits from QASMBench. Full citations,
-data provenance, and the license-and-trademark obligations to verify
-before publication or release are collected in
+data provenance, and third-party license and trademark information are
+collected in
 [`docs/REFERENCES.md`](docs/REFERENCES.md).
