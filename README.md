@@ -29,6 +29,12 @@ DevQ(DevQSimulatedProvider().get_device("random", 10)).start()
 Attaching multiple backends is one chained call per device:
 
 ```python
+from devq import DevQ
+from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+
+ibm = IBMSimulatedProvider()
+
 DevQ(config_path="~/devq.config.json") \
     .register_provider("ibm.simulated", IBMSimulatedProvider) \
     .add_device(DevQSimulatedProvider().get_device("random", 7)) \
@@ -104,7 +110,7 @@ Every source file carries a tag in its module docstring describing its role:
 
 ## Architecture
 
-Seven layers, strict separation of concerns — each layer talks only to its
+Eight layers, strict separation of concerns — each layer talks only to its
 immediate neighbours. Two-level scheduling, the classical cluster pattern:
 the **router** decides *which* device a job runs on; each device's local
 **scheduler** decides *when* it runs there. The kernel never knows which
@@ -220,7 +226,15 @@ together they are the authoritative description of DevQ.
 | [`docs/REFERENCES.md`](docs/REFERENCES.md) | External works DevQ cites or builds on — papers, dependencies, benchmark suites, data provenance, and citation keys |
 | [`AGENTS.md`](AGENTS.md) | Orientation for AI coding assistants — task-oriented routing into the documents above |
 
+
 ---
+
+## License
+
+DevQ's original source code is licensed under the Apache License, Version 2.0.
+See [`LICENSE`](LICENSE). Third-party software and benchmark data retain their
+respective licenses; see [`docs/REFERENCES.md`](docs/REFERENCES.md) and the
+applicable license and notice files for attribution and provenance.
 
 ## Acknowledgements
 
