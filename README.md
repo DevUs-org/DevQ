@@ -1,5 +1,7 @@
 # DevQ — A Microkernel & Job Orchestrator for the Quantum World
 
+Copyright 2026 Devjyot Singh Sidhu
+
 DevQ is an open-source quantum execution middleware that applies classical
 operating-system abstractions to quantum computing: a microkernel with a
 process table, noise-aware qubit allocators, pluggable job schedulers, a
