@@ -11,11 +11,29 @@ inspection shell.
 
 Quantum platforms today are fragmented, vendor-locked, and opaque — qubit
 selection, scheduling, and topology decisions happen inside closed runtimes.
-DevQ is the transparent layer beneath them: **Linux for quantum computing**.
-It does not compete with Qiskit or Braket; it makes the execution decisions
-they hide *inspectable, controllable, and extensible* — type `qerrors` to see
-every device's noise map, `qmap <id>` to see exactly which device and physical
-qubits your circuit used, and read the source that made that decision.
+DevQ is a transparent layer beneath them: it does not compete with Qiskit or
+Braket, but makes the execution decisions they hide *inspectable, controllable,
+and extensible* — type `qerrors` to inspect a device's noise map, `qmap <id>`
+to see exactly which device and physical qubits your circuit used, and read the
+source that made that decision.
+
+## Install
+
+Python 3.11+ is recommended. From a fresh clone:
+
+```bash
+pip install -r requirements.txt --break-system-packages --ignore-installed PyJWT
+```
+
+Dependencies are version-pinned (Qiskit is pinned at 2.3.0); the flags keep the
+pinned set intact on systems with a conflicting global PyJWT. To verify:
+
+```bash
+python -c "import qiskit; print(qiskit.__version__)"   # expect 2.3.0
+python run_tests.py                                     # the full plugin matrix
+```
+
+## Quickstart
 
 The entire system initialises in three lines of user code:
 
@@ -130,7 +148,7 @@ Hardware provider   DevQSimulatedProvider · IBMSimulatedProvider · [Cirq, IonQ
 
 Every pluggable layer has a documented and validated contract:
 - `BaseProvider` — providers implement exactly `get_device()` + `execute()`
-- `BaseAllocator` — allocators implement `allocate(circuit, device, pool, max_qubit_error=None, max_edge_error=None)`; optionally override `feasible()` (default provided) to classify unsatisfiable jobs
+- `BaseAllocator` — allocators implement `allocate(circuit, device, pool, max_qubit_error=None, max_edge_error=None, max_1q_gate_error=None)`; optionally override `feasible()` (default provided) to classify unsatisfiable jobs
 - `BaseScheduler` — schedulers implement `schedule()`, returning the jobs processed in a cycle — dispatched (RUNNING) and/or rejected (REJECTED)
 - `BaseRouter` — routers implement `select(qcb, candidates)`, choosing among feasible candidate devices; the base class handles device constraints, per-device feasibility, and rejection-reason aggregation
 
@@ -157,7 +175,7 @@ qubit indices remain local to their device everywhere in the system.
 | 8 | 💡 | Claims validation — algorithms ship executable claims a reviewer can run |
 | 9 | 💡 | Component distribution — a shared index, with claims re-verified on install |
 
-✅ done · 🔬 in progress · 🔭 planned · 💡 idea, not committed
+✅ done · 🔬 in progress · 💡 idea, not committed
 
 What each phase delivered, and why: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 

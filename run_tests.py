@@ -664,6 +664,98 @@ def block_unrunnable_circuits():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def block_rejected_no_ideal():
+    '''A REJECTED job gets no reference ideal (call-site filter in the runner)'''
+    # A job REJECTED at runtime (unsatisfiable: no valid allocation exists on
+    # any attached device) never runs and never produces measured counts, so
+    # it has no fidelity to compute and needs no noiseless ideal. The runner
+    # therefore filters REJECTED jobs BEFORE computing ideals. This is the
+    # call-site filter — rejection is a run-level fact (the same circuit may
+    # be REJECTED under contention and RUNNING elsewhere), so it lives in the
+    # runner, not inside compute_ideals (which is circuit-level and
+    # job-agnostic; its own skip covers unrunnable_reason, a circuit property).
+    #
+    # The discriminating setup needs a REFERENCE-CAPABLE provider (only
+    # ibm.simulated overrides reference_ideal; devq.simulated does not, so a
+    # devq-only run emits no ideals at all and cannot exercise the filter) and
+    # a REJECTED job whose circuit is otherwise perfectly simulable — so that
+    # WITHOUT the filter it would receive an ideal, and WITH it it does not.
+    # BELL runs and earns a reference record; GHZ is forced REJECTED by an
+    # impossible max_qubit_error threshold and must earn NONE. Because GHZ
+    # appears only on the rejected job, the absence of its hash from the
+    # reference records is the filter's effect, cleanly isolated.
+    import json, os, tempfile
+    from benchmark import runner as R
+    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+
+    tmp = tempfile.mkdtemp(prefix="devq_reject_ideal_")
+    spec_path = os.path.join(tmp, "wl.json")
+    with open(spec_path, "w") as h:
+        json.dump({
+            "name": "rejected_no_ideal", "seed": SEED,
+            "devices": [{"id": "nairobi", "provider": "ibm.simulated",
+                         "backend": {"backend_name": "FakeNairobiV2"}}],
+            "jobs": [
+                {"circuit": BELL},                                 # FINISHES
+                {"circuit": "test_circuits/ghz.qasm",
+                 "max_qubit_error": 0.0},                          # REJECTED
+            ],
+        }, h)
+
+    try:
+        out = os.path.join(tmp, "run")
+        manifest = R.run(
+            spec_path, out_dir=out, quiet=True,
+            register_providers={"ibm.simulated": IBMSimulatedProvider})
+
+        entry = manifest["sessions"][0]
+        # The run COMPLETED (with failures) — a rejected job is a row, not a
+        # crash. If this ever reports CRASHED, the rejection setup is broken
+        # (e.g. provider not registered) and the rest of the test is moot.
+        check(entry["outcome"] in (R.COMPLETED, R.WITH_FAILURES),
+              f"a run with one rejected job still completes, got "
+              f"{entry['outcome']}"
+              + (f" — {entry.get('error','')[:80]}"
+                 if entry["outcome"] == R.CRASHED else ""))
+
+        log  = os.path.join(out, entry["log"])
+        recs = [json.loads(l) for l in open(log) if l.strip()]
+        summary = [r for r in recs if r.get("event") == "summary"][-1]
+
+        # per_job rows carry state + circuit_hash (no label). BELL is the one
+        # FINISHED job, GHZ the one REJECTED job, so map by state. There is
+        # exactly one of each, which we assert before pulling their hashes.
+        by_state = {}
+        for row in summary["per_job"]:
+            by_state.setdefault(row["state"], []).append(row["circuit_hash"])
+
+        check(len(by_state.get("FINISHED", [])) == 1
+              and len(by_state.get("REJECTED", [])) == 1,
+              f"exactly one bell FINISHED and one ghz REJECTED — got "
+              f"{ {s: len(v) for s, v in by_state.items()} }")
+        bell_hash = by_state["FINISHED"][0]
+        ghz_hash  = by_state["REJECTED"][0]
+        check(bell_hash and ghz_hash and bell_hash != ghz_hash,
+              f"bell and ghz have distinct hashes, got "
+              f"bell={bell_hash!r} ghz={ghz_hash!r}")
+
+        ref_hashes = {r["circuit_hash"] for r in recs
+                      if r.get("event") == "reference"}
+        # The runnable circuit earns an ideal ...
+        check(bell_hash in ref_hashes,
+              f"the FINISHED bell circuit earns a reference ideal, "
+              f"reference hashes={sorted(h[:8] for h in ref_hashes)}")
+        # ... and the REJECTED circuit earns NONE. This is the whole point:
+        # without the call-site filter, ghz's hash would appear here too.
+        check(ghz_hash not in ref_hashes,
+              f"the REJECTED ghz circuit earns NO reference ideal (the "
+              f"call-site filter), but its hash {ghz_hash[:8]} appeared in "
+              f"reference records {sorted(h[:8] for h in ref_hashes)}")
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def block_packing_across_devices():
     '''Bracket groups, batch packing and cross-device concurrency'''
     sh  = three_device()
@@ -1553,6 +1645,386 @@ def block_device_calibration():
     # cheap sanity check the extraction didn't swap arities.
     check(ibmdev.gate_duration(2) > ibmdev.gate_duration(1),
           "extracted 2q gate duration exceeds 1q (arity not swapped)")
+
+
+def block_engine_gates():
+    '''The native engine's gate matrices match Qiskit and cover the parser'''
+    # The native statevector engine (engine/) simulates a circuit WITHOUT
+    # Qiskit, so DevQ can compute a noiseless ideal without an Aer-backed
+    # device attached. Its correctness rests entirely on its gate matrices
+    # being right: a wrong matrix is a silently-wrong distribution, and a
+    # fidelity computed against a wrong ideal is high, plausible, and
+    # meaningless. This block LOCKS the vocabulary before any engine code
+    # consumes it, on two axes:
+    #   (1) COVERAGE — the engine's gate names equal the qasm2 frontend's
+    #       _BUILTIN_GATES exactly. The two tables are written for different
+    #       reasons and nothing else couples them, so a gate added to one and
+    #       not the other is invisible until a circuit uses it. Equality (not
+    #       mere subset) is asserted: the engine must simulate everything the
+    #       frontend will emit, and claim nothing the frontend cannot.
+    #   (2) CORRECTNESS — every gate's unitary equals Qiskit's Operator for
+    #       that gate, checked here rather than trusted from memory. Constants
+    #       exactly; parameterised gates at several angles including the
+    #       edges (0, pi) where a sign or half-angle slip hides.
+    import numpy as np
+    import math
+    from qiskit import QuantumCircuit
+    from qiskit.quantum_info import Operator
+    from engine import gates as G
+    from frontends.qasm2.parser import _BUILTIN_GATES
+
+    def op(qc):
+        return Operator(qc).data
+
+    # (1) Coverage: exact vocabulary parity with the frontend.
+    eng, parser = G.vocabulary(), set(_BUILTIN_GATES)
+    check(eng == parser,
+          f"engine vocabulary equals the parser's _BUILTIN_GATES — "
+          f"engine-only={sorted(eng - parser)}, "
+          f"parser-only={sorted(parser - eng)}")
+
+    # Arity/param-count parity too: the engine's declared (num_params,
+    # num_qubits) must match the frontend's, or a gate could be known to both
+    # yet applied with the wrong operands.
+    mism = [(n, (G.GATES[n].num_params, G.GATES[n].num_qubits), _BUILTIN_GATES[n])
+            for n in parser
+            if (G.GATES[n].num_params, G.GATES[n].num_qubits) != _BUILTIN_GATES[n]]
+    check(not mism,
+          f"engine gate arities match the parser's (num_params, num_qubits): "
+          f"mismatches={mism}")
+
+    # A gate outside the vocabulary declines, naming the known set.
+    raised = False
+    try:
+        G.gate_spec("not_a_gate")
+    except G.UnknownGateError:
+        raised = True
+    check(raised, "an unknown gate name raises UnknownGateError, not KeyError")
+
+    # Custom `gate` definitions do not widen the vocabulary: the frontend
+    # inlines them (recursively) at parse time, so a circuit's instruction
+    # stream is pure builtins by the time the engine sees it. Parse a fixture
+    # with a custom gate that itself calls another custom gate and confirm
+    # every emitted gate name is in the engine's vocabulary — so covering
+    # _BUILTIN_GATES genuinely covers every circuit the parser can produce.
+    from frontends.qasm2.parser import parse as _parse_qasm
+    import os as _os
+    custom_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                "test_circuits", "qasm2", "custom_gate.qasm")
+    with open(custom_path) as _h:
+        custom_circuit = _parse_qasm(_h.read(), "custom_gate.qasm")
+    emitted = [i["gate"] for i in custom_circuit.instructions if i["op"] == "gate"]
+    outside = sorted(set(n for n in emitted if n not in eng))
+    check(emitted and not outside,
+          f"a custom-gate circuit inlines to engine-known builtins only; "
+          f"emitted={emitted}, outside-vocabulary={outside}")
+
+    # (2) Correctness: each gate's unitary == Qiskit's Operator.
+    ANGLES = [0.0, 0.3, -1.1, 2.7, math.pi]
+
+    # One-qubit constants.
+    const_1q = {
+        'id':   lambda q: q.id(0),   'x':   lambda q: q.x(0),
+        'y':    lambda q: q.y(0),    'z':   lambda q: q.z(0),
+        'h':    lambda q: q.h(0),    's':   lambda q: q.s(0),
+        'sdg':  lambda q: q.sdg(0),  't':   lambda q: q.t(0),
+        'tdg':  lambda q: q.tdg(0),  'sx':  lambda q: q.sx(0),
+        'sxdg': lambda q: q.sxdg(0),
+    }
+    for name, build in const_1q.items():
+        qc = QuantumCircuit(1); build(qc)
+        check(np.allclose(G.gate_spec(name).unitary([]), op(qc), atol=1e-10),
+              f"engine '{name}' matrix matches Qiskit")
+
+    # One-qubit parameterised (p and its alias u1 share a matrix).
+    for name, build in {'rx': lambda q, a: q.rx(a, 0),
+                        'ry': lambda q, a: q.ry(a, 0),
+                        'rz': lambda q, a: q.rz(a, 0),
+                        'p':  lambda q, a: q.p(a, 0),
+                        'u1': lambda q, a: q.p(a, 0)}.items():
+        for a in ANGLES:
+            qc = QuantumCircuit(1); build(qc, a)
+            check(np.allclose(G.gate_spec(name).unitary([a]), op(qc), atol=1e-10),
+                  f"engine '{name}({a})' matrix matches Qiskit")
+
+    # The general u and its parameter-packing aliases u2, u3.
+    for a in ANGLES:
+        qc = QuantumCircuit(1); qc.u(a, 0.4, -0.9, 0)
+        check(np.allclose(G.gate_spec('u').unitary([a, 0.4, -0.9]), op(qc), atol=1e-10),
+              f"engine 'u({a},...)' matrix matches Qiskit")
+        check(np.allclose(G.gate_spec('u3').unitary([a, 0.4, -0.9]), op(qc), atol=1e-10),
+              f"engine 'u3({a},...)' aliases u")
+        qc = QuantumCircuit(1); qc.u(math.pi / 2, a, 0.4, 0)
+        check(np.allclose(G.gate_spec('u2').unitary([a, 0.4]), op(qc), atol=1e-10),
+              f"engine 'u2({a},...)' aliases u(pi/2,...)")
+
+    # Controlled two-qubit gates: build the full controlled(U) in the engine's
+    # little-endian basis (control q0, target q1) and compare to Qiskit's
+    # embedded operator. This is also the tensor-ordering check — a
+    # big-endian slip flips control and target and fails here.
+    def controlled(U2, c, t, nq=2):
+        dim = 2 ** nq
+        M = np.zeros((dim, dim), dtype=complex)
+        for col in range(dim):
+            if (col >> c) & 1 == 0:
+                M[col, col] = 1.0
+            else:
+                tb = (col >> t) & 1
+                for o in (0, 1):
+                    M[(col & ~(1 << t)) | (o << t), col] = U2[o, tb]
+        return M
+
+    ctrl_const = {'cx': lambda q: q.cx(0, 1), 'cy': lambda q: q.cy(0, 1),
+                  'cz': lambda q: q.cz(0, 1), 'ch': lambda q: q.ch(0, 1)}
+    for name, build in ctrl_const.items():
+        qc = QuantumCircuit(2); build(qc)
+        full = controlled(G.gate_spec(name).unitary([]), 0, 1)
+        check(np.allclose(full, op(qc), atol=1e-10),
+              f"engine '{name}' controlled matrix matches Qiskit (q0 controls q1)")
+
+    ctrl_param = {'crx': lambda q, a: q.crx(a, 0, 1),
+                  'cry': lambda q, a: q.cry(a, 0, 1),
+                  'crz': lambda q, a: q.crz(a, 0, 1),
+                  'cp':  lambda q, a: q.cp(a, 0, 1),
+                  'cu1': lambda q, a: q.cp(a, 0, 1)}
+    for name, build in ctrl_param.items():
+        for a in (0.7, -1.3):
+            qc = QuantumCircuit(2); build(qc, a)
+            full = controlled(G.gate_spec(name).unitary([a]), 0, 1)
+            check(np.allclose(full, op(qc), atol=1e-10),
+                  f"engine '{name}({a})' controlled matrix matches Qiskit")
+
+    # ECR: the one intrinsically-two-qubit unitary, compared 4x4 directly.
+    qc = QuantumCircuit(2); qc.ecr(0, 1)
+    check(np.allclose(G.gate_spec('ecr').unitary([]), op(qc), atol=1e-10),
+          "engine 'ecr' 4x4 matrix matches Qiskit")
+
+    # Permutations: swap, ccx (Toffoli), cswap (Fredkin). These carry no 2x2;
+    # the engine permutes basis amplitudes, so the correctness that matters is
+    # the operand mapping, checked by building the permutation matrix the
+    # engine's kind implies and comparing to Qiskit.
+    def swapm(a, b, nq=2):
+        dim = 2 ** nq; M = np.zeros((dim, dim), dtype=complex)
+        for col in range(dim):
+            ba, bb = (col >> a) & 1, (col >> b) & 1
+            M[(col & ~(1 << a) & ~(1 << b)) | (bb << a) | (ba << b), col] = 1
+        return M
+    qc = QuantumCircuit(2); qc.swap(0, 1)
+    check(np.allclose(swapm(0, 1), op(qc), atol=1e-10),
+          "engine 'swap' permutation matches Qiskit")
+
+    dim = 8
+    ccxm = np.eye(dim, dtype=complex)
+    for col in range(dim):
+        if (col >> 0) & 1 and (col >> 1) & 1:
+            ccxm[col, col] = 0; ccxm[col ^ (1 << 2), col] = 1
+    qc = QuantumCircuit(3); qc.ccx(0, 1, 2)
+    check(np.allclose(ccxm, op(qc), atol=1e-10),
+          "engine 'ccx' (Toffoli, controls q0/q1 target q2) matches Qiskit")
+
+    cswapm = np.zeros((dim, dim), dtype=complex)
+    for col in range(dim):
+        if (col >> 0) & 1:
+            ba, bb = (col >> 1) & 1, (col >> 2) & 1
+            cswapm[(col & ~(1 << 1) & ~(1 << 2)) | (bb << 1) | (ba << 2), col] = 1
+        else:
+            cswapm[col, col] = 1
+    qc = QuantumCircuit(3); qc.cswap(0, 1, 2)
+    check(np.allclose(cswapm, op(qc), atol=1e-10),
+          "engine 'cswap' (Fredkin, control q0 swaps q1/q2) matches Qiskit")
+
+
+def block_engine_statevector():
+    '''The native statevector core simulates exact ideals matching Qiskit'''
+    # engine_gates locked the gate MATRICES against Qiskit; this block pins
+    # the statevector CORE that applies them — that a full circuit's exact
+    # measured-bit distribution (the noiseless ideal) matches Qiskit's, and
+    # that the core honours DevQ's output contract (Option-B width, clbit
+    # placement, measure-all fallback) and its reset boundary (exact on a
+    # separable qubit, declined on an entangled one, never silently wrong).
+    import numpy as np
+    from qiskit import QuantumCircuit
+    from qiskit.quantum_info import Statevector
+    from engine.statevector import simulate, UnsupportedByEngine
+    from engine.gates import UnknownGateError
+    from circuits.circuit_rep import CircuitRep
+
+    def qiskit_ideal(qc, width, measure_map):
+        # Exact probabilities from Qiskit's statevector, marginalised the
+        # same way the contract prescribes, so the two dicts are comparable.
+        full = np.abs(Statevector(qc).data) ** 2
+        out = {}
+        for index, p in enumerate(full):
+            if p < 1e-9:
+                continue
+            bits = ["0"] * width
+            for q, c in measure_map:
+                bits[width - 1 - c] = str((index >> q) & 1)
+            key = "".join(bits)
+            out[key] = out.get(key, 0.0) + float(p)
+        return out
+
+    def agree(eng, qk):
+        keys = set(eng) | set(qk)
+        return all(abs(eng.get(k, 0.0) - qk.get(k, 0.0)) < 1e-9 for k in keys)
+
+    # ── every gate kind, applied in a real circuit, matches Qiskit ────────
+    cases = []
+
+    cr = CircuitRep(2, 2); cr.add_gate("h", [0]); cr.add_gate("cx", [0, 1])
+    for q in range(2): cr.add_measure(q, q)
+    qc = QuantumCircuit(2); qc.h(0); qc.cx(0, 1)
+    cases.append(("bell", cr, qc, 2, [(0, 0), (1, 1)]))
+
+    cr = CircuitRep(3, 3)
+    cr.add_gate("h", [0]); cr.add_gate("cx", [0, 1]); cr.add_gate("cx", [1, 2])
+    for q in range(3): cr.add_measure(q, q)
+    qc = QuantumCircuit(3); qc.h(0); qc.cx(0, 1); qc.cx(1, 2)
+    cases.append(("ghz", cr, qc, 3, [(q, q) for q in range(3)]))
+
+    cr = CircuitRep(3, 3)
+    cr.add_gate("rx", [0], [0.7]); cr.add_gate("ry", [1], [1.3])
+    cr.add_gate("rz", [2], [2.1]); cr.add_gate("p", [0], [0.5])
+    cr.add_gate("cx", [0, 2])
+    for q in range(3): cr.add_measure(q, q)
+    qc = QuantumCircuit(3)
+    qc.rx(0.7, 0); qc.ry(1.3, 1); qc.rz(2.1, 2); qc.p(0.5, 0); qc.cx(0, 2)
+    cases.append(("rotations", cr, qc, 3, [(q, q) for q in range(3)]))
+
+    cr = CircuitRep(3, 3)
+    cr.add_gate("h", [0]); cr.add_gate("h", [1]); cr.add_gate("ccx", [0, 1, 2])
+    for q in range(3): cr.add_measure(q, q)
+    qc = QuantumCircuit(3); qc.h(0); qc.h(1); qc.ccx(0, 1, 2)
+    cases.append(("ccx", cr, qc, 3, [(q, q) for q in range(3)]))
+
+    cr = CircuitRep(3, 3)
+    cr.add_gate("x", [1]); cr.add_gate("h", [0]); cr.add_gate("cswap", [0, 1, 2])
+    for q in range(3): cr.add_measure(q, q)
+    qc = QuantumCircuit(3); qc.x(1); qc.h(0); qc.cswap(0, 1, 2)
+    cases.append(("cswap", cr, qc, 3, [(q, q) for q in range(3)]))
+
+    cr = CircuitRep(2, 2); cr.add_gate("x", [0]); cr.add_gate("swap", [0, 1])
+    for q in range(2): cr.add_measure(q, q)
+    qc = QuantumCircuit(2); qc.x(0); qc.swap(0, 1)
+    cases.append(("swap", cr, qc, 2, [(0, 0), (1, 1)]))
+
+    cr = CircuitRep(2, 2); cr.add_gate("h", [0]); cr.add_gate("ecr", [0, 1])
+    for q in range(2): cr.add_measure(q, q)
+    qc = QuantumCircuit(2); qc.h(0); qc.ecr(0, 1)
+    cases.append(("ecr", cr, qc, 2, [(0, 0), (1, 1)]))
+
+    # Interference case: h then ry on the SAME qubit. Starting from a
+    # superposition, ry's off-diagonal asymmetry shows up in the measured
+    # probabilities (h;ry(θ) and h;ry(θ)^T give different distributions),
+    # so this distinguishes the 1q application from a transposed one — a
+    # transpose-invariant gate on |0> alone would not.
+    cr = CircuitRep(1, 1); cr.add_gate("h", [0]); cr.add_gate("ry", [0], [0.7])
+    cr.add_measure(0, 0)
+    qc = QuantumCircuit(1); qc.h(0); qc.ry(0.7, 0)
+    cases.append(("h_then_ry", cr, qc, 1, [(0, 0)]))
+
+    for name, cr, qc, width, mmap in cases:
+        check(agree(simulate(cr), qiskit_ideal(qc, width, mmap)),
+              f"engine simulate('{name}') matches Qiskit's exact ideal")
+
+    # ── hand-computed anchor (no Qiskit) ──────────────────────────────────
+    cr = CircuitRep(2, 2); cr.add_gate("h", [0]); cr.add_gate("cx", [0, 1])
+    for q in range(2): cr.add_measure(q, q)
+    bell = simulate(cr)
+    check(abs(bell.get("00", 0) - 0.5) < 1e-9
+          and abs(bell.get("11", 0) - 0.5) < 1e-9
+          and "01" not in bell and "10" not in bell,
+          f"Bell ideal is 50/50 on 00/11, hand-known, got {bell}")
+
+    # ── output contract: clbit placement, Option-B width, fallback ────────
+    cr = CircuitRep(2, 2); cr.add_gate("x", [0])
+    cr.add_measure(0, 1); cr.add_measure(1, 0)
+    perm = simulate(cr)
+    check(perm == {"10": 1.0},
+          f"a measure maps each qubit to its own clbit position, got {perm}")
+
+    cr = CircuitRep(3, 2); cr.add_gate("x", [0]); cr.add_gate("x", [2])
+    cr.add_measure(0, 0); cr.add_measure(1, 1)
+    ob = simulate(cr)
+    check(ob == {"01": 1.0},
+          f"width is the declared classical register (Option B), got {ob}")
+
+    cr = CircuitRep(2, 2); cr.add_gate("x", [1])
+    fb = simulate(cr)
+    check(fb == {"10": 1.0},
+          f"a circuit with no measures falls back to measuring all, got {fb}")
+
+    # ── reset boundary: exact when separable, declined when entangled ─────
+    cr = CircuitRep(1, 1); cr.add_gate("x", [0]); cr.add_reset(0)
+    cr.add_measure(0, 0)
+    r1 = simulate(cr)
+    check(r1 == {"0": 1.0},
+          f"reset on a certainly-|1> separable qubit yields 0, got {r1}")
+
+    cr = CircuitRep(1, 1); cr.add_reset(0); cr.add_gate("h", [0])
+    cr.add_measure(0, 0)
+    r2 = simulate(cr)
+    check(abs(r2.get("0", 0) - 0.5) < 1e-9 and abs(r2.get("1", 0) - 0.5) < 1e-9,
+          f"a leading reset is exact; reset;h -> 50/50, got {r2}")
+
+    cr = CircuitRep(2, 2); cr.add_gate("h", [1]); cr.add_gate("x", [0])
+    cr.add_reset(0)
+    for q in range(2): cr.add_measure(q, q)
+    r3 = simulate(cr)
+    check(abs(r3.get("00", 0) - 0.5) < 1e-9 and abs(r3.get("10", 0) - 0.5) < 1e-9,
+          f"reset on a separable qubit is exact even with a peer in "
+          f"superposition, got {r3}")
+
+    cr = CircuitRep(2, 2); cr.add_gate("h", [0]); cr.add_gate("cx", [0, 1])
+    cr.add_reset(0)
+    for q in range(2): cr.add_measure(q, q)
+    declined = False
+    try:
+        simulate(cr)
+    except UnsupportedByEngine:
+        declined = True
+    check(declined,
+          "a reset on an entangled qubit is DECLINED (not collapsed to a "
+          "plausible-but-wrong pure-state ideal)")
+
+    # ── an unknown gate raises (caught by the caller for provider fallback)
+    cr = CircuitRep(1, 1); cr.add_gate("not_a_gate", [0])
+    raised = False
+    try:
+        simulate(cr)
+    except UnknownGateError:
+        raised = True
+    check(raised, "simulate raises UnknownGateError on an out-of-vocabulary gate")
+
+    # ── run(): seeded sampling on top of simulate() ───────────────────────
+    from engine.statevector import run
+    cr = CircuitRep(2, 2); cr.add_gate("h", [0]); cr.add_gate("cx", [0, 1])
+    for q in range(2): cr.add_measure(q, q)
+    c1 = run(cr, 1000, seed=42)
+    c2 = run(cr, 1000, seed=42)
+    c3 = run(cr, 1000, seed=43)
+    check(sum(c1.values()) == 1000,
+          f"run() returns integer counts summing to shots, got {sum(c1.values())}")
+    check(c1 == c2, "run() with a fixed seed is reproducible")
+    check(c1 != c3, "run() with a different seed gives a different draw")
+    check(set(c1) <= {"00", "11"},
+          f"run() samples only the true support (Bell -> 00/11), got {set(c1)}")
+    # Empirical frequencies converge to the exact distribution.
+    big = run(cr, 100000, seed=7)
+    exact = simulate(cr)
+    err = max(abs(big.get(k, 0) / 100000 - exact.get(k, 0))
+              for k in set(big) | set(exact))
+    check(err < 0.02,
+          f"run() frequencies converge to simulate()'s exact probs, max "
+          f"err {err:.4f}")
+    # shots must be a positive integer.
+    for bad in (0, -5, 10.5, "abc", True):
+        rejected = False
+        try:
+            run(cr, bad)
+        except ValueError:
+            rejected = True
+        check(rejected, f"run() rejects shots={bad!r}")
 
 
 # ── Backend factory ──────────────────────────────────────────────────────────
@@ -2664,8 +3136,8 @@ def block_repo_hygiene():
     # headers across numpy, scipy and qiskit. Blocklisting virtualenv
     # directory names is the wrong fix: the next one is called .venv or
     # env. Naming what IS ours cannot go wrong that way.
-    OURS = ("benchmark", "circuits", "config", "frontends", "hardware", "kernel",
-            "providers", "registry", "research", "shell")
+    OURS = ("benchmark", "circuits", "config", "engine", "frontends", "hardware",
+            "kernel", "providers", "registry", "research", "shell")
     roots = [os.path.join(root, d) for d in OURS]
     untagged = []
 
@@ -4230,11 +4702,16 @@ def block_comparison_modes():
     stable = {"session_id": "s", "axis": "router", "faithful": True,
               "coarse_m": 20, "bisect": True,
               "aggregate": {"flips": [],
+                            "centroid_of_largest_stable_region": [0.5, 0.5],
+                            "region_size": 21,
                             "winner_distribution": [
                                 {"point": [0.0, 1.0], "dist": {"1": 5}}]}}
     ps = M.present_sweep(stable)
     check(ps["sweepable"] and ps["stable"] and ps["flips"] == [],
           "a faithful sweep with no flips is reported stable")
+    check(ps["centroid_of_largest_stable_region"] == [0.5, 0.5]
+          and ps["region_size"] == 21,
+          "present_sweep surfaces the recommended centroid and its region size")
 
     # Faithful with a flip: the flip is surfaced. between/at are weight
     # vectors (lattice-edge endpoints and the localised point on the edge).
@@ -4269,6 +4746,13 @@ def block_comparison_modes():
     stable_txt = M.render_text(ps)
     check("stable" in stable_txt,
           "the renderer detects a sweep result and reads out stability")
+    check("recommended weight" in stable_txt and "0.5" in stable_txt,
+          "the sweep text prints the recommended centroid weight")
+
+    # A refused sweep never carries a centroid — there is no region to
+    # recommend over.
+    check("centroid_of_largest_stable_region" not in pr,
+          "a refused sweep carries no recommended centroid")
 
     # writing to a path produces a file with exactly the returned text.
     with tempfile.TemporaryDirectory() as d:
@@ -4278,6 +4762,83 @@ def block_comparison_modes():
         with open(path) as h:
             check(h.read() == returned,
                   "the file holds exactly the returned text")
+
+
+def block_stable_region():
+    '''The sweep's robust-weight recommendation: centroid of the largest
+    connected constant-decision region'''
+    # _stable_region_centroid is a pure function of the lattice and the
+    # per-point winner distribution. Fixtures use small lattices with
+    # hand-computed answers so the region-finding, the connectivity rule,
+    # the largest-wins choice, the deterministic tie-break, and the
+    # renormalised centroid are all checked against known values — not
+    # against whatever a live sweep happens to produce.
+    from benchmark.comparison import (_stable_region_centroid,
+                                       _int_lattice)
+
+    def lattice(n, m):
+        ip = _int_lattice(n, m)
+        pts = [tuple(k / m for k in c) for c in ip]
+        return ip, pts
+
+    # ── n=2, m=4: the 5-point chain (0,1) .. (1,0) ────────────────────────
+    ip, pts = lattice(2, 4)
+
+    # Fully stable: one region of all 5 points, centroid is the chain
+    # barycenter (0.5, 0.5).
+    c, sz = _stable_region_centroid(ip, pts, [{"A": 1}] * 5)
+    check(sz == 5 and c == [0.5, 0.5],
+          f"a fully stable sweep recommends the whole-region barycenter, "
+          f"got {c} over {sz}")
+
+    # One flip splits the chain into a 3-point region [0,.25,.5] and a
+    # 2-point region [.75,1]; the larger (left) wins, centroid at .25.
+    c, sz = _stable_region_centroid(
+        ip, pts, [{"A": 1}, {"A": 1}, {"A": 1}, {"B": 1}, {"B": 1}])
+    check(sz == 3 and c == [0.25, 0.75],
+          f"the larger of two regions is chosen, got {c} over {sz}")
+
+    # Two equal-size (2-point) regions with a singleton between them; the
+    # tie breaks toward the lower-index region (the left one), deterministic.
+    c, sz = _stable_region_centroid(
+        ip, pts, [{"A": 1}, {"A": 1}, {"C": 1}, {"B": 1}, {"B": 1}])
+    check(sz == 2 and c == [0.125, 0.875],
+          f"a size tie breaks toward the canonical-lowest region, got {c}")
+
+    # The distribution is a multiset, not a single winner: {A:1,B:1} and
+    # {A:2} are different regions even though A appears in both.
+    c, sz = _stable_region_centroid(
+        ip, pts, [{"A": 1, "B": 1}] * 2 + [{"A": 2}] * 3)
+    check(sz == 3,
+          f"regions are keyed by the full winner distribution, not one "
+          f"winner, got region size {sz}")
+
+    # ── n=3, m=3: the 10-point triangle, connectivity guard ───────────────
+    ip, pts = lattice(3, 3)
+    check(len(pts) == 10, "the n=3 m=3 lattice has 10 points")
+
+    # Fully stable -> the simplex barycenter (1/3, 1/3, 1/3).
+    c, sz = _stable_region_centroid(ip, pts, [{"A": 1}] * 10)
+    check(sz == 10 and all(abs(x - 1 / 3) < 1e-5 for x in c),
+          f"a fully stable triangle recommends its barycenter, got {c}")
+
+    # Connectivity guard: the three CORNERS share winner A but are pairwise
+    # non-adjacent. A "same winner anywhere" rule would merge them into a
+    # size-3 region; the CONNECTED rule must keep them as three singletons,
+    # so the size-7 interior/edge bulk (winner B) is the recommendation.
+    dist = [{"B": 1}] * 10
+    for i, comp in enumerate(ip):
+        if 3 in comp:              # a corner: one coordinate carries all mass
+            dist[i] = {"A": 1}
+    c, sz = _stable_region_centroid(ip, pts, dist)
+    check(sz == 7,
+          f"disconnected same-winner points are NOT merged; the connected "
+          f"bulk wins, got region size {sz}")
+
+    # ── Degenerate input ──────────────────────────────────────────────────
+    c, sz = _stable_region_centroid([], [], [])
+    check(c is None and sz == 0,
+          "an empty lattice yields no recommendation rather than crashing")
 
 
 def block_fidelity():
@@ -4522,6 +5083,110 @@ def block_fidelity():
     finally:
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def block_reference_tiers():
+    '''compute_ideals sources ideals by three-tier precedence: provider, engine, registry'''
+    # The ideal for a circuit can come from three places, tried in a fixed
+    # precedence per circuit: (1) an ATTACHED reference-capable provider wins
+    # outright; (2) else DevQ's CORE native statevector engine simulates it
+    # (no provider needed — the whole point: a run computes ideals with no
+    # reference device attached); (3) else a registered provider class
+    # overriding reference_ideal is instantiated unattached and used (for what
+    # the engine declines — an entangled reset, or a circuit above the qubit
+    # cap). Per-circuit fallback across tiers 2 and 3 is safe because a
+    # noiseless ideal is unique and every tier returns normalised
+    # probabilities, so there is no source disagreement to fear.
+    from benchmark.reference import (compute_ideals, circuit_hash,
+                                     _engine_ideal, _ENGINE_MAX_QUBITS)
+    from circuits.circuit_rep import CircuitRep
+    from registry.registry import Registry
+    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from providers.base_provider import BaseProvider
+
+    # A pure circuit the engine handles, and an entangled-reset circuit it
+    # declines (leaving q1 mixed — only a density-matrix source gets it right).
+    bell = CircuitRep(2, 2); bell.add_gate("h", [0]); bell.add_gate("cx", [0, 1])
+    for q in range(2): bell.add_measure(q, q)
+    ereset = CircuitRep(2, 2)
+    ereset.add_gate("h", [0]); ereset.add_gate("cx", [0, 1]); ereset.add_reset(0)
+    for q in range(2): ereset.add_measure(q, q)
+    bell_h, ereset_h = circuit_hash(bell), circuit_hash(ereset)
+
+    # ── Tier 2: no provider, no registry — the engine supplies the ideal ──
+    d = compute_ideals([bell], None, None)
+    check(bell_h in d,
+          "tier 2: with no provider attached, the core engine supplies the "
+          "ideal (a run needs no reference-capable device)")
+    ideal = d[bell_h]["ideal"]
+    check(abs(ideal.get("00", 0) - 0.5) < 1e-9
+          and abs(ideal.get("11", 0) - 0.5) < 1e-9,
+          f"tier 2: the engine's Bell ideal is the exact 50/50, got {ideal}")
+
+    # ── Tier 2 declines, no registry — honest absence, not a wrong ideal ──
+    d = compute_ideals([ereset], None, None)
+    check(ereset_h not in d,
+          "tier 2: an entangled-reset circuit the engine declines yields NO "
+          "ideal when no registry tier can cover it — an honest absence, not "
+          "the plausible-but-wrong collapsed distribution")
+
+    # ── Tier 3: engine declines, registry search covers it ────────────────
+    reg = Registry()
+    reg.register("provider", "ibm.simulated", IBMSimulatedProvider)
+    d = compute_ideals([ereset], None, reg)
+    check(ereset_h in d,
+          "tier 3: when the engine declines, a registered reference-capable "
+          "provider class is instantiated unattached and supplies the ideal")
+    ri = d[ereset_h]["ideal"]
+    # The correct entangled-reset ideal is the MIXED 00/10, exactly what a
+    # density-matrix reference gives and a statevector cannot — proof the
+    # tier-3 source, not a collapsed fallback, produced it.
+    check(abs(ri.get("00", 0) - 0.5) < 1e-9 and abs(ri.get("10", 0) - 0.5) < 1e-9
+          and abs(ri.get("01", 0)) < 1e-12,
+          f"tier 3: the density-matrix source gives the correct MIXED 00/10 "
+          f"ideal (not a statevector's collapsed 00), got {ri}")
+
+    # A registry with no reference-capable provider covers nothing.
+    reg_bare = Registry()
+    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    reg_bare.register("provider", "devq.simulated", DevQSimulatedProvider)
+    check(DevQSimulatedProvider.reference_ideal is BaseProvider.reference_ideal,
+          "the mock devq provider is not reference-capable (guards the tier-3 "
+          "capability probe)")
+    d = compute_ideals([ereset], None, reg_bare)
+    check(ereset_h not in d,
+          "tier 3: a registry with only a non-reference-capable provider "
+          "supplies nothing — the entry stays absent")
+
+    # ── Tier 1: an attached provider wins outright ────────────────────────
+    # With a provider passed, that provider computes the ideal even for a
+    # circuit the engine could have handled — tier 1 is not overridden by 2.
+    prov = IBMSimulatedProvider()
+    d = compute_ideals([bell], prov, reg)
+    check(bell_h in d,
+          "tier 1: an attached reference-capable provider supplies the ideal")
+
+    # ── the qubit cap routes big circuits past the engine ─────────────────
+    check(_ENGINE_MAX_QUBITS >= 20,
+          f"the engine qubit cap is a sane memory guard, got {_ENGINE_MAX_QUBITS}")
+    big = CircuitRep(_ENGINE_MAX_QUBITS + 1, _ENGINE_MAX_QUBITS + 1)
+    big.add_gate("h", [0])
+    check(_engine_ideal(big) is None,
+          "tier 2: a circuit above the qubit cap is declined by the engine "
+          "(so it routes to the registry tier), rather than allocating a "
+          "state vector too large to hold")
+    # And within the cap the engine answers.
+    small = CircuitRep(2, 2); small.add_gate("h", [0])
+    check(_engine_ideal(small) is not None,
+          "tier 2: a circuit within the cap is simulated by the engine")
+
+    # ── dedup: one ideal per distinct circuit, mixed sources coexist ──────
+    # A run mixing an engine circuit and a registry circuit gets both, each
+    # from its own tier — the per-circuit fallback in action.
+    d = compute_ideals([bell, ereset, bell], None, reg)
+    check(bell_h in d and ereset_h in d and len(d) == 2,
+          f"a run mixes tier-2 and tier-3 ideals per circuit, deduped to one "
+          f"each, got {len(d)} ideals")
 
 
 def block_router_scoring():
@@ -5772,6 +6437,166 @@ def block_qasm2_parser():
           "a parameterised circuit runs end to end without error")
 
 
+def block_expr_unary_power_precedence():
+    '''Unary minus binds looser than ^: -2^2 == -(2^2), and ^ stays right-assoc'''
+    # Regression witness for a latent precedence bug in the QASM2 expression
+    # evaluator. The grammar had `power := unary ('^' power)?` with unary
+    # BELOW power, so `_power` consumed the leading minus as part of its base
+    # before ever seeing `^`. That made -2^2 evaluate as (-2)^2 == 4 instead
+    # of the standard -(2^2) == -4. No shipped circuit used a negative base
+    # under `^` (the only `^` in the fixtures is 2^3), so the suite stayed
+    # green while the evaluator was silently wrong for any signed base — the
+    # exact kind of quiet numerical error that corrupts a gate angle without
+    # crashing. The fix reorders the grammar so unary minus sits ABOVE power
+    # (binds looser) while an explicit sign after `^` is still parsed as the
+    # exponent's own sign. Evaluation is deterministic, so exact hand-computed
+    # values are fair game (no wall-clock anywhere).
+    from frontends.qasm2.tokenizer import tokenize
+    from frontends.qasm2.parser import TokenCursor
+    from frontends.qasm2 import expression as E
+    import math
+
+    def ev(src):
+        c = TokenCursor(tokenize(src + ";"))
+        return E.evaluate(c, {})
+
+    def approx(a, b):
+        return abs(a - b) < 1e-9
+
+    # ── The bug's exact witness: negative base under ^ ──────────────────
+    check(approx(ev("-2^2"), -4.0),
+          f"-2^2 == -(2^2) == -4 (was 4 when unary bound tighter than ^), "
+          f"got {ev('-2^2')}")
+    check(approx(ev("-3^2"), -9.0),
+          f"-3^2 == -(3^2) == -9, got {ev('-3^2')}")
+    # unary minus threading through a product: 2*-3^2 == 2*-(3^2) == -18
+    check(approx(ev("2*-3^2"), -18.0),
+          f"2*-3^2 == 2*(-(3^2)) == -18, got {ev('2*-3^2')}")
+
+    # ── Mutant guard 1: a NON-negated base must be unchanged (2^2 == 4).
+    # A naive "just negate the whole power" fix would wrongly flip this.
+    check(approx(ev("2^2"), 4.0),
+          f"2^2 == 4 unaffected by the unary reordering, got {ev('2^2')}")
+
+    # ── Mutant guard 2: ^ must stay RIGHT-associative (2^3^2 == 2^9 == 512,
+    # not (2^3)^2 == 64). A fix that made the exponent parse via _atom
+    # instead of _unary would break right-associativity.
+    check(approx(ev("2^3^2"), 512.0),
+          f"2^3^2 == 2^(3^2) == 512 (right-assoc preserved), got {ev('2^3^2')}")
+
+    # ── Mutant guard 3: a sign AFTER ^ is the exponent's own sign, still
+    # honoured (2^-2 == 0.25). A fix that forbade a signed exponent to keep
+    # -2^2 correct would break this.
+    check(approx(ev("2^-2"), 0.25),
+          f"2^-2 == 0.25 (signed exponent still parses), got {ev('2^-2')}")
+    # and both together: -2^-2 == -(2^-2) == -0.25
+    check(approx(ev("-2^-2"), -0.25),
+          f"-2^-2 == -(2^-2) == -0.25, got {ev('-2^-2')}")
+
+    # ── The pre-existing positive-base fixture still evaluates as before ─
+    check(approx(ev("2^3"), 8.0), f"2^3 == 8 (the shipped fixture), got {ev('2^3')}")
+
+
+def block_allocator_contract_1q_param():
+    '''Registry allocator signature check requires max_1q_gate_error'''
+    # Regression witness for a contract-enforcement gap. The runtime always
+    # invokes an allocator's allocate()/feasible() with max_1q_gate_error
+    # (base_scheduler, router, memory_manager all pass it, and the base
+    # allocator's documented contract lists it), but the registry's Level-3
+    # method-signature check declared only (circuit, device, pool,
+    # max_qubit_error, max_edge_error). So an externally written allocator
+    # that took the registry's STATED required params but omitted
+    # max_1q_gate_error passed registration and then crashed at runtime with
+    # an unexpected-keyword TypeError — the worst failure locus for a plugin
+    # author (deep in a scheduling loop, not at register time). The fix adds
+    # max_1q_gate_error to the declared allocate/feasible required params so
+    # the mismatch is caught loudly at registration.
+    from registry.registry import _build_kinds
+
+    # Pull the allocator kind's declared required method params straight from
+    # the registry's own spec table (the same _build_kinds() a live Registry
+    # calls in __init__), so this asserts the SOURCE OF TRUTH the Level-3
+    # check reads, not a copy.
+    spec = _build_kinds()
+    check("allocator" in spec,
+          "registry exposes the allocator component-kind spec")
+    alloc_methods = spec["allocator"].methods
+
+    # ── The fix: both allocate and feasible now require max_1q_gate_error ─
+    check("max_1q_gate_error" in alloc_methods["allocate"],
+          f"allocate's required params include max_1q_gate_error, "
+          f"got {alloc_methods['allocate']}")
+    check("max_1q_gate_error" in alloc_methods["feasible"],
+          f"feasible's required params include max_1q_gate_error, "
+          f"got {alloc_methods['feasible']}")
+
+    # ── Behavioural guard: an under-specified allocator (registry's OLD
+    # stated contract, no 1q param) is now REJECTED at registration, and a
+    # correct one is accepted. This is the end the plugin author feels.
+    from kernel.memory.allocators.base_allocator import BaseAllocator
+
+    class UnderSpecifiedAllocator(BaseAllocator):
+        def allocate(self, circuit, device, pool,
+                     max_qubit_error=None, max_edge_error=None):
+            return {}
+        def feasible(self, circuit, device,
+                     max_qubit_error=None, max_edge_error=None):
+            return None
+
+    class ConformingAllocator(BaseAllocator):
+        def allocate(self, circuit, device, pool,
+                     max_qubit_error=None, max_edge_error=None,
+                     max_1q_gate_error=None):
+            return {}
+        def feasible(self, circuit, device,
+                     max_qubit_error=None, max_edge_error=None,
+                     max_1q_gate_error=None):
+            return None
+
+    # ── Mutant guard 1: the under-specified allocator FAILS registration.
+    dq = DevQ()
+    rejected = False
+    try:
+        dq.register_allocator("under.spec", UnderSpecifiedAllocator)
+    except Exception:
+        rejected = True
+    check(rejected,
+          "an allocator whose allocate() omits max_1q_gate_error is rejected "
+          "at registration, not at runtime")
+
+    # ── Mutant guard 2: a conforming allocator still registers cleanly (the
+    # tightened contract must not reject legitimate allocators).
+    dq2 = DevQ()
+    accepted = True
+    try:
+        dq2.register_allocator("conforming.alloc", ConformingAllocator)
+    except Exception:
+        accepted = False
+    check(accepted,
+          "a conforming allocator with max_1q_gate_error registers cleanly")
+
+    # ── Mutant guard 3: the requirement is symmetric across both methods —
+    # dropping 1q from feasible only must also be caught.
+    class OneMethodShort(BaseAllocator):
+        def allocate(self, circuit, device, pool,
+                     max_qubit_error=None, max_edge_error=None,
+                     max_1q_gate_error=None):
+            return {}
+        def feasible(self, circuit, device,
+                     max_qubit_error=None, max_edge_error=None):
+            return None
+
+    dq3 = DevQ()
+    half_rejected = False
+    try:
+        dq3.register_allocator("half.short", OneMethodShort)
+    except Exception:
+        half_rejected = True
+    check(half_rejected,
+          "an allocator whose feasible() omits max_1q_gate_error is also "
+          "rejected (the requirement covers both methods)")
+
+
 def block_devq_measurement():
     '''devq.simulated distributes over the classical-register width'''
     # devq.simulated does not interpret gates — it returns a uniform
@@ -6000,6 +6825,7 @@ BLOCKS = [
     ("name_validation",          block_name_validation),
     ("rejection_semantics",      block_rejection_semantics),
     ("unrunnable_circuits",      block_unrunnable_circuits),
+    ("rejected_no_ideal",        block_rejected_no_ideal),
     ("edge_threshold_semantics", block_edge_threshold_semantics),
     ("combined_thresholds",      block_combined_thresholds),
     ("max_1q_gate_error_filter", block_max_1q_gate_error_filter),
@@ -6017,6 +6843,8 @@ BLOCKS = [
     ("wedged_provider_timeout",  block_wedged_provider_timeout),
     ("mock_topologies",          block_mock_topologies),
     ("device_calibration",       block_device_calibration),
+    ("engine_gates",             block_engine_gates),
+    ("engine_statevector",       block_engine_statevector),
     ("backend_factory_errors",   block_backend_factory_errors),
     ("shell_input_handling",     block_shell_input_handling),
     ("many_device_federation",   block_many_device_federation),
@@ -6040,6 +6868,8 @@ BLOCKS = [
     ("qregistry",                block_qregistry),
     ("frontend_dispatch",        block_frontend_dispatch),
     ("qasm2_parser",             block_qasm2_parser),
+    ("expr_unary_power_precedence", block_expr_unary_power_precedence),
+    ("allocator_contract_1q_param", block_allocator_contract_1q_param),
     ("devq_measurement",         block_devq_measurement),
     ("ibm_measurement",          block_ibm_measurement),
     ("counts_width_contract",    block_counts_width_contract),
@@ -6052,7 +6882,9 @@ BLOCKS = [
     ("metrics",                  block_metrics),
     ("comparison",               block_comparison),
     ("comparison_modes",         block_comparison_modes),
+    ("stable_region",            block_stable_region),
     ("fidelity",                 block_fidelity),
+    ("reference_tiers",          block_reference_tiers),
     ("router_scoring",           block_router_scoring),
     ("sweepable_contract",       block_sweepable_contract),
     ("allocator_scoring",        block_allocator_scoring),

@@ -176,7 +176,7 @@ class QOSRouter(BaseRouter):
         come from the documented calibration accessors.  Crosstalk omitted
         (caveat 1).
 
-            fid = 1 - PROD_qubits (1-e_readout)(1-e_1q)(1-e_decoh)
+            fid = PROD_qubits (1-e_readout)(1-e_1q)(1-e_decoh)
                     * PROD_edges  (1-e_2q) ^ (m2q scaling)
 
         Returns fidelity in [0,1]; higher is better.
@@ -224,7 +224,7 @@ class QOSRouter(BaseRouter):
             exponent = m2q / len(best_edges) if best_edges else 0.0
             two_q = edge_survival ** exponent if exponent > 0 else 1.0
 
-        return 1.0 - readout_decoh * two_q
+        return readout_decoh * two_q
 
     @staticmethod
     def _count_two_qubit_gates(circuit):

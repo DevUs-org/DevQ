@@ -229,9 +229,11 @@ def _build_kinds():
             init_params      = ("qubit_error_weight", "edge_error_weight"),
             scopes           = frozenset({"device", "common"}),
             methods          = {"allocate": ("circuit", "device", "pool",
-                                             "max_qubit_error", "max_edge_error"),
+                                             "max_qubit_error", "max_edge_error",
+                                             "max_1q_gate_error"),
                                 "feasible": ("circuit", "device",
-                                             "max_qubit_error", "max_edge_error")},
+                                             "max_qubit_error", "max_edge_error",
+                                             "max_1q_gate_error")},
             label            = "allocator",
         ),
         "router": ComponentKind(

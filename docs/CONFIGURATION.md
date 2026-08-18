@@ -78,11 +78,11 @@ cascade, validate, carry provenance, and appear in `qconfig`. A plugin
 key is legal only once its owner is registered — before that it is an
 unknown key like any other. Plugins may also declare their own
 normalisation groups, N-ary rather than pairs. See
-[`docs/REGISTRY.md`](docs/REGISTRY.md).
+[`docs/REGISTRY.md`](REGISTRY.md).
 
 The exact scoring formulas — the block cost `S`, the router's device
 score, and the normalisation rules — are stated formally, with worked
-values, in [`docs/COST_MODEL.md`](docs/COST_MODEL.md).
+values, in [`docs/COST_MODEL.md`](COST_MODEL.md).
 
 **Calibration is not configuration.** A device's five calibration terms —
 readout error, 1-qubit gate error, 2-qubit edge error, T2, and gate
@@ -90,12 +90,12 @@ duration — are **not** config keys and never appear in `qconfig`. They are
 physical properties the *provider* supplies at construction (extracted from
 the Target for IBM, synthesised from real-world ranges for DevQ-simulated),
 read through device accessors (see
-[`docs/EXTENDING.md`](docs/EXTENDING.md)). Config keys tune *policy*
+[`docs/EXTENDING.md`](EXTENDING.md)). Config keys tune *policy*
 (which scheduler, which weights); calibration describes the *hardware* the
 policy runs on. The one place a user touches calibration is as a **job-level
 placement filter** — `--max-qubit-error`, `--max-1q-gate-error`,
 `--max-edge-error` exclude qubits/edges whose calibrated error exceeds the
-threshold — and those are job constraints (see [`docs/SHELL.md`](docs/SHELL.md)),
+threshold — and those are job constraints (see [`docs/SHELL.md`](SHELL.md)),
 not device config either. T2 and gate duration have no filter: they are
 scoring/estimation inputs, not eligibility knobs.
 
@@ -184,7 +184,7 @@ requires matching the pinned stack in `requirements.txt`.
 
 These are the components DevQ ships with, not a closed list: any
 registered component is equally addressable by its config key. See
-[`docs/REGISTRY.md`](docs/REGISTRY.md).
+[`docs/REGISTRY.md`](REGISTRY.md).
 
 Because per-device FCFS queues sit below the router, FCFS ordering is
 per-device: global submission order is approximately preserved via routing

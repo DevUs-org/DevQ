@@ -97,7 +97,13 @@ def present_sweep(sweep_result):
          "flips": [{"between", "at", "from", "to"}, ...],   # when sweepable;
                                         # between/at are weight vectors
          "stable": <bool>,             # no flips anywhere on the simplex
-         "distribution": [{"point", "dist"}, ...]}
+         "distribution": [{"point", "dist"}, ...],
+         "centroid_of_largest_stable_region": <weight vector>,  # a robust
+                                        # recommended weight: centroid of the
+                                        # largest connected constant-decision
+                                        # region (NOT a proven optimum)
+         "region_size": <int>}         # that region's point count — a small
+                                        # size signals a weak recommendation
     '''
     base = {
         "session_id": sweep_result.get("session_id"),
@@ -119,6 +125,9 @@ def present_sweep(sweep_result):
         flips        = flips,
         stable       = len(flips) == 0,
         distribution = agg.get("winner_distribution", []),
+        centroid_of_largest_stable_region =
+            agg.get("centroid_of_largest_stable_region"),
+        region_size  = agg.get("region_size"),
     )
     return base
 
@@ -185,6 +194,13 @@ def _render_sweep(result):
             lines.append(f"    between w={_fmt_vec(lo)} and w={_fmt_vec(hi)}{at}")
             lines.append(f"        from {_fmt_dist(f['from'])}")
             lines.append(f"        to   {_fmt_dist(f['to'])}")
+
+    centroid = result.get("centroid_of_largest_stable_region")
+    if centroid is not None:
+        size = result.get("region_size")
+        lines += ["", f"  recommended weight (centroid of the largest connected "
+                      f"stable region, {size} point(s)):",
+                  f"    w={_fmt_vec(centroid)}"]
 
     lines += ["", "  winner distribution by weight point:"]
     for entry in result["distribution"]:

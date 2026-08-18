@@ -223,6 +223,40 @@ def block_fidelity_estimate():
           "device carries no crosstalk accessor — Sec. 6 crosstalk product is "
           "honestly dropped (caveat 1), not fabricated")
 
+    # ── ORIENTATION: a lower-noise device MUST score higher than a higher-
+    # noise one, and the estimate is a SURVIVAL probability (near 1 for a
+    # good device), not an infidelity (near 0).  This is the property the
+    # block's docstring always claimed but never asserted — the gap that let
+    # a `return 1 - survival` sign flip (which inverts the router's whole
+    # which-QPU ranking, corrupting qos_comparison / qos_composition) pass
+    # while every [0,1] check stayed green.  Two controlled doubles differing
+    # ONLY in error magnitude make the ordering deterministic and independent
+    # of topology/seed, so the assertion tests orientation, not luck.
+    class _Dev:
+        def __init__(self, err):
+            self._err = err            # scales every error rate uniformly
+            self.num_qubits = 4
+        def qubit_error(self, q):   return 0.02 * self._err
+        def gate_error(self, q):    return 0.01 * self._err
+        def edge_error(self, u, v): return 0.015 * self._err
+        def t2(self, q):            return 120.0     # us
+        def gate_duration(self, n): return 40.0      # ns
+        def edges(self):            return [(0, 1), (1, 2), (2, 3)]
+
+    good = r._device_fidelity(_Dev(0.2), circ)   # low-error device
+    bad  = r._device_fidelity(_Dev(3.0), circ)   # high-error device
+    check(good > bad,
+          f"low-error device fidelity {good:.4f} > high-error {bad:.4f} — the "
+          f"Sec. 6 estimate ranks a cleaner device higher (was INVERTED when "
+          f"_device_fidelity returned 1 - survival)")
+    check(0.5 < good <= 1.0,
+          f"low-error device fidelity {good:.4f} is a survival probability near "
+          f"1, not an infidelity near 0 — pins absolute orientation, not just "
+          f"the relative ordering")
+    check(bad < good - 0.05,
+          f"high-error device {bad:.4f} is materially below the clean device "
+          f"{good:.4f} — a real spread, not a clamped constant")
+
 
 def block_raw_terms_from_read_surface():
     '''The three raw terms are read from the documented DeviceContext /

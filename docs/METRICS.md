@@ -379,31 +379,48 @@ that.
 ### The ideal
 
 The ideal is a circuit's distribution on a perfect, noiseless machine —
-what the measured distribution is compared against. It is computed by a
-**reference-capable provider** (`BaseProvider.reference_ideal`), which a
-provider overrides if it can faithfully simulate a circuit noiselessly;
-`IBMSimulatedProvider` does, via a **noiseless Aer density-matrix**
-simulation reading exact probabilities. Density-matrix, not statevector,
-because it honours mid-circuit `reset` — a non-unitary operation whose
-post-reset reduced state can be *mixed* (a reset after entanglement leaves
-the partner qubit in a classical mixture), which a pure statevector cannot
-represent.
+what the measured distribution is compared against. It is sourced by a
+**three-tier precedence** in `benchmark/reference.compute_ideals`, applied
+per distinct circuit:
 
-Two properties make the ideal a clean artifact. It is **exact** (read from
-the density matrix, not sampled), so it carries no sampling noise and no
-reference seed to pin — `metrics.json` stays byte-reproducible. And it is
-a **property of the circuit, not the job or device**: one reference-capable
-provider computes it once per distinct circuit for the whole run, keyed by
-a content hash of the circuit (see `benchmark/reference.circuit_hash`), so
-two jobs running the same circuit on different devices share one ideal and
-their fidelities are comparable. The run records one `reference` record per
-distinct circuit; a provider that cannot simulate a given circuit
-contributes no ideal for it.
+1. an **attached reference-capable provider**
+   (`BaseProvider.reference_ideal`) wins outright for the run — a study that
+   deliberately attaches a reference backend gets exactly it.
+   `IBMSimulatedProvider` is one, via a **noiseless Aer density-matrix**
+   simulation reading exact probabilities.
+2. else DevQ's **core native statevector engine** (`engine/`, Qiskit-free)
+   computes the exact ideal for pure circuits within a qubit cap (20). This
+   is what frees a run from having to attach a reference-capable device (and
+   exclude it from routing on every job) purely to obtain ideals.
+3. else a **registered provider class** overriding `reference_ideal` is
+   instantiated unattached and used — for what the engine declines: a circuit
+   above the cap, or a **mixed-state** case a statevector cannot represent (a
+   reset after entanglement leaves the partner qubit in a classical mixture).
+   A density-matrix reference honours that; the statevector engine declines
+   it and this tier covers it.
 
-When no reference-capable provider ran (for example a `devq.simulated`-only
-session, whose uniform mock has no meaningful ideal), no ideals are
-recorded and fidelity is uniformly `None` — an honest undefined, not a
-fabricated score.
+Per-circuit fallback across tiers 2 and 3 is safe: a noiseless ideal is
+mathematically **unique**, and every tier returns normalised probabilities
+(never shot-quantised counts), so two tiers can never disagree on a circuit's
+ideal. The density-matrix path costs 2^n × 2^n against the statevector's 2^n,
+so the engine is the cheap exact primary for pure circuits and the
+density-matrix tier the fallback for genuinely mixed states — the right tool
+per circuit, not a degraded one.
+
+Two properties make the ideal a clean artifact. It is **exact** (read from a
+state vector or density matrix, not sampled), so it carries no sampling noise
+and no reference seed to pin — `metrics.json` stays byte-reproducible. And it
+is a **property of the circuit, not the job or device**: it is computed once
+per distinct circuit for the whole run, keyed by a content hash of the
+circuit (see `benchmark/reference.circuit_hash`), so two jobs running the
+same circuit on different devices share one ideal and their fidelities are
+comparable. The run records one `reference` record per distinct circuit; a
+circuit no tier can simulate contributes no ideal for it.
+
+When no tier produces an ideal for a circuit — no reference-capable provider
+attached, the engine declines it, and no registered provider covers it — no
+ideal is recorded and fidelity for that circuit is `None`: an honest
+undefined, not a fabricated score.
 
 ### The distance measures
 
@@ -510,6 +527,24 @@ than grid-limited. Bisection uses only the same sweep hooks, so it stays
 component-agnostic — no closed-form per-component breakpoint math, which
 could not generalise to a third-party scoring component.
 
+The aggregate also emits one derived recommendation:
+`centroid_of_largest_stable_region`, a weight vector chosen to be maximally
+robust to perturbation, with `region_size` alongside. It is built on the same
+lattice edge graph the flips walk: drop every flip edge (an edge whose two
+endpoints have different winner distributions), take the connected components
+of what remains — each a maximal region over which the decision does not
+change — pick the largest, and return the componentwise mean of its weight
+vectors, renormalised to sum 1. The region is **connected**, not merely
+same-winner: same-winner points can be scattered across the simplex, and a
+centroid over a disconnected set can land in a gap on or near a flip, so
+connectivity is what keeps the recommendation inside a real basin. The field
+is named honestly — it is the region's centroid, not a proven
+distance-to-boundary maximiser (that is the Chebyshev center, a possible later
+refinement) — and `region_size` is the tell: a fully stable sweep degrades to
+the whole-simplex barycenter over a large region, while a fragmented one
+reports a small `region_size` that signals the recommendation should be
+distrusted.
+
 The sweep borrows the session's component purely as a scoring engine: it
 reconstructs the registered class by name (from the session config) and
 calls its `Sweepable` hooks on the logged terms, computing no score
@@ -556,7 +591,10 @@ session's weight sweep: a refused sweep (`faithful: false`) is presented as a
 refusal carrying its reason, not dropped; a faithful sweep is presented as
 its flips — the weight-vector points where the winning distribution changes,
 the actionable output — plus the per-point distribution, with a `stable` flag
-when nothing flips across the whole lattice. (At n=2 a point is the familiar
-(α, 1−α); at n≥3 it is the full weight vector.) The *absolute* view (one
+when nothing flips across the whole lattice. It also surfaces the aggregate's
+`centroid_of_largest_stable_region` and `region_size`, and `render_text`
+prints the recommended weight beneath the flips. (At n=2 a point is the
+familiar (α, 1−α); at n≥3 it is the full weight vector.) The *absolute* view
+(one
 session's own metric bundle) is not a mode: it is the 5.3 bundle, already
 shipped.
