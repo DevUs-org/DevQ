@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 66 sanity blocks in `run_tests.py`, covering
+Specification for the 73 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 66 blocks, one line each
+python run_tests.py              # all 73 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -264,6 +264,47 @@ What it pins:
 - **A genuine SPEC error still aborts.** A spec naming a missing circuit
   file fails the session — that is the user's spec being wrong, not a
   circuit DevQ declines, and must not be silently absorbed as a rejection.
+
+### `rejected_no_ideal`
+
+*A REJECTED job gets no reference ideal (call-site filter in the runner).*
+
+`unrunnable_circuits` proves a rejected job is a survivable row; this proves
+the runner does not waste a noiseless simulation on it. A REJECTED job
+(unsatisfiable: no valid allocation exists on any attached device) never
+runs and never produces measured counts, so it has no fidelity to compute
+and needs no ideal. The runner therefore filters REJECTED jobs *before*
+calling `compute_ideals`. This is a **call-site** filter, not a change to
+`compute_ideals` itself: rejection is a run-level fact — the same circuit
+may be REJECTED under contention here and RUNNING elsewhere — whereas
+`compute_ideals` is circuit-level and job-agnostic (its own skip covers
+`unrunnable_reason`, a property of the circuit, not of the run).
+
+The setup is chosen to isolate the filter's effect. It needs a
+reference-capable provider — only `ibm.simulated` overrides
+`reference_ideal`; a `devq.simulated`-only run emits no ideals at all and
+could not exercise the filter — and a REJECTED job whose circuit is
+otherwise perfectly simulable, so that *without* the filter it would earn
+an ideal and *with* it it does not. `bell` runs on `FakeNairobiV2`; `ghz`
+is forced REJECTED by an impossible `max_qubit_error: 0.0`. Because `ghz`
+appears only on the rejected job, the absence of its hash from the
+reference records is the filter's effect, cleanly separated from `bell`.
+
+What it pins:
+
+- **The run completes.** One rejected job is a row, not a crash; the
+  session outcome is completed/with-failures.
+- **One FINISHED, one REJECTED, distinct hashes.** `bell` finishes and
+  `ghz` rejects, and their content hashes differ — so the two ideals (if
+  any) are separable in the reference records.
+- **The runnable circuit earns an ideal.** `bell`'s hash appears in a
+  `reference` record — the fidelity yardstick is still produced for jobs
+  that actually ran. (A mutant that keeps only REJECTED jobs is killed
+  here: `bell` loses its ideal.)
+- **The REJECTED circuit earns NONE.** `ghz`'s hash is absent from every
+  `reference` record. This is the whole point — without the call-site
+  filter, `ghz`'s hash would appear here too. (A mutant that removes the
+  filter, or filters on the wrong state, is killed here.)
 
 ### `edge_threshold_semantics`
 
@@ -581,6 +622,76 @@ accessors (`qubit_error`, `gate_error`, `edge_error`, `t2`,
   — those are pinned-calibration-bound and belong to the fidelity
   references — including that the extracted 2q duration exceeds the 1q one
   (a cheap check the arities were not swapped).
+
+### `engine_gates`
+
+*The native engine's gate matrices match Qiskit and cover the parser.*
+
+The native statevector engine (`engine/`) simulates a circuit without
+Qiskit, so DevQ can produce a noiseless ideal without an Aer-backed device
+attached (see [`ENGINE.md`](ENGINE.md)). Its correctness rests entirely on
+its gate matrices being right — a wrong matrix is a silently-wrong ideal, and
+a fidelity computed against it is high, plausible, and meaningless — so this
+block locks the vocabulary before any engine code consumes it, on two axes.
+
+- **Coverage: exact vocabulary parity.** The engine's gate names equal the
+  qasm2 frontend's `_BUILTIN_GATES` exactly (32 names), and the per-gate
+  `(num_params, num_qubits)` arities match too. Equality, not subset: the
+  engine must simulate everything the frontend emits and claim nothing it
+  cannot. The two tables are written for different reasons and nothing else
+  couples them, so a gate added to one and not the other would be invisible
+  until a circuit used it. An unknown gate name raises `UnknownGateError`
+  (naming the known set), not a bare `KeyError`. A custom-gate fixture (whose
+  definition calls a second custom gate) is parsed and confirmed to inline to
+  engine-known builtins only — so covering `_BUILTIN_GATES` covers every
+  circuit the parser can produce, custom gates included.
+- **Correctness: every matrix equals Qiskit's `Operator`.** Each gate is
+  rebuilt through Qiskit and compared — constants exactly, parameterised
+  gates across several angles including the edges (0, π) where a sign or
+  half-angle slip hides. The controlled gates are compared as full
+  little-endian controlled-U matrices (control q0, target q1), which also
+  pins **tensor ordering**: a big-endian slip flips control and target and
+  fails here. `ecr` is compared as its 4x4; `swap`, `ccx` (Toffoli), and
+  `cswap` (Fredkin) as the permutation their kind implies.
+
+Because the block rebuilds each gate through Qiskit rather than trusting a
+remembered matrix, a matrix that drifts from Qiskit's definition — or a gate
+dropped from or added to the vocabulary — fails the suite. (Mutants that
+corrupt a constant, flip a parameterised builder's sign, or drop a gate are
+all killed here.)
+
+### `engine_statevector`
+
+*The native statevector core simulates exact ideals matching Qiskit.*
+
+`engine_gates` locked the gate matrices; this pins the state core that
+applies them (see [`ENGINE.md`](ENGINE.md)). It checks three things.
+
+- **Full-circuit ideals match Qiskit.** One representative circuit per gate
+  kind — 1q constant/param, controlled, `ecr`, `swap`, `ccx`, `cswap`, plus
+  an `h; ry` interference case — is simulated and compared to Qiskit's exact
+  statevector probabilities, marginalised identically. The interference case
+  matters: a transpose-invariant gate on |0> alone cannot tell a correct 1q
+  application from a transposed one, but `h; ry(θ)` can, so it catches an
+  index slip a Bell/GHZ-only suite would miss. A hand-computed Bell anchor
+  (50/50 on 00/11) backs the Qiskit comparison.
+- **The output contract holds.** A permuted measure map places each qubit's
+  outcome at its own clbit position; Option-B width uses the declared
+  classical register (3 qubits, `c[2]` → 2-bit strings); a circuit with no
+  measures falls back to measuring all qubits. These pin the same width and
+  bit-placement rules a provider must honour, so the engine's keys align with
+  a provider's for a fidelity comparison.
+- **The reset boundary is exact or honest.** A reset on a separable qubit is
+  simulated exactly (including the certainly-|1> case, where the population
+  must MOVE to |0> rather than be discarded, and the peer-in-superposition
+  case). A reset on an *entangled* qubit — which leaves the rest mixed, a
+  state no statevector can hold — is DECLINED (`UnsupportedByEngine`), never
+  collapsed to a plausible-but-wrong pure-state ideal. An out-of-vocabulary
+  gate raises `UnknownGateError`, the caller's cue to fall back.
+
+(Mutants that transpose the one-qubit application, disable the
+entangled-reset detection, or drop the clbit-position reversal in
+marginalisation are all killed here.)
 
 ### `backend_factory_errors`
 
@@ -1106,6 +1217,65 @@ through a real provider to confirm the lowered circuit executes.
 
 ---
 
+### `expr_unary_power_precedence`
+
+*Unary minus binds looser than `^`: `-2^2` == `-(2^2)`, and `^` stays right-associative.*
+
+A regression witness for a **latent** precedence bug in the QASM2
+expression evaluator (`frontends/qasm2/expression.py`). The grammar read
+`power := unary ('^' power)?` with `unary` sitting *below* `power`, so
+`_power` consumed a leading minus as part of its base before ever seeing
+`^`. That made `-2^2` evaluate as `(-2)^2 == 4` instead of the standard
+`-(2^2) == -4`. It stayed invisible because no shipped circuit ever put a
+negative base under `^` — the only `^` in any fixture is `2^3` — so the
+suite was green while the evaluator was silently wrong for any signed
+base, exactly the kind of quiet numerical error that would corrupt a gate
+angle without crashing. The fix reorders the grammar so unary minus binds
+*looser* than `^` (`unary := '-' unary | power`, `power := atom ('^'
+unary)?`), while an explicit sign written *after* `^` is still parsed as
+the exponent's own sign.
+
+Because evaluation is deterministic (no wall-clock), the block asserts
+exact hand-computed values. Its witness cases are the ones the bug got
+wrong — `-2^2 == -4`, `-3^2 == -9`, `2*-3^2 == -18` — and three guards
+pin the properties a careless fix would break: a non-negated base is
+unchanged (`2^2 == 4`); `^` stays right-associative (`2^3^2 == 512`, not
+`64`); and a signed exponent still parses (`2^-2 == 0.25`, `-2^-2 ==
+-0.25`). Reverting the grammar reorder makes `-2^2` return `4.0` and the
+block fails on its first assertion.
+
+---
+
+### `allocator_contract_1q_param`
+
+*Registry allocator signature check requires `max_1q_gate_error`.*
+
+A regression witness for a contract-enforcement gap in the registry
+(`registry/registry.py`). The runtime always invokes an allocator's
+`allocate()`/`feasible()` with `max_1q_gate_error` — `base_scheduler`,
+the router, and `memory_manager` all pass it, and the base allocator's
+documented contract lists it — but the registry's Level-3 method-signature
+check declared only `(circuit, device, pool, max_qubit_error,
+max_edge_error)`. So an externally written allocator that took the
+registry's *stated* required parameters but omitted `max_1q_gate_error`
+passed registration and then crashed at runtime with an unexpected-keyword
+`TypeError`, deep in a scheduling loop rather than at register time — the
+worst possible failure locus for a plugin author. The fix adds
+`max_1q_gate_error` to the declared `allocate`/`feasible` required params
+so the mismatch is caught loudly at registration.
+
+The block reads the required-parameter lists straight from the registry's
+own `_build_kinds()` table (the source of truth the Level-3 check
+consumes), asserting `max_1q_gate_error` is required for both methods. It
+then exercises the end a plugin author feels: an under-specified allocator
+is rejected at registration, a conforming one registers cleanly, and — to
+confirm the requirement is symmetric — an allocator that drops the
+parameter from `feasible` alone is also rejected. Reverting the registry
+lists makes registration silently accept the under-specified allocator and
+the block fails.
+
+---
+
 ### `devq_measurement`
 
 *devq.simulated distributes over the classical-register width.*
@@ -1621,6 +1791,37 @@ without the non-scalar path the numeric guard in `_dig` could be removed
 undetected, and without equal-valued sessions the tie-break key was free.
 
 
+### `stable_region`
+
+Covers the sweep's robust-weight recommendation — `_stable_region_centroid`
+in `benchmark/comparison.py`, which the aggregate emits as
+`centroid_of_largest_stable_region` with `region_size` alongside (see
+[`METRICS.md`](METRICS.md)). Pure function of the lattice and the per-point
+winner distribution, so the block uses small lattices with hand-computed
+answers rather than a live run. On the n=2 m=4 chain: a fully stable sweep
+recommends the whole-region barycenter `(0.5, 0.5)`; one flip splits the
+chain and the larger of the two regions is chosen; two equal-size regions
+break the tie toward the canonical-lowest region, deterministically; and a
+region keyed by the full winner **distribution** (`{A:1,B:1}` vs `{A:2}`)
+stays distinct even when a winner appears in both, so the region is not
+collapsed by a single-winner shortcut. On the n=3 m=3 triangle: a fully
+stable sweep recommends the simplex barycenter `(1/3, 1/3, 1/3)`, and — the
+connectivity guard — three corners sharing one winner but pairwise
+non-adjacent are kept as three singletons rather than merged, so the size-7
+connected bulk wins. An empty lattice yields no recommendation rather than
+crashing.
+
+The connectivity guard is the load-bearing case: it is what distinguishes
+the **connected**-region rule from a "same winner anywhere" rule, and it is
+where a disconnected centroid could otherwise land in a gap on or near a
+flip. The n=3 fixture is required for it — the n=2 chain cannot exhibit
+disconnected same-winner points, so a mutant that dropped the connectivity
+restriction would survive on the chain alone. The largest-wins choice and
+the tie-break direction are each pinned by their own fixture: a mutant
+selecting the smallest region, or breaking the tie toward the higher-index
+region, fails the split and tie cases respectively.
+
+
 ### `fidelity`
 
 Covers the Phase 5.4 fidelity metric — Hellinger fidelity and TVD between
@@ -1673,6 +1874,38 @@ GHZ fidelity ≤ mean Bell fidelity** under the same noise — GHZ's ideal
 concentrates on two of eight strings, so noise smears it harder than
 Bell's two of four, the exact case Hellinger is chosen to handle
 honestly.
+
+### `reference_tiers`
+
+*`compute_ideals` sources ideals by a three-tier precedence.*
+
+The ideal for a circuit is sourced per circuit by a fixed precedence (see
+[`METRICS.md`](METRICS.md) and [`ENGINE.md`](ENGINE.md)), and this block
+pins each tier and the boundaries between them.
+
+- **Tier 2 (engine) with no provider.** With no reference-capable provider
+  attached and no registry, the core statevector engine supplies the ideal —
+  the whole point of the engine, a run computing ideals with no reference
+  device — and its Bell ideal is the exact 50/50.
+- **Honest absence when a tier declines with nothing behind it.** An
+  entangled-reset circuit the engine declines, with no registry tier to cover
+  it, yields NO ideal — an honest absence, not the plausible-but-wrong
+  collapsed distribution a statevector would compute.
+- **Tier 3 (registry search).** When the engine declines and a registry is
+  present, a registered provider class overriding `reference_ideal` is
+  instantiated unattached and supplies the ideal. For the entangled reset it
+  returns the correct MIXED 00/10 — proof a density-matrix source, not a
+  collapsed fallback, produced it. A registry holding only a
+  non-reference-capable provider (the mock `devq.simulated`) supplies nothing.
+- **Tier 1 (attached provider) wins outright.** With a provider passed, that
+  provider computes the ideal even for a circuit the engine could have
+  handled — tier 1 is not overridden by tier 2.
+- **The qubit cap.** A circuit above `_ENGINE_MAX_QUBITS` is declined by the
+  engine (routing it to the registry tier) rather than allocating a state
+  vector too large to hold; within the cap the engine answers.
+- **Mixed sources per run.** A run mixing an engine circuit and a
+  registry-only circuit gets both, each from its own tier, deduped to one
+  ideal each — the per-circuit fallback in action.
 
 
 ### `router_scoring`

@@ -43,13 +43,24 @@ cannot.
 
 ## Results
 
-**153 distinct mutants, 150 killed, 3 excluded** (M10 equivalent, P7 and
+**171 distinct mutants, 168 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 144/141/3 from the prior
-state plus the 9 new scheduler-scoring mutants below (all killed — MS-i
+The total is delta-consistent, not recounted: 165/162/3 from the prior
+state plus 6 new mutants below — 3 on the three-tier reference precedence
+(`benchmark/reference.py`, killed by `reference_tiers`) and 3 on the
+engine's seeded sampling (`run()` in `engine/statevector.py`, killed by
+`engine_statevector`). The 165/162/3 itself was 162/159/3 plus the 3
+statevector-core mutants (all killed; every gate application compared to
+Qiskit, the `h; ry` interference case pinning the index mapping). The
+162/159/3 was 159/156/3 plus the 3 native-engine gate mutants (all killed
+against Qiskit's Operator). The 159/156/3 was 156/153/3 plus the 3
+rejected-job-ideal mutants (all killed; reference-record assertion). The
+156/153/3 was 153/150/3 plus the 3 stable-region mutants (all killed;
+connectivity guard). The 153/150/3 itself was 144/141/3 plus the 9 new
+scheduler-scoring mutants below (all killed — MS-i
 after `scheduler_scoring` was strengthened to pin score to its terms). The
 144/141/3 itself was 140/137/3 plus the 4 new comparison-modes mutants
 below (all killed — MM-b
@@ -516,6 +527,117 @@ substring that carries meaning ("feedback"), not for its full text, so a
 cosmetic reword leaves the suite correctly green. Recorded, not counted as
 a gap.
 
+### Rejected-job ideal filter — `benchmark/runner.py`
+
+The runner filters REJECTED jobs before computing reference ideals: a job
+with no valid allocation never runs, never produces counts, and so needs
+no noiseless yardstick. The filter is a one-line generator guard at the
+`compute_ideals` call site — `(j.circuit for j in jobs if j.state.value !=
+"REJECTED")` — deliberately NOT pushed into `compute_ideals`, which is
+circuit-level and job-agnostic. Three mutants, all killed by
+`rejected_no_ideal`, which stands up an `ibm.simulated` device (the only
+reference-capable provider) with one FINISHED `bell` and one REJECTED `ghz`
+and asserts `bell`'s hash appears in the reference records while `ghz`'s
+does not.
+
+- **MU-a — the filter removed** (all jobs passed to `compute_ideals`, as
+  before the change). Killed: `ghz` is REJECTED but its hash now appears in
+  a `reference` record — a wasted noiseless simulation for a job that
+  produced no counts.
+- **MU-b — the guard inverted** (`!= "REJECTED"` became `==`, keeping only
+  rejected jobs). Killed: `bell` FINISHED but earns no ideal, so the
+  fidelity yardstick for the one job that actually ran goes missing.
+- **MU-c — the wrong state filtered** (`"REJECTED"` literal became
+  `"FINISHED"`). Killed: the runnable `bell` is dropped and the rejected
+  `ghz` slips through, exactly inverting the intended set.
+
+### Native engine gate matrices — `engine/gates.py`
+
+The native statevector engine's gate vocabulary is the locked, Qiskit-free
+matrix set the state core will apply; its whole value as a noiseless
+reference depends on each matrix being exactly right (see `ENGINE.md`). The
+`engine_gates` block rebuilds every gate through Qiskit's `Operator` and
+compares, and asserts the vocabulary equals the qasm2 frontend's
+`_BUILTIN_GATES`. Three mutants, all killed by that block.
+
+- **ME-a — a constant matrix corrupted** (`Y`'s off-diagonal signs
+  swapped). Killed: the rebuilt-vs-Qiskit comparison for `y` fails. This is
+  the guard against a mis-transcribed constant — the failure mode a
+  from-memory matrix invites.
+- **ME-b — a parameterised builder's sign flipped** (`rz`'s half-angle
+  phases exchanged). Killed at the non-trivial angles: a builder error that a
+  single-angle or angle-0 check would miss is caught because the block sweeps
+  several angles including π. `crz` (which shares the `rz` builder) fails too,
+  confirming the alias coupling is real.
+- **ME-c — a gate dropped from the vocabulary** (`ch` removed from `GATES`).
+  Killed: vocabulary parity with the parser breaks — the engine would decline
+  a gate the frontend still emits, silently pushing those circuits onto the
+  provider-fallback path and losing the native ideal. Equality (not subset)
+  is what catches this.
+
+### Native engine statevector core — `engine/statevector.py`
+
+The state core applies the locked gates to a state vector and reads off the
+exact ideal. Its correctness is pinned by `engine_statevector`, which
+compares full-circuit distributions to Qiskit and asserts the reset
+boundary. Three mutants, all killed.
+
+- **MSV-a — the one-qubit application transposed** (`u[0,1]` and `u[1,0]`
+  swapped, applying U^T instead of U). Killed by the `h; ry` interference
+  case. This one is instructive: a Bell/GHZ/rotation-from-|0> suite does NOT
+  catch it, because those gates are transpose-invariant at the probability
+  level (`ry(θ)|0>` and `ry(θ)^T|0>` have identical measured probabilities).
+  Applying `ry` to a qubit already in superposition (`h; ry`) makes the
+  off-diagonal asymmetry observable, and the mutant dies. The interference
+  case was added specifically after this mutant survived the symmetric suite.
+- **MSV-b — the entangled-reset detection disabled** (the separability
+  purity test forced to always report separable). Killed: the Bell-then-reset
+  circuit is no longer declined but simulated as a collapsed pure state,
+  yielding `{"00": 1.0}` where the honest engine raises `UnsupportedByEngine`.
+  This is the guard that keeps the engine from emitting a plausible, wrong
+  ideal instead of handing off.
+- **MSV-c — the clbit-position reversal dropped in marginalisation**
+  (`bits[width-1-clbit]` became `bits[clbit]`). Killed: the permuted
+  measure-map and Option-B width cases place bits at the wrong string
+  positions, so the bitstrings no longer match Qiskit's rendering — the
+  engine's keys would not line up with a provider's for a fidelity join.
+
+### Engine seeded sampling — `engine/statevector.py` `run()`
+
+`run(circuit, shots, seed)` draws integer counts from `simulate()`'s exact
+distribution. Three mutants, all killed by `engine_statevector`'s `run()`
+assertions.
+
+- **MRUN-a — the multinomial draw zeroed** (`multinomial(shots, p)` became
+  `multinomial(0, p)`). Killed: the counts no longer sum to `shots`.
+- **MRUN-b — the shots validation removed**. Killed: `run()` no longer
+  rejects `shots=0`, negative, non-integer, or `True`, so the malformed-shots
+  assertions fail.
+- **MRUN-c — the seed ignored** (`default_rng(seed)` became
+  `default_rng(None)`). Killed: a fixed seed no longer reproduces the draw,
+  so the reproducibility assertion (`run(seed=42) == run(seed=42)`) fails.
+
+### Reference tier precedence — `benchmark/reference.py`
+
+`compute_ideals` sources each circuit's ideal by a three-tier precedence
+(attached provider, core engine, registry search). Three mutants, all killed
+by `reference_tiers`.
+
+- **MRT-a — the qubit cap disabled** (`num_qubits > _ENGINE_MAX_QUBITS`
+  forced False, so the engine never declines a large circuit). Killed: a
+  circuit above the cap is no longer routed past the engine — the cap is the
+  memory guard that keeps the engine from allocating a state vector too large
+  to hold, and the block asserts an over-cap circuit is declined.
+- **MRT-b — the tier-3 capability probe inverted** (`is
+  BaseProvider.reference_ideal` became `is not`, so it picks
+  NON-reference-capable providers and skips capable ones). Killed: the
+  entangled-reset circuit no longer gets its density-matrix ideal from the
+  registry — a non-capable provider is chosen instead and produces nothing.
+- **MRT-c — the engine→registry fallthrough removed** (the
+  `_registry_reference_ideal` call after the engine returns None deleted).
+  Killed: tier 3 is never reached, so the entangled-reset circuit stays
+  absent even when a reference-capable provider is registered.
+
 ### Sweepable contract and cost decomposition — `kernel/sweep.py`, `kernel/router/noise_router.py`
 
 Phase 5.5a. The α/β sweep re-weights the raw per-candidate cost
@@ -660,6 +782,32 @@ Two survived first and drove the block's refusal assertions:
   contradicts its own scores, which the anchor must refuse. A guard that
   only acts on bad input needs bad input to be tested — no honest run can
   witness it.
+
+### Stable-region recommendation — `benchmark/comparison.py`
+
+Off-main (`post-p5`). The sweep's robust-weight recommendation:
+`_stable_region_centroid`, the centroid of the largest connected
+constant-decision region. Three mutants, all killed; block `stable_region`.
+
+- **MR-a — the connectivity restriction dropped** (the region-adjacency
+  guard `if dist[i] == dist[j]` inverted to `!=`, so flip edges are kept and
+  agreeing edges dropped). Killed: with the constant-decision edges removed
+  the region collapses to singletons, so the fully-stable fixture no longer
+  recommends the whole-region barycenter and its `region_size` assertion
+  fails. This is the load-bearing guard — same-winner points that are not
+  lattice-adjacent must not be merged, or the centroid can land in a gap on
+  or near a flip. The n=3 triangle fixture is what makes it witnessable: on
+  the n=2 chain, same-winner regions are always contiguous, so a mutant that
+  ignored connectivity would survive there.
+- **MR-b — smallest region chosen** (`key > best[0]` became `key <`). Killed
+  by the single-flip split fixture, whose two regions differ in size: the
+  recommendation must come from the larger (3-point) region, not the smaller
+  (2-point) one.
+- **MR-c — the tie-break direction flipped** (`-min(comp)` became
+  `min(comp)`). Killed by the two-equal-regions fixture: with a genuine
+  size tie, the recommendation must be deterministic and land in the
+  canonical-lowest region, so reversing the key surfaces the wrong region's
+  centroid.
 
 ### Comparison modes — `benchmark/comparison_modes.py`
 

@@ -11,9 +11,9 @@ named parameters, which is what custom-gate inlining substitutes into.
 Grammar (standard precedence, ^ right-associative):
 
     expr   := term   (('+' | '-') term)*
-    term   := power  (('*' | '/') power)*
-    power  := unary  ('^' power)?
-    unary  := '-' unary | atom
+    term   := unary  (('*' | '/') unary)*
+    unary  := '-' unary | power
+    power  := atom   ('^' unary)?
     atom   := NUMBER
             | 'pi'
             | FUNC '(' expr ')'
@@ -79,10 +79,10 @@ def _expr(cursor, params):
 
 
 def _term(cursor, params):
-    value = _power(cursor, params)
+    value = _unary(cursor, params)
     while cursor.peek().kind == "OP" and cursor.peek().value in "*/":
         op = cursor.next().value
-        rhs = _power(cursor, params)
+        rhs = _unary(cursor, params)
         if op == "*":
             value = value * rhs
         else:
@@ -93,25 +93,28 @@ def _term(cursor, params):
     return value
 
 
+def _unary(cursor, params):
+    if cursor.peek().kind == "OP" and cursor.peek().value == "-":
+        cursor.next()
+        return -_unary(cursor, params)
+    return _power(cursor, params)
+
+
 def _power(cursor, params):
-    base = _unary(cursor, params)
+    base = _atom(cursor, params)
     if cursor.peek().kind == "OP" and cursor.peek().value == "^":
         cursor.next()
-        # Right-associative: 2^3^2 == 2^(3^2).
-        exponent = _power(cursor, params)
+        # Right-associative, and the exponent may itself be signed:
+        # 2^3^2 == 2^(3^2), 2^-2 == 2^(-2).  Unary minus binds looser
+        # than ^ as a base (so -2^2 == -(2^2)) but an explicit '-' after
+        # '^' is the exponent's own sign, parsed via _unary here.
+        exponent = _unary(cursor, params)
         try:
             return math.pow(base, exponent)
         except (ValueError, OverflowError) as e:
             raise QASMError(f"invalid power {base}^{exponent}: {e}",
                             cursor.peek().line)
     return base
-
-
-def _unary(cursor, params):
-    if cursor.peek().kind == "OP" and cursor.peek().value == "-":
-        cursor.next()
-        return -_unary(cursor, params)
-    return _atom(cursor, params)
 
 
 def _atom(cursor, params):

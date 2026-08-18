@@ -190,7 +190,19 @@ def _run_one(spec, config, out_dir, session_id, register_providers=None,
             # fidelity is then reported as None — an honest undefined.
             provider = select_reference_provider(
                 [ctx.device.provider for ctx in shell.kernel.contexts])
-            ideals = compute_ideals((j.circuit for j in jobs), provider)
+            # A REJECTED job (unsatisfiable: no valid allocation exists on
+            # any attached device) never runs and never produces measured
+            # counts, so it has no fidelity to compute and needs no ideal.
+            # Rejection is a run-level fact — the same circuit may be
+            # REJECTED under contention here and RUNNING elsewhere — so it
+            # is filtered at the call site, not inside compute_ideals (which
+            # is circuit-level and job-agnostic). Skipping these mirrors the
+            # unrunnable_reason skip already inside compute_ideals: no ideal,
+            # exactly as for a circuit whose provider returns None. Distinct
+            # circuits with at least one non-REJECTED job still get an ideal.
+            runnable = (j.circuit for j in jobs
+                        if j.state.value != "REJECTED")
+            ideals = compute_ideals(runnable, provider, dq._registry)
 
             # A hash -> human label map, sourced from the jobs' stamped
             # labels (the spec path each circuit came from). Cosmetic: the
