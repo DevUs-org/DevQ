@@ -36,6 +36,11 @@ session simply shows one `d0` section — the format is uniform).
 | `!!` | `!!` | Repeat the last command |
 | `exit` / Ctrl-D | — | Exit DevQ |
 
+> **Note (WIP):** `qerrors` currently reports the core per-qubit and per-edge
+> error rates. Some of the newer calibration fields exposed by recent provider
+> snapshots are not yet surfaced in this view; broader calibration reporting is
+> in progress.
+
 ### Examples
 
 ```
