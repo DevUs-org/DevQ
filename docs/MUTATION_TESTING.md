@@ -43,13 +43,18 @@ cannot.
 
 ## Results
 
-**171 distinct mutants, 168 killed, 3 excluded** (M10 equivalent, P7 and
+**178 distinct mutants, 175 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 165/162/3 from the prior
-state plus 6 new mutants below — 3 on the three-tier reference precedence
+The total is delta-consistent, not recounted: 177/174/3 from the async
+work plus 1 new event-log mutant (E10, killed by `event_log`). The
+177/174/3 was 171/168/3 plus 6 async-dispatch mutants (all killed against
+`async_dispatch`; AD5 after the FINISHED-row counts assertion was
+strengthened, AD6 after a collection-lag assertion was added). The
+171/168/3 itself was 165/162/3 plus 6 new mutants — 3
+on the three-tier reference precedence
 (`benchmark/reference.py`, killed by `reference_tiers`) and 3 on the
 engine's seeded sampling (`run()` in `engine/statevector.py`, killed by
 `engine_statevector`). The 165/162/3 itself was 162/159/3 plus the 3
@@ -111,10 +116,20 @@ provider-contract mutants. The pre-existing set was taken as given.
 | E7 | kernel's sink call unguarded | killed (1) |
 | E8 | `cycle_end` never emitted | killed (1) |
 | E9 | `PrintSink` drops `dispatch` | killed (14) |
+| E10 | `PrintSink` echoes `resolve` to the console again | killed (1) |
 
 E9 failing 14 blocks is the useful signal: it confirms console output
 genuinely flows through the sink rather than a stray `print` left
-behind by the refactor.
+behind by the refactor. E10 guards the opposite direction: `PrintSink`
+must NOT echo the resolve event, because qps is now the result surface
+and the `[Kernel] Job N FINISHED. Counts: …` line would duplicate the
+qps row (landing at a confusing spot, since resolution is collected
+lazily by whatever command next pumps the kernel). `event_log` asserts
+the console carries the dispatch line but no FINISHED/FAILED echo, while
+the record stream still carries the resolve event — so re-adding the
+echo turns the block red, but silencing the event entirely (which would
+also break the metrics) is caught by the "resolve events are emitted"
+check.
 
 ### QCB timestamps — `kernel/process/qcb.py`
 
@@ -256,6 +271,49 @@ no listing, so proceeding to render is caught by the expect-absent on the
 provider name. QR3 catches typed-order output — the `s p` test asserts
 providers appear before schedulers regardless of typed order, so canonical
 ordering cannot regress to input order.
+
+### Async dispatch & self-heal — `shell/qshell.py`, `kernel/kernel.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| AD1 | `run_job` blocks on `_wait_for` again (reverts async qrun) | killed (1) |
+| AD2 | `_resolve_pending` retry-on-free disabled (waiters never retried) | killed (1) |
+| AD3 | `qps` drops the REJECTED reason column | killed (1) |
+| AD4 | `qps` ignores the id filter, always lists all jobs | killed (1) |
+| AD5 | `qps` drops the counts column on a FINISHED job | killed (1) |
+| AD6 | `run_job` skips its pre-routing resolve (a finished job's qubits go uncollected, stranding the next qrun) | killed (1) |
+
+These guard the three halves of the async contract — non-blocking
+dispatch, result reporting through `qps`, and the self-healing retry —
+against the `async_dispatch` block. AD1 is the reversion mutant: putting
+the blocking wait back on the priority path means `qrun` returns only
+after the job finishes, so the "job is `RUNNING` the instant `qrun`
+returns" assertion catches it. AD2 is the subtlest and most important:
+if a completing job's freed qubits no longer retry the context's
+waiters, job 2 stays `WAITING` forever, and `settle` — bounded by its
+try count — fails the "reached a terminal state" guard rather than
+hanging. AD3/AD4/AD5 catch `qps` rendering regressions: a dropped reason,
+an ignored filter (the `qps 1` assertion requires job 2 be *absent*), and
+a dropped counts column. **AD5 initially survived** — the block read
+counts via `counts_of`, which also matches the kernel's resolve-log line,
+so a `qps` that printed `FINISHED` without counts still passed. The
+assertion was strengthened to match the counts on the `qps` row itself
+(`^N | … | FINISHED | Counts: {`), and only then did AD5 die — the same
+"a green suite can assert nothing" lesson as the P1 and LB5 survivors.
+AD6 is the collection-lag mutant: the simulator resolves near-instantly,
+so by the time a second `qrun` runs the first job's future is already
+done, but its qubits stay held until something collects it. Without the
+pre-routing `_resolve_pending()` in `run_job`, four sequential bells on a
+7-qubit sim strand the fourth in `WAITING` on capacity that is logically
+free — the reported screenshot bug. AD6 **initially survived** the
+self-heal assertions, because those force `WAITING` via an artificial
+pool restriction (genuine contention), not via collection lag; a
+dedicated assertion was added that lets three jobs finish on the pool
+without pumping the kernel, then checks the fourth `qrun` dispatches
+rather than waits — and only then did AD6 die. Each was run against
+`async_dispatch`, confirmed to turn it red, then reverted with `.pyc`
+cleared between runs; `kernel.py` and `qshell.py` were diffed clean
+afterward.
 
 ### Frontend dispatch — `frontends/resolver.py`, `shell/parser.py`, `devq.py`, `shell/qshell.py`
 

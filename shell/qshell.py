@@ -19,7 +19,6 @@ import cmd
 import collections
 import os
 import re
-import time
 import readline
 import atexit
 from frontends.resolver import resolve_frontend
@@ -294,10 +293,15 @@ class QShell(cmd.Cmd):
 
             self.kernel.run_job(qcb)
 
-            if qcb.state.value == "FINISHED":
-                print(f"[+] Job {qcb.job_id} FINISHED.")
-            elif qcb.state.value == "FAILED":
-                print(f"[-] Job {qcb.job_id} failed. See above for details.")
+            # qrun is now fully async: run_job dispatches and returns
+            # without waiting on the future. A dispatched job is RUNNING;
+            # its result is read later via qps. WAITING/REJECTED are the
+            # terminal-for-now outcomes qrun can still report immediately,
+            # since they are decided before any future is created.
+            if qcb.state.value == "RUNNING":
+                print(f"[>] Job {qcb.job_id} dispatched to "
+                      f"{self._contexts()[qcb.device_index].label}. "
+                      f"Check status with qps {qcb.job_id}.")
             elif qcb.state.value == "WAITING":
                 print(f"[~] Job {qcb.job_id} is WAITING for resources "
                       f"on {self._contexts()[qcb.device_index].label}.")
@@ -350,10 +354,19 @@ class QShell(cmd.Cmd):
             total = 0
             reported = set()
 
-            # Terminate only when nothing is queued anywhere AND no
-            # dispatched future is still in flight — with async
-            # execution the queues can drain while results are pending.
+            # Pure async dispatcher: route and schedule until no further
+            # progress can be made THIS moment, dispatching everything
+            # runnable, then RETURN — without waiting on any future. A job
+            # left WAITING on contended qubits is NOT busy-waited here: it
+            # self-heals when the holder's future resolves (freeing qubits
+            # retries the waiter), wherever that resolution is later
+            # observed — a qps snapshot, another command, or drain. So the
+            # loop stops as soon as a cycle stops changing anything, rather
+            # than spinning on futures still in flight.
             while True:
+                before_queued  = self.kernel.has_queued()
+                before_pending = self.kernel.has_pending()
+
                 jobs = self.kernel.step()
 
                 for job in jobs:
@@ -365,30 +378,27 @@ class QShell(cmd.Cmd):
                         reported.add(job.job_id)
                         total += 1
                     elif job.state.value in ("RUNNING", "FINISHED", "FAILED"):
-                        # dispatched this cycle; result prints on resolution
+                        # dispatched this cycle; result is read later via qps
+                        print(f"[>] Job {job.job_id} dispatched to "
+                              f"{self._contexts()[job.device_index].label}.")
                         reported.add(job.job_id)
                         total += 1
 
-                if not jobs and not self.kernel.has_queued() \
-                        and not self.kernel.has_pending():
+                # Stop when a cycle changes nothing: either everything is
+                # dispatched, or what remains is WAITING on a future still
+                # in flight — which qrunpack must not block on. Those
+                # waiters resolve themselves later; they are not stranded.
+                made_progress = (self.kernel.has_queued() != before_queued
+                                 or self.kernel.has_pending() != before_pending
+                                 or bool(jobs))
+                if not made_progress:
                     break
-
-                if self.kernel.has_pending():
-                    time.sleep(0.05)
-
-            # Post-drain summary — final states for everything this
-            # command processed (results themselves print on resolution).
-            for job_id in sorted(reported):
-                job = self.kernel.get_job(job_id)
-                if job.state.value == "FINISHED":
-                    print(f"[+] Job {job.job_id} FINISHED. "
-                          f"Counts: {job.result.counts}")
-                elif job.state.value == "FAILED":
-                    print(f"[-] Job {job.job_id} FAILED. "
-                          f"Error: {job.result.error}")
 
             if total == 0:
                 print("No jobs in queue.")
+            else:
+                print(f"{total} job(s) dispatched. "
+                      f"Check status with qps.")
 
         except Exception as e:
             print(f"[DevQ Error] {e}")
@@ -462,10 +472,38 @@ class QShell(cmd.Cmd):
 
     def do_qps(self, arg):
         try:
-            jobs = self.kernel.list_jobs()
+            # Pure non-blocking snapshot: resolve any futures already DONE
+            # so completed jobs show settled state, but never wait on work
+            # still in flight — a job whose future has not resolved is
+            # truthfully RUNNING. qps shows every lifecycle stage as-is.
+            self.kernel.poll()
+
+            # Optional id filter: `qps 3 7` shows only those jobs, in the
+            # order given. Bare `qps` shows the whole table. Non-integer
+            # tokens and unknown ids are reported per-token, not fatal.
+            filter_ids = None
+            if arg.strip():
+                filter_ids = []
+                for tok in arg.split():
+                    try:
+                        filter_ids.append(int(tok))
+                    except ValueError:
+                        print(f"Invalid job id: {tok}")
+
+            if filter_ids is not None:
+                jobs = []
+                for jid in filter_ids:
+                    job = self.kernel.get_job(jid)
+                    if job is None:
+                        print(f"Job {jid} does not exist.")
+                    else:
+                        jobs.append(job)
+            else:
+                jobs = self.kernel.list_jobs()
 
             if not jobs:
-                print("No jobs.")
+                if filter_ids is None:
+                    print("No jobs.")
                 return
 
             contexts = self._contexts()
@@ -477,7 +515,20 @@ class QShell(cmd.Cmd):
             for job in jobs:
                 dev = (labels[job.device_index]
                        if job.device_index is not None else "-")
-                print(f"{job.job_id} | {dev:<{width}} | {job.state.value}")
+                line = f"{job.job_id} | {dev:<{width}} | {job.state.value}"
+
+                # Result reporting folds into qps: a FINISHED job carries
+                # its counts, a FAILED job its error, a REJECTED job its
+                # reason. Wording matches the old qrun/qrunpack feedback so
+                # nothing downstream that grepped those lines has to change.
+                if job.state.value == "FINISHED" and job.result is not None:
+                    line += f" | Counts: {job.result.counts}"
+                elif job.state.value == "FAILED" and job.result is not None:
+                    line += f" | Error: {job.result.error}"
+                elif job.state.value == "REJECTED" and job.reject_reason:
+                    line += f" | Reason: {job.reject_reason}"
+
+                print(line)
 
         except Exception as e:
             print(f"[DevQ Error] {e}")

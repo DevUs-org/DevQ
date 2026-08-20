@@ -35,6 +35,7 @@ import itertools
 import re
 import sys
 import threading
+import time
 import traceback
 
 # MUST precede any Qiskit/Aer import: these are read when the native
@@ -293,11 +294,77 @@ def device_of(out, job_id):
 
 
 def counts_of(out, job_id):
-    '''Extract the measured counts dict a job finished with, as a dict.'''
+    '''Extract the measured counts dict a job finished with, as a dict.
+
+    Reads the qps result row — `N | dev | FINISHED | Counts: {...}` —
+    which is the sole place counts reach the console now that qrun/
+    qrunpack are pure async dispatchers and the kernel's resolve event is
+    no longer echoed to the console (only qps reports results).
+    '''
     m = re.search(
-        rf"Job {job_id} FINISHED\. Counts: (\{{[^}}]*\}})", out)
+        rf"^{job_id} \| .*? \| FINISHED \| Counts: (\{{[^}}]*\}})",
+        out, re.MULTILINE)
     check(m is not None, f"job {job_id} produced counts", record=False)
     return eval(m.group(1))
+
+
+def finished_ids(out):
+    '''
+    The set of job ids shown FINISHED in a transcript.
+
+    settle() accumulates every poll, so a settled job's qps line repeats
+    across iterations; counting raw `| FINISHED` matches would over-count.
+    Deduping by job id answers the real question — how many DISTINCT jobs
+    finished — regardless of how many polls observed each.
+    '''
+    return set(re.findall(r"^(\d+) \| .*? \| FINISHED", out, re.MULTILINE))
+
+
+def settle(sh, *job_ids, tries=250):
+    '''
+    Drive a job (or jobs) to a terminal state and return the accumulated
+    transcript of doing so.
+
+    qrun/qrunpack now dispatch asynchronously and return immediately; the
+    future resolves on a background thread. qps is a pure snapshot, so a
+    single qps right after dispatch can legitimately catch a job still
+    RUNNING. This helper models what an interactive user does — glance at
+    qps again a moment later — by re-issuing `qps <ids>` until every named
+    job is FINISHED/FAILED/REJECTED.
+
+    Returns EVERY qps transcript concatenated, not just the last: a job
+    that was WAITING on contended qubits self-heals when the holder
+    completes, and its `[Kernel] Dispatching ...` line is printed during
+    whichever poll observed that completion — an earlier iteration than
+    the final settled snapshot. Accumulating keeps that dispatch line (and
+    the settled table) available to the caller's mapping/device reads.
+
+    Bounded by `tries`: a future that never resolves must fail the block
+    loudly rather than spin forever. With no ids, settles the whole table
+    (bare qps) until nothing is left RUNNING or WAITING.
+    '''
+    query = "qps " + " ".join(str(j) for j in job_ids) if job_ids else "qps"
+    terminal = ("FINISHED", "FAILED", "REJECTED")
+
+    transcript = ""
+    for _ in range(tries):
+        out = run(sh, [query])
+        transcript += out
+        if job_ids:
+            lines = [l for l in out.splitlines()
+                     if any(l.startswith(f"{j} |") for j in job_ids)]
+            ready = (len(lines) == len(job_ids)
+                     and all(any(s in l for s in terminal) for l in lines))
+        else:
+            live = [l for l in out.splitlines()
+                    if " | RUNNING" in l or " | WAITING" in l]
+            ready = not live
+        if ready:
+            return transcript
+        time.sleep(0.01)
+
+    check(False, f"jobs {job_ids or '(all)'} reached a terminal state")
+    return transcript
 
 
 # ── Mock components ──────────────────────────────────────────────────────────
@@ -454,10 +521,16 @@ def block_noise_routing():
     check(mapping_of(out, 2) == "{0: 1, 1: 3}",
           f"job 2 mapped to lagos's best bell block {{0: 1, 1: 3}}, "
           f"got {mapping_of(out, 2)}")
-    check(mapping_of(out, 3) == "{0: 3, 1: 4, 2: 5}",
-          f"job 3 (ghz) mapped to lagos {{0: 3, 1: 4, 2: 5}}, "
+    # Under async execution jobs 1–2 still hold their qubits when job 3
+    # allocates, so job 3 takes lagos's next free connected triple
+    # {0: 4, 1: 5, 2: 6} rather than {3,4,5} (which a serial run, where
+    # job 2 had already freed its qubits, would have given). Deterministic
+    # under the seed; the routing decision (lagos) is what this pins.
+    check(mapping_of(out, 3) == "{0: 4, 1: 5, 2: 6}",
+          f"job 3 (ghz) mapped to lagos {{0: 4, 1: 5, 2: 6}}, "
           f"got {mapping_of(out, 3)}")
-    expect_re(out, r"\[Kernel\] Job \d+ FINISHED", 3)
+    check(finished_ids(settle(sh, 1, 2, 3)) == {"1", "2", "3"},
+          "all three jobs finished")
 
 
 def block_name_index_equivalence():
@@ -468,7 +541,15 @@ def block_name_index_equivalence():
     check(by_name == by_index,
           "qerrors/qtopology give identical output for 'nairobi' and 'd1'")
 
-    out = run(sh, [f"qrun {BELL} --exec=nairobi", f"qrun {BELL} --exec=d1"])
+    # Run serially — settle job 1 before dispatching job 2 — so both take
+    # the same best block. Async would otherwise have job 1 still holding
+    # its qubits when job 2 allocates, giving a different block; that is
+    # concurrency, not the name/index equivalence this block pins.
+    out1 = run(sh, [f"qrun {BELL} --exec=nairobi"])
+    settle(sh, 1)
+    out2 = run(sh, [f"qrun {BELL} --exec=d1"])
+    settle(sh, 2)
+    out = out1 + out2
     check(device_of(out, 1) == device_of(out, 2),
           "--exec=nairobi and --exec=d1 route to the same device")
     check(mapping_of(out, 1) == mapping_of(out, 2),
@@ -759,8 +840,16 @@ def block_rejected_no_ideal():
 def block_packing_across_devices():
     '''Bracket groups, batch packing and cross-device concurrency'''
     sh  = three_device()
-    out = run(sh, [f"qsubmit [{BELL} {BELL} {GHZ} --no-exec=d0] {GHZ} --exec=lagos",
-                   "qrunpack", "qps", "qmap 1", "qmem"])
+    # qrunpack dispatches what fits right now (jobs 1, 2, 4) and returns;
+    # job 3 cannot fit alongside the two bells, so it stays WAITING and
+    # self-heals when a bell completes and frees qubits. settle() drives
+    # the session to quiescence, so job 3's (later) dispatch line lands in
+    # the transcript too. All mapping/device reads come from that combined
+    # dispatch log.
+    out  = run(sh, [f"qsubmit [{BELL} {BELL} {GHZ} --no-exec=d0] {GHZ} --exec=lagos",
+                    "qrunpack", "qmap 1", "qmem"])
+    settled = settle(sh, 1, 2, 3, 4)
+    out += settled
 
     # two bells packed into the same cycle on disjoint qubits
     check(mapping_of(out, 1) == "{0: 1, 1: 2}",
@@ -768,20 +857,21 @@ def block_packing_across_devices():
     check(mapping_of(out, 2) == "{0: 4, 1: 5}",
           f"job 2 packed onto disjoint {{0: 4, 1: 5}} in the same cycle, "
           f"got {mapping_of(out, 2)}")
-    # Job 3 cannot fit alongside the two bells, so it waits a cycle and
-    # allocates once qubits are freed. Assert the invariant (it lands on
-    # nairobi, on a connected triple) rather than a specific block, since
-    # which qubits are free depends on async completion order.
+    # Job 3 cannot fit alongside the two bells, so it waits and allocates
+    # once qubits are freed. Assert the invariant (it lands on nairobi, on
+    # a connected triple) rather than a specific block, since which qubits
+    # are free depends on async completion order.
     check("nairobi" in device_of(out, 3),
           f"job 3 routed to nairobi, got {device_of(out, 3)}")
     check(len(eval(mapping_of(out, 3))) == 3,
-          f"job 3 (ghz) allocated 3 qubits after waiting a cycle: "
+          f"job 3 (ghz) allocated 3 qubits after waiting: "
           f"{mapping_of(out, 3)}")
     check("lagos" in device_of(out, 4),
           f"job 4 honoured its --exec=lagos pin, got {device_of(out, 4)}")
-    expect_re(out, r"\[Kernel\] Job \d+ FINISHED", 4)
+    check(finished_ids(settled) == {"1", "2", "3", "4"},
+          "all four jobs finished")
     # all qubits returned to their pools afterwards
-    expect_absent(out, "[X]")
+    expect_absent(run(sh, ["qmem"]), "[X]")
 
 
 def block_parser_errors():
@@ -979,6 +1069,7 @@ def block_single_device_ibm():
                   [("ibm.simulated", "FakeNairobiV2", None, None)])
     out = run(sh, ["qdevices", "qconfig", "qerrors q d0", "qtopology d0",
                    f"qrun {BELL}", "qmap 1", "qps", "qmem"])
+    out += settle(sh, 1)
 
     # the only device is d0 — nothing should refer to d1
     expect(out, "FakeNairobiV2")
@@ -1010,12 +1101,14 @@ def block_single_device_batch():
     '''Batch submission and packing on a single device'''
     sh  = session("router_only.config.json",
                   [("ibm.simulated", "FakeNairobiV2", None, None)])
-    out = run(sh, [f"qsubmit {BELL} {BELL}", "qrunpack", "qps"])
+    out = run(sh, [f"qsubmit {BELL} {BELL}", "qrunpack"])
+    settled = settle(sh, 1, 2)
+    out += settled
     # both bells packed onto one device in the same cycle, disjoint qubits
     m1, m2 = mapping_of(out, 1), mapping_of(out, 2)
     check(m1 != m2,
           f"two bells packed onto disjoint blocks ({m1} and {m2})")
-    expect_re(out, r"\[Kernel\] Job \d+ FINISHED", 2)
+    check(finished_ids(settled) == {"1", "2"}, "both bells finished")
 
 
 def block_single_device_rejection():
@@ -1066,10 +1159,11 @@ def block_plugin_matrix():
                        .add_device(ibm.get_device("FakeLagosV2"),   name="lagos")
                        .build())
                 out = _with_timeout(
-                    lambda: run(sh, [f"qsubmit {BELL} {GHZ}", "qrunpack", "qps"]),
+                    lambda: (run(sh, [f"qsubmit {BELL} {GHZ}", "qrunpack"]),
+                             settle(sh, 1, 2))[1],
                     seconds=25
                 )
-                done = len(re.findall(r"\[Kernel\] Job \d+ FINISHED", out))
+                done = len(finished_ids(out))
                 TRACE.note(done == 2, f"{combo}: {done}/2 jobs finished")
                 if done != 2:
                     broken.append(f"{combo}: {done}/2 jobs finished")
@@ -1140,19 +1234,32 @@ def block_determinism_seeded():
             f"qrun {BELL} --exec=nairobi", f"qrun {BELL} --exec=d1",
             f"qrun {BELL} --exec=lagos"]
 
-    a = run(three_device(seed=42), cmds)
-    b = run(three_device(seed=42), cmds)
+    # qrun is async: the dispatch transcript is deterministic under a seed,
+    # but resolve-log lines land later off a background thread and would
+    # make a raw transcript comparison racy. So compare the dispatch
+    # transcripts, and read counts from a settled qps per session.
+    sa = three_device(seed=42)
+    sb = three_device(seed=42)
+    a = run(sa, cmds)
+    b = run(sb, cmds)
     check(a == b, "two seed=42 sessions produced byte-identical transcripts")
 
     c = run(three_device(seed=43), cmds)
     check(a != c, "seed=43 diverges from seed=42")
 
-    # distinct runs of the same circuit must not clone counts
-    counts = re.findall(r"\[Kernel\] Job \d+ FINISHED\. Counts: (\{[^}]*\})", a)
-    check(len(counts) >= 2, f"at least two count sets recorded ({len(counts)})")
-    check(counts[0] != counts[1],
-          "identical circuits produced different counts — derived per-run "
-          "seeds (seed+k), not one reused seed")
+    # Distinct runs of the SAME circuit on the SAME device must not clone
+    # counts — jobs 1 and 2 are both bells on nairobi (--exec=nairobi and
+    # --exec=d1 name the same device). Different counts prove per-run seed
+    # derivation (seed+k), not one reused seed. Read each job's counts by
+    # id (counts_of matches the first FINISHED line for that id), so the
+    # comparison is between those two specific runs regardless of the order
+    # their futures happened to resolve in.
+    settle(sa, 1, 2, 3)
+    j1 = counts_of(run(sa, ["qps 1"]), 1)
+    j2 = counts_of(run(sa, ["qps 2"]), 2)
+    check(j1 != j2,
+          "identical circuits on one device produced different counts — "
+          "derived per-run seeds (seed+k), not one reused seed")
 
 
 def block_determinism_unseeded():
@@ -1165,15 +1272,18 @@ def block_determinism_unseeded():
 
 def block_bug_fix_witnesses():
     '''Per-device noise models and allocator mappings reach the simulator'''
-    out = run(three_device(seed=42),
-              [f"qrun {BELL} --exec=nairobi", f"qrun {BELL} --exec=lagos"])
+    sh = three_device(seed=42)
+    run(sh, [f"qrun {BELL} --exec=nairobi", f"qrun {BELL} --exec=lagos"])
 
     def error_rate(counts_str):
         d = eval(counts_str)
         return (sum(d.values()) - d.get("00", 0) - d.get("11", 0)) / sum(d.values())
 
-    counts = re.findall(r"\[Kernel\] Job \d+ FINISHED\. Counts: (\{[^}]*\})", out)
-    nairobi, lagos = error_rate(counts[0]), error_rate(counts[1])
+    # qrun dispatches async; read each job's settled counts by id so the
+    # nairobi/lagos assignment is unambiguous regardless of resolve order.
+    settle(sh, 1, 2)
+    nairobi = error_rate(str(counts_of(run(sh, ["qps 1"]), 1)))
+    lagos   = error_rate(str(counts_of(run(sh, ["qps 2"]), 2)))
 
     # ~27% would mean Nairobi ran under Lagos's noise model (shared-state bug);
     # ~10% would mean initial_layout was dropped (v2p_map bug).
@@ -1375,7 +1485,8 @@ def block_lifecycle_waiting():
     # Freeing the pool lets the same job proceed on the next cycle, which is
     # what makes WAITING transient rather than terminal.
     ctx.memory_manager.pool.free_qubits = set(range(ctx.device.num_qubits))
-    out2 = run(sh, ["qrunpack", "qps"])
+    run(sh, ["qrunpack"])
+    out2 = settle(sh, 1)
     check("FINISHED" in out2,
           "the WAITING job ran once resources freed — state was transient")
 
@@ -1392,7 +1503,8 @@ def block_lifecycle_failed():
 
     ctx.device.provider.execute = failing_execute
 
-    out = run(sh, [f"qrun {BELL}", "qps"])
+    run(sh, [f"qrun {BELL}"])
+    out = settle(sh, 1)
 
     expect(out, "FAILED", "simulated provider failure")
     states = [j.state.value for j in sh.kernel.list_jobs()]
@@ -1405,6 +1517,118 @@ def block_lifecycle_failed():
           f"all qubits returned to the pool after failure, got {sorted(free)}")
     check(ctx.running_jobs == 0,
           f"running_jobs decremented after failure, got {ctx.running_jobs}")
+
+
+def block_async_dispatch():
+    '''qrun/qrunpack dispatch without blocking; qps reports results and a
+    WAITING job self-heals once the holder frees qubits'''
+    # The shell's execution commands are asynchronous: qrun and qrunpack
+    # route, allocate, and dispatch a job onto the shared executor, then
+    # RETURN — they never block the shell on a provider result. qps is the
+    # snapshot that reports where each job is, folding in the result once a
+    # future has resolved. And a job left WAITING on contended qubits is
+    # retried automatically when the holder completes and frees them —
+    # observed through qps alone, with no command re-issued. This block
+    # pins all three, which together are the whole async contract.
+
+    sh  = session("router_only.config.json",
+                  [("ibm.simulated", "FakeNairobiV2", "solo", None)])
+
+    # ── qrun does not block: the job is RUNNING the instant qrun returns ──
+    # A synchronous qrun would only ever return FINISHED/FAILED here; that
+    # it returns with the job still RUNNING (future in flight) is the
+    # non-blocking guarantee. This is the assertion a re-added _wait_for
+    # would break.
+    out = run(sh, [f"qrun {BELL} --exec=solo"])
+    expect(out, "dispatched")
+    states = [j.state.value for j in sh.kernel.list_jobs()]
+    check(states == ["RUNNING"],
+          f"qrun returns with the job RUNNING, not blocked to completion — "
+          f"got {states}")
+
+    # ── qps reports the settled result, and filters by id ──
+    settled = settle(sh, 1)
+    counts = counts_of(settled, 1)
+    check(sum(counts.values()) > 0,
+          f"qps reports counts for the FINISHED job, got {counts}")
+    # The counts must be on the qps LINE, not merely somewhere in the
+    # transcript — the kernel's resolve log also prints counts, so assert
+    # the qps row itself carries them (this is what catches a qps that
+    # renders FINISHED but drops the counts column).
+    check(re.search(r"^1 \| .*\| FINISHED \| Counts: \{", settled, re.M),
+          "the qps FINISHED row itself carries the counts column")
+    # id filter: `qps 1` shows only job 1; an unknown id is reported, not
+    # silently dropped; a non-integer token is flagged.
+    only = run(sh, ["qps 1"])
+    check(only.strip().startswith("1 |") and "\n2 |" not in only,
+          f"qps <id> shows only the named job, got {only!r}")
+    expect(run(sh, ["qps 99"]), "Job 99 does not exist.")
+    expect(run(sh, ["qps notanumber"]), "Invalid job id: notanumber")
+
+    # ── qps folds a REJECTED job's reason into its line ──
+    rej = session("router_only.config.json",
+                  [("ibm.simulated", "FakeLagosV2", "lagos", None)])
+    run(rej, [f"qrun {BELL} --max-qubit-error=0.0000001"])
+    rej_out = run(rej, ["qps 1"])
+    check("REJECTED" in rej_out and "Reason:" in rej_out,
+          f"qps reports a REJECTED job with its reason, got {rej_out!r}")
+
+    # ── the self-heal: a WAITING job dispatches once qubits free, through
+    #    qps alone (no re-issued qrunpack) ──
+    heal = session("router_only.config.json",
+                   [("ibm.simulated", "FakeNairobiV2", "solo", None)])
+    hctx = heal.kernel.contexts[0]
+    # Only one bell (2 qubits) can be placed at a time.
+    hctx.memory_manager.pool.free_qubits = {1, 2}
+
+    run(heal, [f"qrun {BELL} --exec=solo"])             # job 1 holds {1,2}
+    wait_out = run(heal, [f"qrun {BELL} --exec=solo"])  # job 2 must WAIT
+    expect(wait_out, "WAITING for resources")
+    check([j.state.value for j in heal.kernel.list_jobs()] == ["RUNNING", "WAITING"],
+          "job 2 is WAITING while job 1 holds the only free qubits")
+
+    # Drive the session forward using ONLY qps. Each poll resolves job 1's
+    # future when it completes; freeing its qubits retries job 2, which
+    # then dispatches and runs — all without a qrunpack. If the retry-on-
+    # free were missing, job 2 would stay WAITING forever here and settle
+    # would time out.
+    healed = settle(heal, 1, 2)
+    check(finished_ids(healed) == {"1", "2"},
+          "a WAITING job self-heals to FINISHED once the holder frees its "
+          "qubits — observed through qps alone, no qrunpack re-issued")
+    # And the freed qubits were genuinely reused: job 2 took job 1's block.
+    check(mapping_of(healed, 2) == "{0: 1, 1: 2}",
+          f"job 2 reused the freed block {{0: 1, 1: 2}}, got {mapping_of(healed, 2)}")
+
+    # ── a fast provider's FINISHED-but-uncollected qubits do not strand a
+    #    later qrun ──
+    # The devq simulator resolves near-instantly, so by the time a second
+    # qrun runs, the first job's future is already done. Its qubits must be
+    # collected (and freed) before the new job allocates, or the new job
+    # spuriously WAITs on capacity that is logically free but not yet swept
+    # up. This is the screenshot bug: four bells on a 7-qubit sim, where
+    # the fourth waited only because the first three's finished futures had
+    # not been collected. run_job resolves pending futures before routing,
+    # so each qrun reclaims the prior (now-finished) jobs' qubits first.
+    #
+    # The test must let the prior futures finish WITHOUT pumping the kernel
+    # (no qps/qrunpack between qruns) — otherwise the poll that settles them
+    # would free the qubits and mask the bug. A bare sleep lets the thread
+    # pool resolve them while the kernel stays unaware; only the next qrun's
+    # own resolve can then collect them. Six 2-qubit bells on 7 qubits means
+    # by the 4th the first three's blocks (6 qubits) must be reclaimed for it
+    # to fit at all.
+    fast = session(None, [("devq.simulated", "fully_connected", 7, "sim", None)])
+    dispatched = 0
+    for _ in range(4):
+        out = run(fast, [f"qrun {BELL} --exec=sim"])
+        if "dispatched to" in out:
+            dispatched += 1
+        time.sleep(0.05)   # future finishes on the pool; kernel not pumped
+    check(dispatched == 4,
+          f"four sequential qruns on a fast sim all dispatch — a finished "
+          f"job's qubits are reclaimed before the next allocates, so none "
+          f"spuriously WAITs; got {dispatched}/4 dispatched")
 
 
 def block_wedged_provider_timeout():
@@ -1432,14 +1656,18 @@ def block_wedged_provider_timeout():
         sh.kernel._execute(qcb, ctx_routed)
         dispatched_running = ctx_routed.running_jobs
         sh.kernel._wait_for(qcb, poll_interval=0.05, timeout=1)
-    out = buf.getvalue()
 
     check(dispatched_running == 1,
           f"job was dispatched and counted, got {dispatched_running}")
     check(qcb.state.value == "FAILED",
           f"wedged job ends FAILED rather than spinning, "
           f"got {qcb.state.value}")
-    expect(out, "did not resolve within", "wedged")
+    # The timeout error lives on the job's result. It is no longer echoed
+    # to the console (resolve events are not printed — qps is the result
+    # surface), so assert it where it actually is.
+    err = qcb.result.error if qcb.result else ""
+    check("did not resolve within" in err and "wedged" in err,
+          f"the wedged job carries a clear timeout error, got {err!r}")
 
     # Same cleanup invariants as an ordinary failure — a wedged provider
     # must not permanently shrink the device.
@@ -2055,7 +2283,8 @@ def block_mock_topologies():
     # And each kind actually runs a job end to end.
     for kind, nq in (("linear", 5), ("grid", 4), ("fully_connected", 5)):
         sh  = session(None, [("devq.simulated", kind, nq, None, None)])
-        out = run(sh, [f"qrun {BELL}", "qps"])
+        run(sh, [f"qrun {BELL}"])
+        out = settle(sh, 1)
         check("FINISHED" in out, f"a job completed on a {kind} mock device")
 
 
@@ -2112,7 +2341,7 @@ def block_registry_plugin_components():
         sh = dq.add_device(
             DevQSimulatedProvider(seed=SEED).get_device("random", 7)).build()
 
-        out = run(sh, ["qconfig", f"qsubmit {BELL} {GHZ}", "qrunpack", "qps"])
+        out = run(sh, ["qconfig", f"qsubmit {BELL} {GHZ}", "qrunpack"])
 
         # Named in config, resolved through the registry, and reported
         # under the LABEL the plugin declared rather than its class name.
@@ -2123,7 +2352,8 @@ def block_registry_plugin_components():
         # Actually in the execution path, not merely constructed.
         check(out.count("Dispatching job") == 2,
               "both jobs were dispatched by the plugin scheduler")
-        expect_re(out, r"\d+ \| d0\s+\| FINISHED", count=2)
+        check(finished_ids(settle(sh, 1, 2)) == {"1", "2"},
+              "both plugin-scheduled jobs finished")
 
         # MockScheduler is LIFO, so job 2 must be dispatched before job
         # 1. Every built-in dispatches 1 first, so this ordering is what
@@ -3722,16 +3952,60 @@ def block_event_log():
             sh.onecmd(f"qrun {BELL}")
             # rejected job: exercises the None-timestamp path
             sh.onecmd(f"qrun {BELL} --max-qubit-error=0.0000001")
+            # qrun/qrunpack dispatch asynchronously; drain so every
+            # resolve event has fired before the transcript is captured.
+            sh.kernel.drain()
         return buf.getvalue(), sh
 
     # THE CENTRAL GUARANTEE: attaching a sink must not change what the
-    # console prints. If this drifts, every existing block's expected
-    # output becomes a function of whether logging is on.
-    baseline, _ = session()
+    # console prints — i.e. a RecordSink beside a PrintSink is invisible
+    # to the console. Under async we no longer compare two independently
+    # timed live runs (their resolve-line interleaving and timing-
+    # dependent allocations legitimately differ run to run — DevQ never
+    # promised serial determinism). Instead we prove the invariant
+    # structurally on a SINGLE run: everything PrintSink put on the
+    # console is exactly what PrintSink renders from the very records the
+    # RecordSink captured in the same run. Same execution, so timing is
+    # identical on both sides; if the two sinks ever saw a different
+    # event stream, or the console carried a Kernel line no record
+    # produced, this fails.
+    from kernel.events import PrintSink as _PrintSink
     rec = RecordSink()
     logged, shell = session(MultiSink(PrintSink(), rec))
-    check(baseline == logged,
-          "console output is byte-identical with a RecordSink attached")
+
+    # Replay the captured records through a fresh PrintSink and compare
+    # the Kernel lines it renders against the Kernel lines that actually
+    # reached the console. (Non-Kernel lines — job submission notices,
+    # dispatch acks, the REJECTED line — come from the shell, not a
+    # sink, so they are outside the sink-transparency claim.)
+    replay = io.StringIO()
+    with contextlib.redirect_stdout(replay):
+        ps = _PrintSink()
+        for r in rec.records:
+            ps.emit(r)
+    replayed_kernel = [l for l in replay.getvalue().splitlines()
+                       if l.startswith("[Kernel]")]
+    console_kernel  = [l for l in logged.splitlines()
+                       if l.startswith("[Kernel]")]
+    check(replayed_kernel == console_kernel,
+          "PrintSink beside a RecordSink prints exactly what the records "
+          "render — attaching the RecordSink changed no console output")
+
+    # PrintSink renders dispatch (placement) but NOT resolve: results are
+    # read through qps, so echoing the kernel's `[Kernel] Job N FINISHED.
+    # Counts: …` line would duplicate the qps row. The resolve event is
+    # still emitted (asserted below via the record stream) — only the
+    # console echo is suppressed. Pin both halves: the console shows the
+    # dispatch line and never a FINISHED/FAILED resolve line, while the
+    # records DO carry resolve.
+    check(any("Dispatching job" in l for l in console_kernel),
+          "PrintSink still renders the dispatch (placement) line")
+    check(not any("FINISHED" in l or "FAILED" in l for l in console_kernel),
+          "PrintSink does NOT echo the resolve line — qps reports results, "
+          f"so the console carries no FINISHED/FAILED echo; got {console_kernel}")
+    check(any(r["event"] == "resolve" for r in rec.records),
+          "the resolve event is still emitted to the record stream, "
+          "even though the console does not print it")
 
     kinds = [r["event"] for r in rec.records]
     for kind in ("submit", "route", "dispatch", "resolve", "cycle_end"):
@@ -3827,6 +4101,7 @@ def block_event_log():
         sh = dq.build()
         sh.kernel.sink = Exploding()
         sh.onecmd(f"qrun {BELL}")
+        sh.kernel.drain()
     states = [j.state.value for j in sh.kernel.process_table.list_jobs()]
     check("FINISHED" in states,
           f"a raising sink cannot kill a job, got {states}")
@@ -6431,7 +6706,8 @@ def block_qasm2_parser():
     sh = (DevQ(config_path=CONFIG + "router_only.config.json")
           .add_device(DevQSimulatedProvider(seed=SEED).get_device("random", 8))
           .build())
-    out = run(sh, [f"qrun {QASM2}parameterized.qasm"])
+    run(sh, [f"qrun {QASM2}parameterized.qasm"])
+    out = settle(sh, 1)
     expect(out, "FINISHED")
     check("Error" not in out,
           "a parameterised circuit runs end to end without error")
@@ -6612,8 +6888,8 @@ def block_devq_measurement():
           .build())
 
     # No creg, no measures: fallback width == num_qubits (2), uniform.
-    out = run(sh, [f"qrun {BELL}"])
-    counts = counts_of(out, 1)
+    run(sh, [f"qrun {BELL}"])
+    counts = counts_of(settle(sh, 1), 1)
     check(all(len(k) == 2 for k in counts),
           f"devq fallback: no creg -> 2-bit strings (num_qubits), "
           f"got widths {set(len(k) for k in counts)}")
@@ -6624,16 +6900,16 @@ def block_devq_measurement():
     # creg c[3], only two qubits measured: Option B width is the FULL
     # register (3 bits), not the number of measured bits (2). This is the
     # assertion that separates Option B from "width == measured count".
-    out = run(sh, [f"qrun {QASM2}partial_measure.qasm"])
-    counts = counts_of(out, 2)
+    run(sh, [f"qrun {QASM2}partial_measure.qasm"])
+    counts = counts_of(settle(sh, 2), 2)
     check(all(len(k) == 3 for k in counts),
           f"devq Option B: creg c[3] -> 3-bit strings even with two "
           f"measures, got widths {set(len(k) for k in counts)}")
     check(len(counts) == 8, f"devq: 2^3 == 8 outcomes, got {len(counts)}")
 
     # creg c[1]: single-bit register -> single-bit strings.
-    out = run(sh, [f"qrun {QASM2}reset_mid.qasm"])
-    counts = counts_of(out, 3)
+    run(sh, [f"qrun {QASM2}reset_mid.qasm"])
+    counts = counts_of(settle(sh, 3), 3)
     check(all(len(k) == 1 for k in counts),
           f"devq: creg c[1] -> 1-bit strings, got "
           f"{set(len(k) for k in counts)}")
@@ -6642,8 +6918,8 @@ def block_devq_measurement():
     # This is the case that distinguishes Option B from measuring all
     # qubits — the two agree whenever num_clbits == num_qubits, so a
     # narrower creg is needed to pin the width to the register.
-    out = run(sh, [f"qrun {QASM2}narrow_creg.qasm"])
-    counts = counts_of(out, 4)
+    run(sh, [f"qrun {QASM2}narrow_creg.qasm"])
+    counts = counts_of(settle(sh, 4), 4)
     check(all(len(k) == 2 for k in counts),
           f"devq Option B: 3 qubits + creg c[2] -> 2-bit strings "
           f"(num_clbits, not num_qubits), got "
@@ -6675,8 +6951,9 @@ def block_ibm_measurement():
     # Fallback: a circuit with no measures is measured on every qubit, so
     # a Bell pair yields 2-bit strings correlated on 00/11 (the historical
     # behaviour, unchanged).
-    out = run(ibm_shell(), [f"qrun {BELL}"])
-    counts = counts_of(out, 1)
+    sh = ibm_shell()
+    run(sh, [f"qrun {BELL}"])
+    counts = counts_of(settle(sh, 1), 1)
     check(all(len(k) == 2 for k in counts),
           f"IBM fallback: no measures -> measure-all, 2-bit strings, "
           f"got {set(len(k) for k in counts)}")
@@ -6689,8 +6966,9 @@ def block_ibm_measurement():
     # is ALWAYS 0. If the provider measured only the two touched bits the
     # strings would be 2-bit; if it auto-measured all three the top bit
     # would sometimes be 1. Neither happens.
-    out = run(ibm_shell(), [f"qrun {QASM2}partial_measure.qasm"])
-    counts = counts_of(out, 1)
+    sh = ibm_shell()
+    run(sh, [f"qrun {QASM2}partial_measure.qasm"])
+    counts = counts_of(settle(sh, 1), 1)
     check(all(len(k) == 3 for k in counts),
           f"IBM Option B: creg c[3] -> 3-bit strings, got "
           f"{set(len(k) for k in counts)}")
@@ -6700,8 +6978,9 @@ def block_ibm_measurement():
     # 3 qubits but creg c[2]: width is the register (2), not the qubit
     # count (3). Distinguishes Option B from measuring all qubits, which
     # agree only when num_clbits == num_qubits.
-    out = run(ibm_shell(), [f"qrun {QASM2}narrow_creg.qasm"])
-    counts = counts_of(out, 1)
+    sh = ibm_shell()
+    run(sh, [f"qrun {QASM2}narrow_creg.qasm"])
+    counts = counts_of(settle(sh, 1), 1)
     check(all(len(k) == 2 for k in counts),
           f"IBM Option B: 3 qubits + creg c[2] -> 2-bit strings "
           f"(num_clbits, not num_qubits), got {set(len(k) for k in counts)}")
@@ -6710,8 +6989,9 @@ def block_ibm_measurement():
     # then measure. A reset at its true source position yields ~all-zero;
     # a dropped reset (or one lumped at the end) would yield ~all-one. This
     # is the assertion that proves ordering, not just presence, of reset.
-    out = run(ibm_shell(), [f"qrun {QASM2}reset_mid.qasm"])
-    counts = counts_of(out, 1)
+    sh = ibm_shell()
+    run(sh, [f"qrun {QASM2}reset_mid.qasm"])
+    counts = counts_of(settle(sh, 1), 1)
     zero = counts.get("0", 0)
     check(zero > 0.85 * sum(counts.values()),
           f"IBM reset in position: x then reset -> measures ~0, got {counts}")
@@ -6751,8 +7031,8 @@ def block_counts_width_contract():
     sh = (DevQ(config_path=CONFIG + "router_only.config.json")
           .add_device(DevQSimulatedProvider(seed=SEED).get_device("random", 8))
           .build())
-    out = run(sh, [f"qrun {QASM2}narrow_creg.qasm"])
-    counts = counts_of(out, 1)
+    run(sh, [f"qrun {QASM2}narrow_creg.qasm"])
+    counts = counts_of(settle(sh, 1), 1)
     check(all(len(k) == 2 for k in counts),
           f"counts_width: devq reports the helper's width (2-bit), "
           f"got {set(len(k) for k in counts)}")
@@ -6787,7 +7067,8 @@ def block_shell_input_handling():
     # None of it should have created a job or killed the session.
     check(not sh.kernel.list_jobs(),
           "malformed commands created no jobs")
-    after = run(sh, [f"qrun {BELL}"])
+    run(sh, [f"qrun {BELL}"])
+    after = settle(sh, 1)
     check("FINISHED" in after,
           "the session still works after a run of bad input")
 
@@ -6806,8 +7087,7 @@ def block_many_device_federation():
            .build())
 
     out = run(sh, ["qdevices", f"qrun {BELL} --exec=jakarta",
-                   f"qrun {BELL} --no-exec=nairobi,lagos,casablanca,jakarta",
-                   "qps"])
+                   f"qrun {BELL} --no-exec=nairobi,lagos,casablanca,jakarta"])
 
     # d4 is unnamed, so the deny-list leaves it as the only candidate —
     # exercising index/name resolution across a five-device list.
@@ -6815,7 +7095,7 @@ def block_many_device_federation():
           f"named device 4 of 5 resolved, got {device_of(out, 1)}")
     check(device_of(out, 2).startswith("d4"),
           f"deny-list left only the unnamed d4, got {device_of(out, 2)}")
-    expect_re(out, r"\[Kernel\] Job \d+ FINISHED", 2)
+    check(finished_ids(settle(sh, 1, 2)) == {"1", "2"}, "both jobs finished")
 
 
 BLOCKS = [
@@ -6840,6 +7120,7 @@ BLOCKS = [
     ("provider_global_key",      block_provider_global_key_rejected),
     ("lifecycle_waiting",        block_lifecycle_waiting),
     ("lifecycle_failed",         block_lifecycle_failed),
+    ("async_dispatch",           block_async_dispatch),
     ("wedged_provider_timeout",  block_wedged_provider_timeout),
     ("mock_topologies",          block_mock_topologies),
     ("device_calibration",       block_device_calibration),

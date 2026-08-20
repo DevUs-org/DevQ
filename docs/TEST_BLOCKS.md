@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 73 sanity blocks in `run_tests.py`, covering
+Specification for the 74 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 73 blocks, one line each
+python run_tests.py              # all 74 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -583,6 +583,63 @@ Beyond the state itself, two invariants matter more:
 
 Both are asserted directly against the pool and context, not through
 printed output.
+
+
+### `async_dispatch`
+
+*qrun/qrunpack dispatch without blocking; qps reports results and a
+WAITING job self-heals once the holder frees qubits.*
+
+The shell's execution commands are asynchronous. `qrun` and `qrunpack`
+route, allocate, and dispatch a job onto the shared executor and then
+**return** — they never block the shell waiting for a provider result.
+`qps` is the snapshot that reports where each job is, folding the result
+into its line once the future has resolved. This block pins the three
+guarantees that together define that contract.
+
+**qrun does not block.** Immediately after `qrun` returns, the job is
+`RUNNING` — its future is still in flight. A synchronous `qrun` (the
+pre-async behaviour, or a re-added `_wait_for` on the priority path)
+could only ever return `FINISHED`/`FAILED` here, so asserting `RUNNING`
+at that instant is precisely what a reversion would break. `settle()`
+then drives the job to completion by re-issuing `qps` — modelling a user
+glancing at status again a moment later — and reads back the counts.
+
+**qps carries the result, and filters by id.** The FINISHED row must
+carry its counts *in the qps line itself* (`N | dev | FINISHED | Counts:
+{…}`), not merely somewhere in the transcript — the kernel's resolve log
+prints counts too, so the assertion matches the `qps` row specifically.
+`qps <id>` shows only the named job; an unknown id prints `Job N does
+not exist.` rather than being silently dropped; a non-integer token is
+flagged. A REJECTED job's row carries its reason (`… | REJECTED | Reason:
+…`), reusing the wording the old inline feedback used.
+
+**The self-heal.** A device is pinned to two free qubits so only one
+bell fits at a time. Job 1 dispatches and holds them; job 2 cannot
+allocate and lands `WAITING` — routing succeeds (feasibility ignores
+pool state), so this is transient contention, not rejection. The session
+is then driven forward using **only `qps`**: each poll resolves job 1's
+future when it completes, and freeing its qubits retries job 2, which
+dispatches and runs — with no `qrunpack` re-issued. This is the property
+that makes async self-healing rather than stranding: the retry is tied to
+qubits freeing, wherever that completion is observed (a `qps` snapshot's
+`poll`, `step`, or `drain`). Were the retry-on-free missing, job 2 would
+stay `WAITING` and `settle` would exhaust its bounded tries. The block
+also asserts job 2 reused job 1's exact freed block `{0: 1, 1: 2}`,
+proving the qubits genuinely returned to the pool and were reallocated.
+
+**Collection lag does not strand a later qrun.** A fast provider (the
+simulator resolves near-instantly) has a job's future *done* by the time
+the next `qrun` runs, but its qubits stay held until something collects
+it. If `qrun` did not collect finished futures before allocating, a later
+job would spuriously `WAITING` on capacity that is logically free — the
+reported bug where four bells on a 7-qubit sim stranded the fourth. The
+block dispatches four bells in sequence, letting each finish on the
+executor *without* pumping the kernel between them (a bare pause, not a
+`qps` — a `qps` would itself collect and free the qubits, masking the
+bug), and asserts all four dispatch. `run_job` resolves pending futures
+before routing, so each `qrun` reclaims the prior finished jobs' qubits;
+without that resolve the fourth waits.
 
 
 ### `mock_topologies`

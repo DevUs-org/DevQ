@@ -18,9 +18,13 @@ this file describes only what lands in the log.
 
 The kernel emits structured records; **sinks** decide what to do with
 them (`kernel/events.py`). The default is `PrintSink`, which renders the
-console output DevQ has always produced — so an interactive session is
-unchanged by the existence of events, and a new event kind is invisible
-on the console until someone deliberately renders it.
+interactive console output — the `[Kernel] Dispatching job N → …`
+placement line — but deliberately not the `resolve` event: results are
+read through `qps`, so echoing a `[Kernel] Job N FINISHED` line as well
+would duplicate the `qps` row. The resolve event is still emitted and
+captured by `RecordSink`/`JSONLSink` below; only the console echo is
+suppressed. A new event kind is likewise invisible on the console until
+someone deliberately renders it.
 
 ```python
 from kernel.events import PrintSink, RecordSink, MultiSink

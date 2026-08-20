@@ -22,11 +22,11 @@ session simply shows one `d0` section — the format is uniform).
 
 | Command | Classical analogue | Purpose |
 |---|---|---|
-| `qrun` | — | Priority-execute a **single** job immediately, bypassing the queue |
-| `qsubmit` | — | Enqueue one or more jobs without executing |
-| `qrunpack` | — | Drain all queues via the router and per-device schedulers |
+| `qrun` | — | Priority-dispatch a **single** job, bypassing the queue; returns immediately (async) |
+| `qsubmit` | — | Enqueue one or more jobs without dispatching |
+| `qrunpack` | — | Dispatch all queued jobs via the router and per-device schedulers; returns immediately (async) |
 | `qdevices` | `lscpu` | List attached devices: index, name, provider, qubits, queued/running load |
-| `qps` | `ps` | List all jobs with device binding and lifecycle state |
+| `qps [id …]` | `ps` | List jobs with device binding and lifecycle state; folds in counts/reason once resolved. Optional ids filter the view |
 | `qmap <job_id>` | — | Show a job's device and virtual → physical qubit mapping |
 | `qmem [dN]` | `free` | Show free `[]` vs allocated `[X]` qubits |
 | `qtopology [dN] [q …]` | — | Show device coupling map(s) (qubit filtering requires a device) |
@@ -53,8 +53,7 @@ devq> qdevices
 devq> qrun test_circuits/bell.qasm --exec=d1,d2
 Job 1 submitted to queue.
 [Kernel] Dispatching job 1 → d1 (fakenairobiv2) qubits {0: 1, 1: 2}
-[Kernel] Job 1 FINISHED. Counts: {'00': 1007, '11': 989, '01': 26, '10': 26}
-[+] Job 1 FINISHED.
+[>] Job 1 dispatched to d1 (fakenairobiv2). Check status with qps 1.
 
 devq> qrun test_circuits/bell.qasm --max-qubit-error=0.03 --exec=d2
 Job 2 submitted to queue.
@@ -63,8 +62,11 @@ Job 2 submitted to queue.
     max_edge_error=None
 
 devq> qps
-1 | d1  | FINISHED
-2 | -   | REJECTED
+1 | d1  | RUNNING
+2 | -   | REJECTED | Reason: unsatisfiable on every allowed device — d2: …
+
+devq> qps 1
+1 | d1  | FINISHED | Counts: {'00': 1007, '11': 989, '01': 26, '10': 26}
 
 devq> qmap 1
 
@@ -88,13 +90,70 @@ devq> qerrors e d1
     ...
 ```
 
-`qrun` vs `qsubmit`/`qrunpack`: `qrun` is a priority path — it routes and
-attempts allocation immediately, executes, blocks until its own result
-resolves, and leaves all queued jobs untouched. If allocation fails but the
-job is feasible on its routed device, it stays WAITING in that device's
-queue for a later `qrunpack`; if it is unsatisfiable everywhere allowed, it
-is REJECTED. `qrun` accepts exactly one job (all flags, including
-`--exec`/`--no-exec`, are supported).
+### Asynchronous execution
+
+`qrun` and `qrunpack` are **non-blocking**. They route, allocate, and
+dispatch jobs onto a shared background executor and then return
+immediately — the shell stays responsive while circuits run, so you can
+submit more work (to the same device or another) or inspect state
+without waiting for any result. A synchronous shell would freeze between
+`qrun` and its result; this one does not.
+
+Because dispatch and result are decoupled, a dispatched job comes back
+`RUNNING`, and its result surfaces later through `qps`:
+
+- `qrun` routes and attempts allocation immediately (the priority path,
+  bypassing the queue). On success it prints `[>] Job N dispatched …`
+  and returns with the job `RUNNING`. If allocation fails but the job is
+  feasible on its routed device, it stays `WAITING` in that device's
+  queue (transient contention); if it is unsatisfiable everywhere
+  allowed, it is `REJECTED` immediately. `qrun` accepts exactly one job.
+- `qrunpack` dispatches every queued job it can place right now, prints
+  one `[>] Job N dispatched …` per job, and returns. It does **not**
+  wait on futures and does not block on a job left `WAITING`.
+
+Before allocating, `qrun` first collects any earlier jobs whose futures
+have *already* resolved, returning their qubits to the pool. This is a
+non-blocking sweep — it waits on nothing still in flight — but it means a
+fast provider (the built-in simulator resolves near-instantly) has its
+finished jobs' qubits reclaimed in time for the next job to use them,
+rather than that job waiting on capacity that is logically free but not
+yet collected. A slow provider's futures are simply not done yet, so
+nothing is collected and the job dispatches or waits on real contention
+exactly as it would otherwise.
+
+**`qps` is the reporting surface.** It is a snapshot: it shows every
+job's current lifecycle state (`RUNNING`, `WAITING`, `REJECTED`,
+`FINISHED`, `FAILED`), and once a job has resolved it folds the outcome
+into that job's row — `Counts: {…}` for `FINISHED`, `Error: …` for
+`FAILED`, `Reason: …` for `REJECTED`. A job still executing simply reads
+`RUNNING`; run `qps` again a moment later to see it settle. `qps` never
+waits. It accepts an optional id filter — `qps 3 7` shows only those
+jobs; an unknown id prints `Job N does not exist.` and a non-integer
+token is flagged, neither aborting the rest of the view.
+
+Results reach the interactive console **only** through `qps`. The kernel
+prints the `[Kernel] Dispatching job N → …` placement line when a job is
+dispatched, but it does not echo a job's completion — the resolve event
+is still recorded in the event log (see
+[`EVENT_LOG.md`](EVENT_LOG.md)) for benchmarks and metrics, but the
+console does not print a `[Kernel] Job N FINISHED` line, since `qps`
+already reports the outcome on the job's row. This avoids the duplicate
+that would otherwise appear when a `qps` (or any command) collects a
+finished future.
+
+**Waiting jobs self-heal.** A job that is `WAITING` on qubits held by a
+still-running job is retried automatically the moment that holder
+completes and frees them — no need to re-issue `qrunpack`. The retry is
+tied to a job's resolution: whenever a completion is observed (including
+by a plain `qps` snapshot, which resolves any finished futures as it
+reports), the freed qubits are offered to that device's waiting jobs and
+the next one dispatches. So a `qps` you run purely to check status can
+be the thing that lets a waiter proceed — you may see a job that was
+`WAITING` a moment ago now `RUNNING`. This is a consequence of capacity
+freeing, not a scheduling decision `qps` makes; `qps` never chooses to
+run anything, it only observes completions, and freeing qubits is what
+advances the waiters.
 
 **Command history.** Interactive sessions keep readline history in
 `~/.devq_history`, capped at the last 1000 commands. A file that has
@@ -170,11 +229,13 @@ three error terms have `--max-*` filters.
   malformed flag. Binds per job and per group exactly like the other flags.
 
 If constraints or filtering make allocation *temporarily* impossible on the
-routed device (resources busy), the job is set WAITING and retried. If they
-make allocation *permanently* impossible on every allowed device, the job is
-REJECTED with one router-aggregated reason per candidate device — detected
-via each device's allocator `feasible()` check, which deliberately ignores
-pool state.
+routed device (resources busy), the job is set WAITING and retried
+automatically once a running job on that device completes and frees its
+qubits (see [Asynchronous execution](#asynchronous-execution) above — no
+`qrunpack` re-issue is needed). If they make allocation *permanently*
+impossible on every allowed device, the job is REJECTED with one
+router-aggregated reason per candidate device — detected via each device's
+allocator `feasible()` check, which deliberately ignores pool state.
 
 ### Syntax
 

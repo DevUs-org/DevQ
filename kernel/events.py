@@ -32,12 +32,26 @@ import sys
 
 class PrintSink:
     '''
-    Renders records as DevQ's existing console output.
+    Renders records as DevQ's interactive console output.
 
-    Only the event kinds that historically printed produce output;
-    everything else is silently accepted. That is what keeps the console
-    stable as the schema grows — a new event kind is invisible here
-    until someone deliberately renders it.
+    Only the event kinds that produce useful interactive output are
+    rendered; everything else is silently accepted. That is what keeps
+    the console stable as the schema grows — a new event kind is
+    invisible here until someone deliberately renders it.
+
+    Renders `dispatch` (which shows placement — the v2p map a job was
+    dispatched with, information qps does not surface) but NOT `resolve`.
+    Results are read through qps, which reports a job's counts (or its
+    failure/rejection reason) on its own row; printing the kernel's
+    `[Kernel] Job N FINISHED. Counts: …` line as well would duplicate
+    that, and — because resolution is collected lazily by whatever
+    command next pumps the kernel — the duplicate would land at a
+    confusing spot (e.g. right above the qps row that reports the same
+    result). That console line was how the pre-async synchronous qrun
+    returned its result; qps supersedes it. The resolve event is still
+    EMITTED by the kernel and captured by RecordSink/JSONLSink, so the
+    benchmark logs and metrics are unaffected — only the interactive
+    console stops echoing it.
     '''
 
     # Event kinds that produce console output. Anything absent is
@@ -48,14 +62,6 @@ class PrintSink:
         if kind == "dispatch":
             print(f"[Kernel] Dispatching job {record['job_id']} → "
                   f"{record['device_label']} qubits {record['v2p_map']}")
-
-        elif kind == "resolve":
-            if record.get("success"):
-                print(f"[Kernel] Job {record['job_id']} FINISHED. "
-                      f"Counts: {record['counts']}")
-            else:
-                print(f"[Kernel] Job {record['job_id']} FAILED. "
-                      f"Error: {record['error']}")
 
 
 class RecordSink:
