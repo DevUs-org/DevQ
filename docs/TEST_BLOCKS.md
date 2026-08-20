@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 74 sanity blocks in `run_tests.py`, covering
+Specification for the 75 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 74 blocks, one line each
+python run_tests.py              # all 75 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -1369,6 +1369,40 @@ strings (width is the register); and — the ordering assertion — `x q[0]`
 then `reset q[0]` then measure yields **~all-zero**, since a reset
 honoured at its source position returns the qubit to 0, whereas a dropped
 or end-lumped reset would measure ~all-one.
+
+---
+
+### `large_device_full_layout`
+
+*full_layout pads a large device with ancilla so a sim run finishes.*
+
+The allocator's placement (`v2p_map`) names only the physical qubits the
+circuit uses — a **partial** layout. On a small backend Aer tolerates
+that, but on a large one it refuses:
+`"The 'layout' must be full (with ancilla)."` `IBMProvider.full_layout`
+builds the full-device-width layout — used qubits at their allocated
+positions, every unused physical qubit filled with an ancilla — and both
+IBM providers inherit and call it in place of the hand-built partial line. This block
+pins the fix on a **large** device specifically, because that is the only
+place the partial-layout bug ever surfaced; a small-device test would
+pass either way and catch nothing. Needs qiskit; skips cleanly without it.
+
+It asserts, on the 156-qubit `FakeFez`: a Bell pair **finishes** (the
+layout error is gone) with its mass on the `00`/`11` peaks, and its counts
+are 2-bit — the ancilla widen the *layout*, never the classical register;
+a 3-qubit GHZ likewise finishes with mass on the all-`0`/all-`1` peaks,
+proving the padding is right for more than two used qubits. It then pins
+`full_layout`'s contract directly: the returned layout covers **every**
+physical qubit `0..155` (used + ancilla), it does not widen the circuit's
+`num_clbits`, and the circuit's own qubits sit at their *allocated*
+physical indices (`{136, 143}`, not a re-indexed placement). Finally a
+small-device Bell (`FakeNairobiV2`) still finishes on the peaks — the
+padding change is a no-op where the bug never applied.
+
+Mutation-tested (see `MUTATION_TESTING.md`, L-group): skipping the
+ancilla padding, ignoring the allocator's `v2p` values, and reverting the
+simulated provider's transpile target to the bare noise simulator are all
+killed here.
 
 ---
 

@@ -43,12 +43,14 @@ cannot.
 
 ## Results
 
-**178 distinct mutants, 175 killed, 3 excluded** (M10 equivalent, P7 and
+**181 distinct mutants, 178 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 177/174/3 from the async
+The total is delta-consistent, not recounted: 178/175/3 from prior work
+plus 3 new full-layout mutants (all killed against
+`large_device_full_layout`). The 178/175/3 was 177/174/3 from the async
 work plus 1 new event-log mutant (E10, killed by `event_log`). The
 177/174/3 was 171/168/3 plus 6 async-dispatch mutants (all killed against
 `async_dispatch`; AD5 after the FINISHED-row counts assertion was
@@ -418,6 +420,34 @@ entirely loses the register width. Both are caught by
 `counts_width_contract`, which asserts the helper directly rather than
 only through a provider's end-to-end counts. Each was run against that
 block, confirmed red, then reverted; `base_provider.py` was diffed clean.
+
+### Full-device layout — `providers/ibm/ibm_provider.py`, `providers/ibm/…`
+
+| # | Mutation | Result |
+|---|---|---|
+| L1 | `full_layout` never pads unused qubits (partial layout) | killed (1) |
+| L2 | `full_layout` places used qubits by virtual index, ignoring `v2p_map` | killed (1) |
+| L3 | simulated provider transpiles against the bare noise sim, not the backend | killed (1) |
+
+`full_layout` builds the full-device-width `initial_layout` — used qubits
+at their allocated physical positions, every unused physical qubit filled
+with an ancilla — so a simulated run on a large backend does not hit Aer's
+`"The 'layout' must be full (with ancilla)."` It lives on the
+Qiskit-family base `IBMProvider` (both IBM providers inherit it), which is
+why L1/L2 mutate `ibm_provider.py`. These three are the distinct
+ways the fix can regress. L1 reintroduces the original bug (the helper's
+"covers every physical qubit" assertion catches it: 2 slots, not 156). L2
+is the subtle one — a full but *wrong* layout that still runs and still
+peaks, caught only because the block pins the used qubits at their
+allocated indices (`{0,1}` instead of `{136,143}`). L3 reverts the
+simulated provider's call site to transpiling against the bare
+noise-model `AerSimulator`, which does not carry the device width, so the
+padded layout no longer validates and the job produces no counts. All
+three are killed by `large_device_full_layout`, whose assertions run on
+the 156-qubit `FakeFez` specifically — the only place the partial-layout
+bug ever surfaced. Each was run against that block, confirmed red, then
+reverted with `.pyc` cleared between runs; `ibm_provider.py` and
+`ibm_simulated_provider.py` were diffed clean after.
 
 ### Workload spec — `benchmark/spec.py`, `providers/base_provider.py`
 

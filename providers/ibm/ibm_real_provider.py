@@ -10,24 +10,25 @@ through QiskitRuntimeService: it pulls that backend's live calibration into
 a DevQ QuantumDevice, and executes submitted circuits on the physical QPU
 via SamplerV2.
 
-WHY THIS LIVES IN research/. It is opt-in, account-gated, and costs real
-QPU time — none of which belongs in DevQ core or its test suite. It is a
-research instrument for gathering real-hardware results, not a shipped
-provider, so it sits alongside the baselines under research/ and is exempt
-from the core mutation discipline. It makes ZERO core changes: it implements
-the same BaseProvider contract every provider does, and the kernel, router,
-allocator and metrics treat it identically to any other provider.
+WHERE THIS LIVES. It sits under providers/ibm/ beside IBMSimulatedProvider
+and their shared IBMProvider base, because it is a Qiskit-family provider and
+belongs next to the base it inherits. It remains a RESEARCH instrument, not a
+shipped provider: it is opt-in, account-gated, and costs real QPU time, so it
+is not registered in the default provider set and is exempt from the core
+mutation discipline and the core test suite (which never touches a real
+account). It makes ZERO core changes: it implements the same BaseProvider
+contract every provider does, and the kernel, router, allocator and metrics
+treat it identically to any other provider. The full proof-run harness stays
+in research/ (research/run_real_hardware.py).
 
-WHAT IT SHARES WITH THE SIMULATED PROVIDER, AND WHY IT DUPLICATES. Real and
-fake backends expose the SAME BackendV2 / Target API — that is the entire
-point of Qiskit's fake backends, they are snapshots of real ones. So the
-calibration extractors here (coupling map, readout/gate/edge errors, T2,
-durations) are line-for-line the same logic as IBMSimulatedProvider's. They
-are COPIED rather than imported on purpose: this is a research/ file and
-should not couple a research instrument to a core module's private helpers,
-where a refactor in core could silently break an account-gated script no CI
-run exercises. Self-contained is the safer trade for something that runs
-rarely and by hand.
+WHAT IT SHARES WITH THE SIMULATED PROVIDER. Real and fake backends expose the
+SAME BackendV2 / Target API — that is the entire point of Qiskit's fake
+backends, they are snapshots of real ones. So reading DevQ's calibration
+surface out of the Target (coupling map, readout/gate/edge errors, T2,
+durations) is identical work either way, and both providers inherit it from
+IBMProvider rather than each carrying its own copy. This one and the
+simulated provider previously duplicated those extractors line-for-line; the
+shared base removes the copy so the two cannot drift apart.
 
 THREE DELIBERATE DEVIATIONS from the simulated provider:
 
@@ -61,16 +62,16 @@ None to fall back on a Qiskit-saved account (QiskitRuntimeService()).
 
 Usage (see research/run_real_hardware.py for the full proof-run):
 
-    from research.providers.ibm_real_provider import IBMRealProvider
+    from providers.ibm.ibm_real_provider import IBMRealProvider
     ibm = IBMRealProvider(token=os.environ["IBM_QUANTUM_TOKEN"])
     dev = ibm.get_device("ibm_sherbrooke")
 '''
 
-from providers.base_provider import BaseProvider
+from providers.ibm.ibm_provider import IBMProvider
 from hardware.device import QuantumDevice
 
 
-class IBMRealProvider(BaseProvider):
+class IBMRealProvider(IBMProvider):
 
     # Human-readable name shown by qconfig. The registry falls back to the
     # class name when absent; this matches the simulated provider's LABEL.
@@ -312,11 +313,6 @@ class IBMRealProvider(BaseProvider):
             ))
         backend = session["backend"]
 
-        # The allocator's physical placement: virtual qubit v runs on
-        # physical qubit v2p_map[v]. Same construction as the simulated
-        # provider so the two agree on what "placement" means.
-        initial_layout = [v2p_map[v] for v in sorted(v2p_map)]
-
         # Option-B classical width, via the shared BaseProvider helper so the
         # rule stays identical across providers.
         num_clbits = self._counts_width(circuit)
@@ -332,6 +328,18 @@ class IBMRealProvider(BaseProvider):
                 counts={}, success=False, error=str(e)))
         for q, c in measure_map:
             qc.measure(q, c)
+
+        # The allocator's physical placement, as a FULL-device-width layout:
+        # virtual qubit v runs on physical v2p_map[v], every unused physical
+        # qubit filled with an ancilla. Same construction as the simulated
+        # provider (the shared BaseProvider helper), so the two agree on what
+        # "placement" means and neither hand-rolls the padding. A partial
+        # layout (only the mapped qubits) is what real transpile tolerated by
+        # silently padding; building the full layout explicitly makes the
+        # placement identical to the simulated path rather than relying on
+        # that leniency. Mutates qc (adds an ancilla register); classical
+        # width is untouched.
+        initial_layout = self.full_layout(qc, v2p_map, device)
 
         def _run():
             try:
@@ -389,176 +397,8 @@ class IBMRealProvider(BaseProvider):
         '''
         return {"shots": 512}
 
-    # ── calibration extractors ────────────────────────────────────────────
-    #
-    # Copied from IBMSimulatedProvider on purpose (see module docstring):
-    # real and fake backends share the BackendV2/Target API, so the logic is
-    # identical, but a research instrument should not couple to a core
-    # module's private helpers. Kept self-contained.
-
-    def _extract_coupling_map(self, backend) -> list:
-        '''
-        Undirected coupling map from the backend's directed CouplingMap,
-        deduplicated to sorted-tuple edges — consistent with how
-        QuantumDevice normalises edge_error_map keys.
-        '''
-        seen = set()
-        edges = []
-        for (u, v) in backend.coupling_map:
-            key = tuple(sorted((u, v)))
-            if key not in seen:
-                seen.add(key)
-                edges.append(key)
-        return edges
-
-    def _extract_qubit_errors(self, backend, num_qubits) -> dict:
-        '''
-        Per-qubit readout error via target['measure'][(q,)].error (the V2
-        API). Falls back to 0.01 when a qubit's datum is unavailable.
-        '''
-        target    = backend.target
-        error_map = {}
-        for q in range(num_qubits):
-            try:
-                error_map[q] = target['measure'][(q,)].error
-            except Exception:
-                error_map[q] = 0.01
-        return error_map
-
-    def _extract_edge_errors(self, backend, coupling_map) -> dict:
-        '''
-        Per-edge 2-qubit gate error. The native 2q gate differs by device
-        generation (ECR on Eagle/Heron, CX on Falcon, CZ on some Heron
-        revisions), so the 2q gate set is DISCOVERED from the Target rather
-        than hardcoded: every op acting on exactly 2 qubits is a candidate,
-        and each edge takes the error of the first candidate defined on it.
-        Falls back to 0.02 — and warns — only if no 2q gate reports an error,
-        so bad calibration is never silently fabricated.
-        '''
-        target = backend.target
-        twoq_gates = [
-            name for name in target.operation_names
-            if self._op_num_qubits(target, name) == 2
-        ]
-        if not twoq_gates:
-            print(f"[IBMRealProvider] Warning: no 2-qubit gates found in "
-                  f"Target — edge errors will use fallback 0.02.")
-
-        edge_error_map = {}
-        for (u, v) in coupling_map:
-            key = tuple(sorted((u, v)))
-            err = None
-            for gate in twoq_gates:
-                for edge in [(u, v), (v, u)]:
-                    try:
-                        candidate = target[gate][edge].error
-                        if candidate is not None:
-                            err = candidate
-                            break
-                    except Exception:
-                        continue
-                if err is not None:
-                    break
-            if err is None:
-                print(f"[IBMRealProvider] Warning: no 2-qubit gate error for "
-                      f"edge {key}, using fallback 0.02.")
-                err = 0.02
-            edge_error_map[key] = err
-        return edge_error_map
-
-    def _extract_gate_errors(self, backend, num_qubits) -> dict:
-        '''
-        Per-qubit single-qubit GATE error, restricted to physical 1q gates
-        (sx, x, ...) so it never picks up readout error from `measure`, the
-        virtual `rz` (0), or an idle `id`. Falls back to 5e-4 — and warns —
-        only when none reports an error for a qubit.
-        '''
-        target = backend.target
-        PHYSICAL_1Q = ("sx", "x", "sxdg", "rx", "ry", "u", "u3")
-        oneq_gates = [g for g in PHYSICAL_1Q if g in target.operation_names]
-
-        gate_error_map = {}
-        for q in range(num_qubits):
-            err = None
-            for gate in oneq_gates:
-                try:
-                    candidate = target[gate][(q,)].error
-                    if candidate is not None:
-                        err = candidate
-                        break
-                except Exception:
-                    continue
-            if err is None:
-                print(f"[IBMRealProvider] Warning: no physical 1-qubit gate "
-                      f"error for qubit {q}, using fallback 5e-4.")
-                err = 5e-4
-            gate_error_map[q] = err
-        return gate_error_map
-
-    def _extract_t2_times(self, backend, num_qubits) -> dict:
-        '''
-        Per-qubit T2 in microseconds (Target reports SECONDS, scaled 1e6).
-        Falls back to 100.0 µs — and warns — when unavailable or None.
-        '''
-        target = backend.target
-        t2_map = {}
-        for q in range(num_qubits):
-            t2 = None
-            try:
-                props = target.qubit_properties[q]
-                if props is not None and props.t2 is not None:
-                    t2 = props.t2 * 1e6
-            except Exception:
-                t2 = None
-            if t2 is None:
-                print(f"[IBMRealProvider] Warning: no T2 for qubit {q}, "
-                      f"using fallback 100.0 µs.")
-                t2 = 100.0
-            t2_map[q] = t2
-        return t2_map
-
-    def _extract_gate_durations(self, backend) -> tuple:
-        '''
-        Representative 1q and 2q gate durations in nanoseconds (Target
-        reports SECONDS, scaled 1e9), taken as the MEDIAN across all
-        instances of each arity's physical native gate — stable against a
-        single outlier qubit/edge. Physical gates only, so measure's ~µs
-        duration never dominates the 1q median. Falls back to 40 ns (1q) /
-        400 ns (2q) — and warns — when no duration is available.
-        '''
-        target = backend.target
-        PHYSICAL = {
-            1: ("sx", "x", "sxdg", "rx", "ry", "u", "u3"),
-            2: ("ecr", "cx", "cz", "cnot"),
-        }
-
-        def _median_duration(arity, fallback):
-            names = [g for g in PHYSICAL[arity] if g in target.operation_names]
-            durs = []
-            for name in names:
-                try:
-                    props = target[name]
-                except Exception:
-                    continue
-                for key, inst in props.items():
-                    try:
-                        if inst is not None and inst.duration is not None:
-                            durs.append(inst.duration * 1e9)
-                    except Exception:
-                        continue
-            if not durs:
-                print(f"[IBMRealProvider] Warning: no {arity}-qubit gate "
-                      f"duration in Target, using fallback {fallback} ns.")
-                return fallback
-            durs.sort()
-            return durs[len(durs) // 2]
-
-        return _median_duration(1, 40.0), _median_duration(2, 400.0)
-
-    @staticmethod
-    def _op_num_qubits(target, name):
-        '''Number of qubits an operation acts on, or None if unknown.'''
-        try:
-            return target.operation_from_name(name).num_qubits
-        except Exception:
-            return None
+    # ── calibration extraction ────────────────────────────────────────────────
+    # The five-term calibration surface is read from the backend Target by
+    # IBMProvider, shared with IBMSimulatedProvider: real and fake backends
+    # expose the same BackendV2/Target API, so the extraction is identical.
+    # See providers/ibm/ibm_provider.py.

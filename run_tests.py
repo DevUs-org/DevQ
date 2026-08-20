@@ -6997,6 +6997,112 @@ def block_ibm_measurement():
           f"IBM reset in position: x then reset -> measures ~0, got {counts}")
 
 
+def block_large_device_full_layout():
+    '''full_layout pads a large device with ancilla so a sim run finishes'''
+    # A circuit occupies only a few of a device's physical qubits, but the
+    # allocator's placement (v2p_map) is a PARTIAL layout — only the mapped
+    # qubits. On a large device Aer rejects a partial initial_layout
+    # outright ("The 'layout' must be full (with ancilla)."), so a simulated
+    # run on a big backend would crash before this fix. BaseProvider.
+    # full_layout builds the full-device-width layout (used qubits at their
+    # allocated positions, every unused physical qubit filled with an
+    # ancilla), and both IBM providers call it. This block pins that on a
+    # LARGE device specifically: that is the only place the partial-layout
+    # bug surfaces, so a small-device test alone would not catch a
+    # regression here. Needs qiskit; skips cleanly without it.
+    try:
+        p = IBMSimulatedProvider(seed=SEED)
+        big = p.get_device(backend_name="FakeFez")
+    except Exception:
+        check(True, "qiskit not installed - large-device layout block skipped")
+        return
+
+    # FakeFez is a 156-qubit Heron r2 fake — far more physical qubits than a
+    # Bell pair uses, so the layout must be padded with ancilla or Aer
+    # refuses it. This exact case crashed pre-fix.
+    check(big.num_qubits > 100,
+          f"FakeFez is a large device (got num_qubits={big.num_qubits})")
+
+    def fez_shell():
+        dq = devq_with_ibm()
+        dq.add_device(IBMSimulatedProvider(seed=SEED)
+                      .get_device("FakeFez"), name="fez")
+        with contextlib.redirect_stdout(io.StringIO()):
+            return dq.build()
+
+    # A Bell pair on the 156-qubit device must FINISH (not throw the layout
+    # error) and land its mass on the correlated peaks 00/11. Before the
+    # fix this raised "The 'layout' must be full (with ancilla)." and the
+    # job never produced counts at all, so counts_of would not find a
+    # FINISHED row.
+    sh = fez_shell()
+    run(sh, [f"qrun {BELL} --exec=fez"])
+    counts = counts_of(settle(sh, 1), 1)
+    total = sum(counts.values())
+    check(all(len(k) == 2 for k in counts),
+          f"large-device Bell: counts width is the 2-bit creg, not the "
+          f"156-qubit device (ancilla do not widen the register), got "
+          f"{set(len(k) for k in counts)}")
+    peaks = counts.get("00", 0) + counts.get("11", 0)
+    check(peaks > 0.85 * total,
+          f"large-device Bell finishes with mass on the 00/11 peaks "
+          f"(the layout error is gone), got {counts}")
+
+    # GHZ too: a 3-qubit entangled state on the same large device lands on
+    # the all-zero / all-one peaks, confirming the padding is correct for
+    # more than two used qubits, not just a Bell special case.
+    sh = fez_shell()
+    run(sh, [f"qrun {GHZ} --exec=fez"])
+    counts = counts_of(settle(sh, 1), 1)
+    total = sum(counts.values())
+    w = len(next(iter(counts)))
+    peaks = counts.get("0" * w, 0) + counts.get("1" * w, 0)
+    check(peaks > 0.80 * total,
+          f"large-device GHZ finishes with mass on the all-0/all-1 peaks, "
+          f"got {counts}")
+
+    # The helper's contract directly: on a large device it returns a layout
+    # accounting for EVERY physical qubit (used + ancilla), and it does not
+    # widen the classical register. Pinning this at the source catches a
+    # regression even if the end-to-end run happened to mask it.
+    from qiskit import QuantumCircuit
+    qc = QuantumCircuit(2, 2)
+    qc.h(0); qc.cx(0, 1); qc.measure([0, 1], [0, 1])
+    before_clbits = qc.num_clbits
+    layout = p.full_layout(qc, {0: 136, 1: 143}, big)
+    phys = set(layout.get_physical_bits().keys())
+    check(phys == set(range(big.num_qubits)),
+          f"full_layout covers every physical qubit 0..{big.num_qubits-1} "
+          f"(used + ancilla), got {len(phys)} physical slots")
+    check(qc.num_clbits == before_clbits,
+          f"full_layout does not widen the classical register "
+          f"(was {before_clbits}, now {qc.num_clbits})")
+    # The used qubits sit at their allocated physical indices.
+    v2p_check = {layout[qc.qubits[0]], layout[qc.qubits[1]]}
+    check(v2p_check == {136, 143},
+          f"full_layout places the circuit's qubits at their allocated "
+          f"physical indices, got {v2p_check}")
+
+    # Regression guard: the same helper on a SMALL device still works and
+    # small-device runs are unaffected (no spurious padding failure).
+    try:
+        small = IBMSimulatedProvider(seed=SEED).get_device("FakeNairobiV2")
+    except Exception:
+        check(True, "small backend unavailable - small-device check skipped")
+        return
+    dq = devq_with_ibm()
+    dq.add_device(small, name="nairobi")
+    with contextlib.redirect_stdout(io.StringIO()):
+        sh_small = dq.build()
+    run(sh_small, [f"qrun {BELL} --exec=nairobi"])
+    counts = counts_of(settle(sh_small, 1), 1)
+    total = sum(counts.values())
+    peaks = counts.get("00", 0) + counts.get("11", 0)
+    check(peaks > 0.85 * total,
+          f"small-device Bell still finishes on the peaks (no regression), "
+          f"got {counts}")
+
+
 def block_counts_width_contract():
     '''BaseProvider._counts_width is the one source of the Option B width rule'''
     # The bitstring-width rule (span the declared classical register,
@@ -7153,6 +7259,7 @@ BLOCKS = [
     ("allocator_contract_1q_param", block_allocator_contract_1q_param),
     ("devq_measurement",         block_devq_measurement),
     ("ibm_measurement",          block_ibm_measurement),
+    ("large_device_full_layout", block_large_device_full_layout),
     ("counts_width_contract",    block_counts_width_contract),
     ("shipped_workloads",        block_shipped_workloads),
     ("repo_hygiene",             block_repo_hygiene),
