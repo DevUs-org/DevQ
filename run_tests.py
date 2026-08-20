@@ -1589,25 +1589,37 @@ def block_async_dispatch():
     # a fast provider (or a loaded machine that lets the Aer future finish
     # in the gap between the two qruns) makes it the common case, so a bare
     # back-to-back qrun cannot reliably reproduce the contention this block
-    # is meant to pin. Gating job 1's future on an Event makes the hold
-    # deterministic without weakening the assertion — job 2 genuinely
-    # WAITs on genuinely-occupied qubits; we simply guarantee job 1 is
-    # still holding them at that instant. submit_async is the provider's
-    # own dispatch path, so the future the kernel polls is exactly the real
-    # AsyncExecutionFuture, not a stand-in.
-    from circuits.execution_result import submit_async
+    # is meant to pin. A gated future — done() False until the test frees
+    # it — makes the hold deterministic without weakening the assertion:
+    # job 2 genuinely WAITs on genuinely-occupied qubits; we simply
+    # guarantee job 1 is still holding them at that instant.
+    #
+    # On release the gate resolves job 1 INSTANTLY to a fixed result rather
+    # than re-running the real Aer execution. Two reasons this matters and
+    # a plain submit_async wrapper does not: (1) speed/load independence —
+    # job 2's self-heal must land within settle()'s bounded poll budget, so
+    # it cannot hang on a slow machine waiting for a real simulation to
+    # finish after release; (2) no pool re-entrancy — running the real
+    # execute() from inside the held future would submit a NESTED task onto
+    # the same bounded shared executor while occupying one of its workers,
+    # which can starve under full-suite load. Job 1's measured counts are
+    # irrelevant here: this block asserts job 2's WAITING, its self-heal to
+    # FINISHED, and its reuse of the freed block — not job 1's distribution.
+    from circuits.execution_result import ExecutionResult
     release_job1 = threading.Event()
     real_execute = hctx.device.execute
 
-    def _held_execute(circuit, v2p_map, shots):
-        # Run the real execution, but not until released — the returned
-        # future stays pending (job 1 stays RUNNING, qubits held) until then.
-        def _blocked_run():
+    class _GatedFuture:
+        '''Reports not-done until released; then resolves immediately to a
+        fixed result — no real execution, no shared-pool submit.'''
+        def done(self):
+            return release_job1.is_set()
+        def result(self):
             release_job1.wait(timeout=10)
-            return real_execute(circuit, v2p_map, shots).result()
-        return submit_async(_blocked_run)
+            return ExecutionResult(counts={"00": 512, "11": 512}, success=True)
 
-    hctx.device.execute = _held_execute
+    # Match the kernel's call: execute(circuit, v2p_map, shots=shots).
+    hctx.device.execute = lambda circuit, v2p_map, shots: _GatedFuture()
     try:
         run(heal, [f"qrun {BELL} --exec=solo"])             # job 1 holds {1,2}, future gated
         wait_out = run(heal, [f"qrun {BELL} --exec=solo"])  # job 2 must WAIT
@@ -1615,8 +1627,8 @@ def block_async_dispatch():
         check([j.state.value for j in heal.kernel.list_jobs()] == ["RUNNING", "WAITING"],
               "job 2 is WAITING while job 1 holds the only free qubits")
     finally:
-        # Release job 1 and restore the real execute so job 2's retry runs
-        # for real (through the genuine provider path, not the gate).
+        # Restore the real execute so job 2's retry runs for real, then
+        # release job 1 — it resolves instantly, freeing {1,2} for job 2.
         hctx.device.execute = real_execute
         release_job1.set()
 
