@@ -617,7 +617,17 @@ flagged. A REJECTED job's row carries its reason (`… | REJECTED | Reason:
 **The self-heal.** A device is pinned to two free qubits so only one
 bell fits at a time. Job 1 dispatches and holds them; job 2 cannot
 allocate and lands `WAITING` — routing succeeds (feasibility ignores
-pool state), so this is transient contention, not rejection. The session
+pool state), so this is transient contention, not rejection. Job 1's
+execution is gated on an `Event` so its future stays in flight (and its
+qubits held) until the test releases it: the `WAITING` state only exists
+while job 1 holds the qubits, and a fast provider — or a loaded machine
+that lets the future resolve in the gap between the two `qrun`s — would
+otherwise let job 2's own pre-routing resolve sweep reclaim them and
+dispatch straight to `RUNNING`, so an ungated back-to-back `qrun` cannot
+reliably reproduce the contention. Gating job 1 makes the hold
+deterministic without weakening the assertion (job 2 still `WAITING`s on
+genuinely-occupied qubits); job 1 runs through the real provider path once
+released. The session
 is then driven forward using **only `qps`**: each poll resolves job 1's
 future when it completes, and freeing its qubits retries job 2, which
 dispatches and runs — with no `qrunpack` re-issued. This is the property

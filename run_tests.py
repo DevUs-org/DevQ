@@ -1581,11 +1581,44 @@ def block_async_dispatch():
     # Only one bell (2 qubits) can be placed at a time.
     hctx.memory_manager.pool.free_qubits = {1, 2}
 
-    run(heal, [f"qrun {BELL} --exec=solo"])             # job 1 holds {1,2}
-    wait_out = run(heal, [f"qrun {BELL} --exec=solo"])  # job 2 must WAIT
-    expect(wait_out, "WAITING for resources")
-    check([j.state.value for j in heal.kernel.list_jobs()] == ["RUNNING", "WAITING"],
-          "job 2 is WAITING while job 1 holds the only free qubits")
+    # Pin job 1's execution IN-FLIGHT until the test releases it. The
+    # WAITING we want to observe only exists while job 1 still holds {1,2};
+    # if job 1's future resolves before job 2's qrun, job 2's pre-routing
+    # resolve sweep reclaims those qubits and job 2 dispatches straight to
+    # RUNNING — no WAITING to see. That race is real but timing-dependent:
+    # a fast provider (or a loaded machine that lets the Aer future finish
+    # in the gap between the two qruns) makes it the common case, so a bare
+    # back-to-back qrun cannot reliably reproduce the contention this block
+    # is meant to pin. Gating job 1's future on an Event makes the hold
+    # deterministic without weakening the assertion — job 2 genuinely
+    # WAITs on genuinely-occupied qubits; we simply guarantee job 1 is
+    # still holding them at that instant. submit_async is the provider's
+    # own dispatch path, so the future the kernel polls is exactly the real
+    # AsyncExecutionFuture, not a stand-in.
+    from circuits.execution_result import submit_async
+    release_job1 = threading.Event()
+    real_execute = hctx.device.execute
+
+    def _held_execute(circuit, v2p_map, shots):
+        # Run the real execution, but not until released — the returned
+        # future stays pending (job 1 stays RUNNING, qubits held) until then.
+        def _blocked_run():
+            release_job1.wait(timeout=10)
+            return real_execute(circuit, v2p_map, shots).result()
+        return submit_async(_blocked_run)
+
+    hctx.device.execute = _held_execute
+    try:
+        run(heal, [f"qrun {BELL} --exec=solo"])             # job 1 holds {1,2}, future gated
+        wait_out = run(heal, [f"qrun {BELL} --exec=solo"])  # job 2 must WAIT
+        expect(wait_out, "WAITING for resources")
+        check([j.state.value for j in heal.kernel.list_jobs()] == ["RUNNING", "WAITING"],
+              "job 2 is WAITING while job 1 holds the only free qubits")
+    finally:
+        # Release job 1 and restore the real execute so job 2's retry runs
+        # for real (through the genuine provider path, not the gate).
+        hctx.device.execute = real_execute
+        release_job1.set()
 
     # Drive the session forward using ONLY qps. Each poll resolves job 1's
     # future when it completes; freeing its qubits retries job 2, which

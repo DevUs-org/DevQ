@@ -1,5 +1,5 @@
 '''
-Tags: Research
+Tags: Provider
 
 IBMRealProvider — executes on REAL IBM quantum hardware via IBM Runtime.
 
