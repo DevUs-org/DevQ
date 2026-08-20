@@ -60,6 +60,7 @@ if __name__ == "__main__":
         .add_devices([
             (ibm.get_device("FakeNairobiV2"), "nairobi"),
             (ibm.get_device("FakeLagosV2"),   "lagos"),
-            (ibm_real.get_device("ibm_fez"), "fez")
+            (ibm.get_device("FakeFez"), "fez_s"),
+            (ibm_real.get_device("ibm_fez"), "fez_r")
         ]) \
         .start()
