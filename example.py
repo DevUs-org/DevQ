@@ -29,7 +29,6 @@ across identical sessions. See "Reproducibility & Seeding" in the README.
 '''
 
 import argparse
-import os
 
 from devq import DevQ
 from providers.devq.devq_simulated_provider import DevQSimulatedProvider
@@ -48,7 +47,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     ibm = IBMSimulatedProvider(seed=args.seed)
-    ibm_real = IBMRealProvider(seed=args.seed, secrets={"token":os.getenv("IBM_QUANTUM_TOKEN")})
 
     # IBM is not a DevQ built-in, and add_device() refuses a device whose
     # provider class was never registered. Register the CLASS; the
@@ -60,7 +58,6 @@ if __name__ == "__main__":
         .add_devices([
             (ibm.get_device("FakeNairobiV2"), "nairobi"),
             (ibm.get_device("FakeLagosV2"),   "lagos"),
-            (ibm.get_device("FakeFez"), "fez_s"),
-            (ibm_real.get_device("ibm_fez"), "fez_r")
+            (ibm.get_device("FakeFez"), "fez_s")
         ]) \
         .start()
