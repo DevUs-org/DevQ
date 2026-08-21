@@ -19,10 +19,11 @@ did not:
     CircuitRep's single ordered `instructions` stream in source position
     (so a `reset` keeps its place relative to the gates around it — see
     CircuitRep's module docstring);
-  - parses `if (creg==N)` and REJECTS it with a precise reason: a
-    conditional needs mid-circuit measurement feedback the execution
-    model does not provide, and silently dropping the condition would
-    change the circuit's meaning.
+  - parses `if (creg==N) <stmt>` and EMITS it as classical feedback: a
+    first-class `conditional` op per guarded operation, resolving the
+    register to its clbit indices. It is no longer rejected — whether a
+    dynamic circuit can run is a per-device capability decided at routing
+    time (a provider's supports_dynamic), not a parse-time verdict.
 
 SCOPE IS 2.0, NOT 3.0. This is the 2.0 implementation of a
 version-agnostic idea: a frontend lowers a source language to
@@ -127,6 +128,17 @@ class _Parser:
         # A circuit with declarations but no operations still needs to
         # exist (e.g. a register-only file, or one that is all resets).
         self._ensure_circuit()
+
+        # Record the declared classical registers on the circuit, in the
+        # SAME flattened global index space the parser assigned them from
+        # (self.cregs is name -> (base, size)). Done once here, after the
+        # full pass, so the circuit carries the complete register set
+        # regardless of declaration order — a `conditional` op resolves a
+        # register name against exactly this mapping. Structure only; it
+        # appends nothing to the instruction stream.
+        for name, (base, size) in self.cregs.items():
+            self.circuit.add_creg(name, base, size)
+
         return self.circuit
 
     def _ensure_circuit(self):
@@ -559,24 +571,35 @@ class _Parser:
 
     def _parse_if(self):
         '''
-        Parse `if (creg == N) <statement>` and mark the circuit UNRUNNABLE.
+        Parse `if (creg == N) <statement>` and emit it as classical
+        feedback — a first-class construct, not a rejected one.
 
-        A conditional needs the classical result of a mid-circuit
-        measurement to steer later gates — a feedback loop DevQ's
-        execution model does not have (devq.simulated has no state to
-        branch on). Silently dropping the condition would change the
-        circuit's meaning.
+        A conditional guards a statement on the value of a classical
+        register. DevQ represents it as one `conditional` op per guarded
+        operation (see below), carried in source order in the ordered
+        stream. Whether it can actually RUN is decided per-device at
+        routing time by the provider's supports_dynamic — a dynamic
+        circuit routes to a device whose provider honours feedback and is
+        rejected only where none does. So the frontend's job is to
+        REPRESENT it faithfully; it neither rejects nor raises.
 
-        We do NOT raise. The circuit is well-formed OpenQASM; it is just a
-        construct DevQ cannot faithfully run. So we set
-        `unrunnable_reason` on the CircuitRep and let the kernel reject the
-        JOB at routing time (REJECTED, with this reason) — the same
-        uniform outcome as any other unrunnable circuit, rather than a
-        parse exception that would abort submission of the whole spec. The
-        condition is fully parsed first so the reason is precise, and the
-        guarded statement is then consumed normally so the token stream
-        stays in sync and the rest of the file still parses (its ops are
-        recorded but never run — the whole circuit is already flagged).
+        We do NOT raise, and no longer mark the circuit unrunnable: the
+        circuit is well-formed OpenQASM and now has a faithful
+        representation. The condition is fully parsed (register name and
+        value), the register resolved to its clbit indices in the global
+        flattened space, and the guarded statement parsed normally — then
+        every op that statement appended is re-wrapped in a conditional
+        sharing this one condition.
+
+        WHY WRAP EACH APPENDED OP, NOT ONE. A guarded statement is not
+        always a single primitive: 2.0 register broadcast (`if(c==1) h q;`
+        over a whole qreg) and custom-gate inlining both expand one call
+        into several ops. Each must be individually conditioned on the
+        same value — which is exactly the documented rule that a block of
+        guarded statements is several conditional ops sharing a condition.
+        Capturing the ops the statement produced (from a marked stream
+        position to the end) and wrapping each keeps that correct without
+        threading return values through every _parse_* method.
         '''
         c = self.cursor
         line = c.peek().line
@@ -584,27 +607,38 @@ class _Parser:
         c.expect("SYMBOL", "(")
         creg = c.expect("ID").value
         c.expect("SYMBOL", "==")
-        c.expect("NUMBER")
+        value = int(float(c.expect("NUMBER").value))
         c.expect("SYMBOL", ")")
 
-        self._mark_unrunnable(
-            f"conditional execution (if ({creg}==...)) requires mid-circuit "
-            f"measurement feedback, which DevQ's execution model does not "
-            f"provide")
+        # Resolve the register name to its clbit indices, LSB-first, in the
+        # global flattened space. An unknown register is a genuine parse
+        # error (the condition names something that was never declared),
+        # so raise rather than mark — consistent with measure/reset, which
+        # also raise on an undeclared creg.
+        if creg not in self.cregs:
+            raise QASMError(f"unknown creg {creg!r} in if-condition", line)
+        base, size = self.cregs[creg]
+        cond_clbits = list(range(base, base + size))
 
-        # Consume the guarded statement so parsing continues in sync.
+        # A negative or too-large value can never be equalled by a
+        # `size`-bit register; the condition is well-formed but dead. That
+        # is not a parse error (the source is legal), so accept it — the
+        # op is emitted and simply never fires, which faithfully preserves
+        # the source's meaning. (Left as-is deliberately; a linting pass
+        # could warn, but the frontend does not editorialise.)
+
+        self._ensure_circuit()
+        mark = len(self.circuit.instructions)
+
+        # Parse the guarded statement; it appends its op(s) normally.
         self._parse_statement()
 
-    def _mark_unrunnable(self, reason):
-        '''
-        Record that this circuit, though well-formed, cannot be faithfully
-        executed by DevQ. First reason wins — a circuit may contain more
-        than one unsupported construct, and the first detected is the most
-        useful to report. The kernel reads this and rejects the job.
-        '''
-        self._ensure_circuit()
-        if self.circuit.unrunnable_reason is None:
-            self.circuit.unrunnable_reason = reason
+        # Re-wrap each op the statement produced as a conditional sharing
+        # this condition, preserving their source order.
+        produced = self.circuit.instructions[mark:]
+        del self.circuit.instructions[mark:]
+        for op in produced:
+            self.circuit.add_conditional(cond_clbits, value, op)
 
 
 def parse(source_text, source_name="<qasm>"):
@@ -617,17 +651,23 @@ def parse(source_text, source_name="<qasm>"):
 
     Returns:
         CircuitRep — all operations in one ordered `instructions` stream,
-        num_qubits/num_clbits from the declarations. If the circuit is
-        well-formed but uses a construct DevQ cannot faithfully execute
-        (classical control, mid-circuit measurement), `unrunnable_reason`
-        is set and the kernel will reject the job; parsing still succeeds.
+        num_qubits/num_clbits from the declarations, and the declared
+        classical registers recorded on the circuit. A well-formed
+        `if (creg==N)` is emitted as first-class `conditional` ops (the
+        circuit is `is_dynamic`); its runnability is decided per-device at
+        routing time, not here. Only mid-circuit measurement — a construct
+        no current backend can faithfully execute — still sets
+        `unrunnable_reason` for the kernel to reject; parsing still
+        succeeds.
 
     Raises:
         QASMError: only on genuinely MALFORMED or unparseable source (bad
-                   syntax, undeclared register, opaque gate with no body).
-                   An unsupported-but-well-formed construct does NOT raise
-                   — it is marked unrunnable instead, so it becomes a
-                   REJECTED job rather than aborting submission.
+                   syntax, undeclared register — including a creg named in
+                   an if-condition that was never declared — opaque gate
+                   with no body). An unsupported-but-well-formed construct
+                   does NOT raise — mid-circuit measurement is marked
+                   unrunnable instead, so it becomes a REJECTED job rather
+                   than aborting submission.
     '''
     tokens = tokenize(source_text)
     circuit = _Parser(tokens).parse()
@@ -635,10 +675,15 @@ def parse(source_text, source_name="<qasm>"):
         raise QASMError("no qreg declared — nothing to run")
 
     # Structural check over the finished stream: a qubit operated on after
-    # measurement is mid-circuit measurement, which DevQ cannot run. The
-    # parser may already have marked the circuit unrunnable (classical
-    # control, detected inline); first reason wins, so this only fills in
-    # when nothing was flagged during parsing.
+    # measurement is mid-circuit measurement, which no current backend can
+    # faithfully run, so it is a circuit-global unrunnable_reason (distinct
+    # from a dynamic circuit, which is runnable on a capable device and
+    # only declined per-device). This is now the ONLY construct the 2.0
+    # frontend marks unrunnable: classical control used to be marked here
+    # too, but it is now emitted as first-class `conditional` ops and its
+    # runnability is a per-device capability question, not a circuit-global
+    # verdict. find_mid_circuit_measurement also reaches into conditional
+    # bodies, so a guarded gate on a measured qubit is caught the same way.
     if circuit.unrunnable_reason is None:
         mid = circuit.find_mid_circuit_measurement()
         if mid is not None:

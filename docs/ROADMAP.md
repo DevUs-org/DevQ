@@ -216,19 +216,37 @@ real tokenizer, an expression evaluator that keeps gate parameters
 QASMBench circuits from running), recursive custom-`gate` inlining with
 parameter and qubit substitution, and first-class `measure`/`reset`.
 `CircuitRep` is one ordered, op-tagged instruction stream, so a `reset`
-keeps its source position relative to the gates around it. Two well-formed
-but unsupported constructs — `if (creg==N)` classical control and
-mid-circuit measurement (a gate or reset on a qubit after it was measured)
-— are DETECTED at the frontend and marked on the circuit
-(`unrunnable_reason`), not raised: the circuit still parses and becomes a
-job, and the KERNEL rejects that job (REJECTED, with the reason) at
-routing time. This keeps every "DevQ will not run this" verdict as one
-uniform outcome — a REJECTED job with a reason — rather than a parse
-exception that would abort a whole workload over one circuit. Both need
-mid-circuit measurement feedback the execution model does not provide, and
-running them anyway (silently dropping the condition, or hoisting the
-measure) would change the circuit's meaning; rejecting with a reason is
-the honest behaviour.
+keeps its source position relative to the gates around it. `if (creg==N)`
+classical control is now a **first-class** construct: the frontend emits
+it as `conditional` ops (one per guarded operation, resolving the register
+to its clbit indices), and whether such a dynamic circuit can run is a
+per-device capability question answered at routing time by a provider's
+`supports_dynamic` — routed to a device that honours feedback, declined
+per-device on one that does not. It is no longer a circuit-global
+rejection. Both IBM providers **execute** these circuits: the IBM lowering
+turns a `conditional` into a Qiskit `if_test` block and bakes the feeding
+measure inline, so real Heron hardware runs the feedback natively and the
+Aer path runs it in simulation. `devq.simulated` declines (it inherits the
+`supports_dynamic` default), so a dynamic job simply routes past it to a
+capable device. The one gap is the noiseless ideal: `reference_ideal`
+declines a dynamic circuit (its ideal is not defined through the
+density-matrix + marginalise path), so fidelity for a dynamic circuit
+reports `None` rather than a forged number until a feedback-aware ideal is
+added.
+
+Mid-circuit measurement (a gate or reset on a qubit after it was measured)
+remains the one well-formed-but-unrunnable construct: no current backend
+can run it faithfully (the lowering hoists measures to the end), so it is
+DETECTED at the frontend and marked on the circuit (`unrunnable_reason`),
+not raised — the circuit still parses and becomes a job, and the KERNEL
+rejects that job (REJECTED, with the reason) at routing time. This keeps
+that verdict as one uniform outcome — a REJECTED job with a reason —
+rather than a parse exception that would abort a whole workload over one
+circuit. Running it anyway (hoisting the measure past a later operation on
+the same qubit) would change the circuit's meaning; rejecting with a
+reason is the honest behaviour. The same structural check reaches into a
+conditional's body, so a guarded gate on an already-measured qubit is
+caught the same way.
 
 Measure and reset are now **executed**, not just recorded. Both providers
 honour a circuit's explicit measures (falling back to measure-all only
@@ -241,8 +259,9 @@ above) rather than silently mis-run. Results are reported over the
 declared classical register (bitstring width is `num_clbits`, falling back
 to `num_qubits` when no `creg` is declared), so a measured bit sits at its
 own index and an unmeasured bit reads 0 — the convention a fidelity
-comparison needs. Full mid-circuit measurement (and the classical feedback
-built on it) is a later execution-model capability, not yet present.
+comparison needs. Full mid-circuit measurement — executing feedback
+NATIVELY in `devq.simulated` rather than deferring to a capable provider —
+is a later execution-model capability, not yet present.
 
 What remains for Phase 6: additional-language frontends — **OpenQASM
 3.0, Silq, Q#, Qiskit circuits** — each built against the same

@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 75 sanity blocks in `run_tests.py`, covering
+Specification for the 80 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 75 blocks, one line each
+python run_tests.py              # all 80 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -853,6 +853,158 @@ block whose execution path never touches Qiskit, so it verifies DevQ's
 core runs without a quantum framework — the claim that
 `DevQSimulatedProvider` is a genuine zero-dependency reference
 implementation.
+
+---
+
+### `supports_dynamic`
+
+*supports_dynamic declines by default, IBM affirms, no qiskit escapes
+providers/ibm.*
+
+The provider-contract capability for **dynamic circuits** — circuits with
+classical feedback (`if (creg==N)`), the loop mid-circuit measurement is
+the primitive for. Its shape deliberately mirrors `reference_ideal`: an
+OPTIONAL method the base class DECLINES (`False`) and a capable provider
+overrides. Two independent things are asserted.
+
+*Resolution is single-point.* The override is defined exactly once, on the
+shared `IBMProvider` base. The block checks **function identity** — that
+`IBMSimulatedProvider.supports_dynamic` and
+`IBMRealProvider.supports_dynamic` are the *same function object* as
+`IBMProvider.supports_dynamic`, and that `DevQSimulatedProvider`'s resolves
+to `BaseProvider`'s default. This proves both IBM providers gain the
+capability from one edit (the same single-point inheritance they already
+share for circuit lowering), not from two copies that could drift.
+Behaviourally: base and `devq.simulated` return `False`, both IBM providers
+return `True`.
+
+*The boundary must not be breached.* Adding dynamic-circuit support must not
+be the change that leaks Qiskit out of the driver layer. The block walks
+DevQ's own packages and asserts **no `import qiskit` / `from qiskit` /
+`import ibm…` escapes `providers/ibm/`** — the kernel, IR, frontends and
+routing layer stay Qiskit-free. The only legitimate homes for such imports
+are `providers/ibm/` (the drivers) and the test/verify oracles that
+cross-check *against* Qiskit by design; `research/` hardware-run entry
+points are excluded explicitly rather than by accident. This is a standing
+regression guard for the whole dynamic-circuit effort, not just this method.
+
+---
+
+### `conditional_ir`
+
+*CircuitRep represents a conditional op: is_dynamic, cregs, body-qubit
+hazard.*
+
+Step 2 of dynamic-circuit support: a classically-conditioned gate
+(`if (creg==N) <gate>`) is a **first-class op** in the IR, not a rejected
+construct. The block pins the representation the frontend (step 3) and the
+IBM lowering (step 5) build on. It asserts the op's documented shape —
+`{"op": "conditional", "condition": {"clbits": […], "value": N}, "body":
+<gate op>}` — carried in **source order** in the one ordered stream (after
+the measure, not hoisted to a side channel), and the three derived views
+that summarise it without drifting from it: `is_dynamic` (the flag the
+kernel checks against `supports_dynamic`), `conditionals`, and `cregs`
+(the declared-register structure a condition resolves against, returned as
+a defensive copy so a caller cannot corrupt the circuit).
+
+Two correctness points beyond mere representation. `get_depth` counts only
+real gates — a guarded gate is deliberately not counted, since a
+maybe-fired layer has no well-defined static depth. And
+`find_mid_circuit_measurement` reaches **into** the conditional body: a
+guarded gate on an already-measured qubit is the same terminal-measurement
+hazard as a bare one and is flagged, while the legitimate feedback shape —
+a guard *reading* a measured clbit, body acting on an unmeasured qubit — is
+correctly not a hazard, because reading a measured bit is exactly what a
+dynamic circuit is for.
+
+---
+
+### `conditional_frontend`
+
+*The 2.0 parser emits if(creg==N) as conditional ops, resolving registers.*
+
+Step 3: the OpenQASM 2.0 frontend turns `if (creg==N) <stmt>` into
+first-class `conditional` ops rather than marking the circuit unrunnable —
+the parse-path counterpart to `conditional_ir`, which pins the IR shape
+directly. It exercises register resolution (the condition's register name
+to its flattened clbit indices, LSB-first), multi-bit conditions (a 2-bit
+creg spans both clbits with the compared value), and the case a naive
+implementation gets wrong: **broadcast**. `if (c==1) h q;` over a 2-qubit
+register expands to two guarded operations, so the frontend emits *two*
+conditional ops sharing the one condition — the documented "a block of
+guarded statements is several conditionals sharing a condition" rule,
+which also covers custom-gate inlining.
+
+Two boundaries. A conditional whose body reuses the **measured** qubit is
+emitted as a conditional but is still `unrunnable` (the mid-circuit hazard
+reaching into the body), so it is both `is_dynamic` and carries a
+mid-circuit `unrunnable_reason`. And an **unknown register** named in a
+condition is a genuine parse error — raised, naming the register — not
+emitted, because the condition references something never declared. This is
+the line between a well-formed conditional (represented) and malformed
+source (rejected at parse).
+
+---
+
+### `dynamic_feasibility`
+
+*unsatisfiable_reason declines a dynamic circuit on a provider without
+feedback.*
+
+Step 4: capability is feasibility. A dynamic circuit can only run on a
+device whose provider's execution model honours classical feedback, and
+that verdict is composed in `MemoryManager.unsatisfiable_reason` — the same
+per-candidate feasibility the router already consults, now with one more
+reason a candidate can be infeasible. The block drives the method directly
+(a unit test, tiny provider stubs, no Qiskit backend) with the same dynamic
+circuit and allocator against two providers differing only in
+`supports_dynamic`: infeasible with a capability reason where the provider
+declines, feasible where it affirms. A **static** circuit is feasible on
+both — the clause fires only for `is_dynamic`, so ordinary circuits
+delegate straight to the allocator as before.
+
+The subtle assertion is **ordering**. The capability check must run *before*
+the allocator delegation, and proving that needs a circuit that is both
+dynamic-on-a-no-feedback-provider *and* allocation-infeasible (four qubits
+on a two-qubit device) — otherwise the two orderings are
+indistinguishable. A correct implementation returns the *capability* reason
+(feedback); the same circuit on a feedback-capable provider falls through
+and is declined by the *allocator* (qubit count) instead. This pins that
+the provider answers "can my runtime run this control flow" and the
+allocator answers "can these qubits host it", composed in that order, so
+neither concern learns the other's job. (An earlier version of this block
+used only an allocatable circuit and a reordering mutant survived — the
+fix was this wide fixture.)
+
+---
+
+### `dynamic_lowering`
+
+*IBM lowering emits if_test for conditionals; Aer runs the feedback
+correctly.*
+
+Step 5, where a conditional op becomes real execution. `build_qiskit_circuit`
+lowers a `conditional` to a Qiskit `if_test` block and — for a dynamic
+circuit only — bakes the feeding measure **inline** in the body, because an
+`if_test` can only test a classical bit already written mid-run. The block
+asserts that lowered structure deterministically (a conditional produces an
+`if_else` op, with its measure baked before it), and that a **static**
+circuit is untouched: measurement-free body, measures still returned in the
+map for the reference path, no `if_else`. This split matters because the
+measurement-free-body invariant the reference path relies on must still hold
+for every circuit it actually lowers — which it does, because
+`reference_ideal` declines dynamic circuits (their ideal is not defined
+through the noiseless density-matrix + marginalise read; feedback depends on
+a collapse that read never performs).
+
+The decisive check runs the feedback on Aer. `h q0; measure→c0; if(c==1) x
+q1; measure q1→c1` correlates the two bits perfectly — q1 flips exactly when
+c0 is 1 — so the only outcomes are `00` and `11`, and both actually occur
+(the H makes c0 random). A broken lowering leaks `01`/`10`: a dropped
+condition, an inverted polarity, or an unbaked measure all show up as
+correlation violations. This is guarded on qiskit-aer being importable
+(skipped with a note otherwise), the same pattern as the other
+IBM-dependent blocks; the structural checks above it need only qiskit.
 
 ---
 

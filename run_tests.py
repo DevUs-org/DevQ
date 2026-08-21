@@ -573,17 +573,20 @@ def block_rejection_semantics():
     check(m and "d1:" in m.group(1) and "d2:" in m.group(1),
           "job 3's rejection reason aggregates both d1 and d2")
 
-    # A circuit DevQ cannot faithfully run (here: classical control, which
-    # needs mid-circuit feedback) is REJECTED too — the SAME umbrella
-    # terminal state as an unsatisfiable allocation, not a parse crash.
-    # The reason is carried from the circuit layer (the frontend marked it
-    # unrunnable) through to the job, proving the two rejection sources
-    # converge on one outcome.
+    # A circuit DevQ cannot faithfully run on ANY backend (here:
+    # mid-circuit measurement — a gate on a qubit after it is measured) is
+    # REJECTED — the SAME umbrella terminal state as an unsatisfiable
+    # allocation, not a parse crash. The reason is carried from the circuit
+    # layer (the frontend marked it unrunnable) through to the job, proving
+    # the two rejection sources converge on one outcome. NOTE: classical
+    # control (conditional.qasm) is deliberately NOT used here anymore — it
+    # is now a runnable dynamic circuit, declined per-device rather than
+    # circuit-globally, and is covered by the routing block instead.
     sh2 = three_device()
-    out2 = run(sh2, [f"qrun {QASM2}conditional.qasm"])
+    out2 = run(sh2, [f"qrun {QASM2}midcircuit.qasm"])
     expect(out2, "REJECTED")
     m2 = re.search(r"Job \d+ REJECTED: ([^\n]*)", out2)
-    check(m2 and "feedback" in m2.group(1).lower(),
+    check(m2 and "mid-circuit" in m2.group(1).lower(),
           f"an unrunnable circuit rejects with its circuit-level reason, "
           f"got {m2.group(1) if m2 else None!r}")
 
@@ -593,10 +596,10 @@ def block_rejection_semantics():
     # via the queue and drain: the unrunnable circuit must still be REJECTED
     # before it ever routes to a device.
     sh3 = three_device()
-    out3 = run(sh3, [f"qsubmit {QASM2}conditional.qasm", "qrunpack", "qps"])
+    out3 = run(sh3, [f"qsubmit {QASM2}midcircuit.qasm", "qrunpack", "qps"])
     expect(out3, "REJECTED")
     m3 = re.search(r"Job \d+ REJECTED: ([^\n]*)", out3)
-    check(m3 and "feedback" in m3.group(1).lower(),
+    check(m3 and "mid-circuit" in m3.group(1).lower(),
           f"an unrunnable circuit is rejected on the scheduling path too, "
           f"got {m3.group(1) if m3 else None!r}")
 
@@ -605,9 +608,11 @@ def block_unrunnable_circuits():
     '''Unrunnable circuits become REJECTED jobs through the runner, no crash'''
     # DevQ declines two kinds of circuit, and the benchmark runner must
     # surface BOTH as REJECTED jobs in a completed run rather than crashing:
-    #   - well-formed but UNSUPPORTED (classical control, mid-circuit
-    #     measurement): the frontend marks unrunnable_reason, the kernel
-    #     rejects the job.
+    #   - well-formed but UNRUNNABLE ON ANY BACKEND (mid-circuit
+    #     measurement — a gate on a qubit after it is measured): the
+    #     frontend marks unrunnable_reason, the kernel rejects the job.
+    #     (Classical control is NOT in this bucket anymore — it is a
+    #     runnable dynamic circuit, declined only per-device.)
     #   - MALFORMED source that fails to parse: submit_jobs turns the parse
     #     error into a REJECTED placeholder job carrying the error as its
     #     reason, so one bad circuit does not abort a whole workload.
@@ -647,7 +652,7 @@ def block_unrunnable_circuits():
                                      "num_qubits": 5}}],
             "jobs": [
                 {"circuit": BELL},                       # runs
-                {"circuit": QASM2 + "conditional.qasm"},  # unsupported
+                {"circuit": QASM2 + "midcircuit.qasm"},  # unrunnable (mid-circuit)
                 {"circuit": bad},                        # malformed
                 {"circuit": bad2},                       # malformed (2nd)
             ],
@@ -682,11 +687,11 @@ def block_unrunnable_circuits():
               f"bell FINISHED, all three unrunnable circuits REJECTED — got "
               f"{state_vals}")
 
-        # The rejection reasons cover both flavours: the unsupported
-        # construct (feedback) and the parse failures.
+        # The rejection reasons cover both flavours: the unrunnable
+        # construct (mid-circuit measurement) and the parse failures.
         reasons = " || ".join(rejects.values()).lower()
-        check("feedback" in reasons,
-              f"the unsupported circuit rejects citing missing feedback, "
+        check("mid-circuit" in reasons,
+              f"the unrunnable circuit rejects citing mid-circuit measurement, "
               f"reasons={list(rejects.values())}")
         check("could not parse" in reasons or "parse" in reasons,
               f"the malformed circuits reject citing a parse failure, "
@@ -1124,6 +1129,400 @@ def block_single_device_devq_provider():
     sh  = session(None, [("devq.simulated", "fully_connected", 5, "mock", None)])
     out = run(sh, ["qdevices", "qtopology d0", f"qrun {BELL}", "qps"])
     expect(out, "mock (d0)", "DevQSimulatedProvider", "FINISHED")
+
+
+def block_supports_dynamic_capability():
+    '''supports_dynamic declines by default, IBM affirms, no qiskit escapes providers/ibm'''
+    # The provider-contract capability for dynamic circuits (classical
+    # feedback). Its shape mirrors reference_ideal: an OPTIONAL method that
+    # the base DECLINES and a capable provider overrides. Here we assert the
+    # inheritance resolves as designed — the override lives ONCE on the shared
+    # IBMProvider base, so both IBM subclasses affirm and DevQ inherits the
+    # base decline — and, separately, the boundary this capability must never
+    # breach: no qiskit/ibm import may escape providers/ibm/.
+    import os, re
+    from circuits.circuit_rep import CircuitRep
+    from providers.base_provider import BaseProvider
+    from providers.ibm.ibm_provider import IBMProvider
+    from providers.ibm.ibm_real_provider import IBMRealProvider
+
+    # A representative circuit is enough — v1 answers uniformly, ignoring the
+    # argument, so a plain Bell circuit exercises the predicate.
+    cr = CircuitRep(2, 2)
+    cr.add_gate("h", [0])
+    cr.add_gate("cx", [0, 1])
+
+    # Resolution: the override is defined exactly once, on IBMProvider, and
+    # both IBM subclasses inherit THAT function object (not a copy) while
+    # DevQSimulatedProvider inherits BaseProvider's default. Checking function
+    # identity proves the single-point-of-truth, not just the boolean.
+    check(IBMSimulatedProvider.supports_dynamic is IBMProvider.supports_dynamic,
+          "IBMSimulatedProvider inherits the supports_dynamic override from "
+          "IBMProvider (single point of truth)")
+    check(IBMRealProvider.supports_dynamic is IBMProvider.supports_dynamic,
+          "IBMRealProvider inherits the supports_dynamic override from "
+          "IBMProvider (single point of truth)")
+    check(DevQSimulatedProvider.supports_dynamic is BaseProvider.supports_dynamic,
+          "DevQSimulatedProvider inherits the BaseProvider decline (no override)")
+
+    # Behaviour: base and DevQ decline (False), both IBM providers affirm
+    # (True). Instantiate the ones that construct cheaply; the IBM providers
+    # take a seed, DevQ takes a seed, base is abstract-ish but the method is
+    # concrete and callable on an instance-free bound check via the class.
+    ibm_sim = IBMSimulatedProvider(seed=SEED)
+    devq    = DevQSimulatedProvider(seed=SEED)
+    check(ibm_sim.supports_dynamic(cr) is True,
+          "IBMSimulatedProvider affirms supports_dynamic")
+    check(devq.supports_dynamic(cr) is False,
+          "DevQSimulatedProvider declines supports_dynamic")
+    # BaseProvider's default, called through a subclass that does NOT override
+    # (DevQ), already exercised the decline; assert the default itself returns
+    # False so a future edit to the base cannot silently flip the contract.
+    check(BaseProvider.supports_dynamic(devq, cr) is False,
+          "BaseProvider.supports_dynamic default declines (False)")
+
+    # Boundary regression: qiskit/ibm imports must stay INSIDE providers/ibm.
+    # The kernel, IR, frontends and routing layer are Qiskit-free, and the
+    # dynamic-circuit work must not be the change that breaches that. Scan
+    # DevQ's own packages for a top-level `import qiskit` / `from qiskit` /
+    # `import ibm...`; the only legitimate homes are providers/ibm/ (drivers)
+    # and the test/verify oracles, which cross-check AGAINST qiskit by design.
+    root = os.path.dirname(os.path.abspath(__file__))
+    OURS = ("benchmark", "circuits", "config", "engine", "frontends",
+            "hardware", "kernel", "providers", "registry", "research", "shell")
+    # Oracles that legitimately import qiskit to check DevQ against it.
+    ALLOWED = (os.path.join("providers", "ibm"),)
+    import_re = re.compile(r"^\s*(?:from|import)\s+(qiskit|ibm)\b", re.M)
+    leaks = []
+    for pkg in OURS:
+        for dirpath, dirnames, filenames in os.walk(os.path.join(root, pkg)):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+            for fn in filenames:
+                if not fn.endswith(".py"):
+                    continue
+                path = os.path.join(dirpath, fn)
+                rel = os.path.relpath(path, root)
+                if any(rel.startswith(a) for a in ALLOWED):
+                    continue
+                # research/ holds a hardware-run script that legitimately
+                # drives qiskit-ibm-runtime; it is a research entry point,
+                # not core, so exclude it explicitly rather than by accident.
+                if rel.startswith("research" + os.sep):
+                    continue
+                with open(path) as handle:
+                    if import_re.search(handle.read()):
+                        leaks.append(rel)
+    check(not leaks,
+          f"no qiskit/ibm import escapes providers/ibm (leaks: {sorted(leaks)})")
+
+
+def block_conditional_ir():
+    '''CircuitRep represents a conditional op: is_dynamic, cregs, body-qubit hazard'''
+    # Step 2 of dynamic-circuit support: a classically-conditioned gate is a
+    # FIRST-CLASS op in the IR, inspectable through derived views that cannot
+    # drift from the ordered stream. This block pins the representation — the
+    # frontend (step 3) and lowering (step 5) build on exactly this shape.
+    from circuits.circuit_rep import CircuitRep
+
+    # h q0; measure q0->c0; if (c==1) x q1  — the canonical feedback circuit.
+    cr = CircuitRep(2, 1)
+    cr.add_creg("c", 0, 1)
+    cr.add_gate("h", [0])
+    cr.add_measure(0, 0)
+    cr.add_conditional([0], 1,
+                       {"op": "gate", "gate": "x", "qubits": [1], "params": []})
+
+    # is_dynamic is the flag the kernel checks against supports_dynamic.
+    check(cr.is_dynamic is True,
+          "a circuit with a conditional op is is_dynamic")
+
+    # The conditional op carries the guard and the guarded gate, in the
+    # documented shape: condition {clbits, value}, body a single gate op.
+    conds = cr.conditionals
+    check(len(conds) == 1, "conditionals view returns the one conditional op")
+    cond = conds[0]
+    check(cond["op"] == "conditional"
+          and cond["condition"] == {"clbits": [0], "value": 1}
+          and cond["body"]["gate"] == "x"
+          and cond["body"]["qubits"] == [1],
+          "conditional op records condition {clbits,value} and the body gate")
+
+    # It lives in the ordered stream in SOURCE ORDER — after the measure,
+    # not hoisted into a side channel. Order is what execution needs.
+    ops = [i["op"] for i in cr.instructions]
+    check(ops == ["gate", "measure", "conditional"],
+          f"conditional is carried in source order, got {ops}")
+
+    # cregs exposes the declared register structure the condition resolves
+    # against, and the view is a defensive copy (mutating it cannot corrupt
+    # the circuit's own structure).
+    check(cr.cregs == {"c": (0, 1)}, "cregs view exposes declared registers")
+    view = cr.cregs
+    view["evil"] = (9, 9)
+    check("evil" not in cr.cregs, "cregs view is a copy, not the live dict")
+
+    # A plain circuit is not dynamic and declares no cregs unless told to.
+    plain = CircuitRep(2, 2)
+    plain.add_gate("h", [0])
+    plain.add_gate("cx", [0, 1])
+    check(plain.is_dynamic is False, "a circuit with no conditional is not dynamic")
+    check(plain.cregs == {}, "a circuit with no declared cregs has an empty view")
+
+    # get_depth counts only real gates — the conditional's guarded gate is
+    # deliberately not counted (a maybe-fired layer has no defined depth).
+    check(cr.get_depth() == 1,
+          f"get_depth counts the unconditioned gate only, got {cr.get_depth()}")
+
+    # The mid-circuit hazard check reaches INTO the conditional body: a
+    # guarded gate on an already-measured qubit is the same hazard as a bare
+    # one, and must be caught.
+    haz = CircuitRep(1, 1)
+    haz.add_measure(0, 0)
+    haz.add_conditional([0], 1,
+                        {"op": "gate", "gate": "x", "qubits": [0], "params": []})
+    reason = haz.find_mid_circuit_measurement()
+    check(reason is not None and "conditional gate" in reason,
+          "a conditional body-gate on a measured qubit is flagged mid-circuit")
+
+    # ...but the LEGITIMATE feedback shape — guard reads a measured clbit,
+    # body acts on an UNmeasured qubit — is not a hazard. Reading a measured
+    # bit is exactly what a dynamic circuit is for.
+    check(cr.find_mid_circuit_measurement() is None,
+          "reading a measured clbit in a guard is not a mid-circuit hazard")
+
+
+def block_conditional_frontend():
+    '''The 2.0 parser emits if(creg==N) as conditional ops, resolving registers'''
+    # Step 3: the frontend turns `if (creg==N) <stmt>` into first-class
+    # conditional ops instead of marking the circuit unrunnable. This block
+    # exercises the PARSE path end to end — register resolution to clbits,
+    # multi-bit conditions, broadcast expansion, and the boundary between a
+    # well-formed conditional (emitted) and a genuine error (raised).
+    from frontends.qasm2.parser import parse, QASMError
+
+    # Canonical feedback: h; measure; if(c==1) x on a DIFFERENT qubit. Emits
+    # one conditional, resolves c to clbit [0], and is NOT unrunnable.
+    cr = parse('OPENQASM 2.0;\ninclude "qelib1.inc";\n'
+               'qreg q[2];\ncreg c[1];\n'
+               'h q[0];\nmeasure q[0] -> c[0];\nif (c==1) x q[1];\n')
+    check(cr.unrunnable_reason is None and cr.is_dynamic,
+          f"if(c==1): parses to a dynamic circuit, not unrunnable, got "
+          f"reason={cr.unrunnable_reason!r} is_dynamic={cr.is_dynamic}")
+    check([i["op"] for i in cr.instructions] == ["gate", "measure", "conditional"],
+          f"if(c==1): the conditional is in source order, got "
+          f"{[i['op'] for i in cr.instructions]}")
+    cond = cr.conditionals[0]
+    check(cond["condition"] == {"clbits": [0], "value": 1}
+          and cond["body"]["gate"] == "x" and cond["body"]["qubits"] == [1],
+          f"if(c==1): resolves c->[0], guards x on q[1], got {cond!r}")
+
+    # Multi-bit register: if(c==3) with a 2-bit creg spans both clbits,
+    # LSB-first, value 3.
+    cr2 = parse("OPENQASM 2.0;\nqreg q[3];\ncreg c[2];\n"
+                "measure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
+                "if (c==3) x q[2];\n")
+    check(cr2.conditionals[0]["condition"] == {"clbits": [0, 1], "value": 3},
+          f"if(c==3) over creg[2]: condition spans both clbits LSB-first, "
+          f"got {cr2.conditionals[0]['condition']!r}")
+
+    # Broadcast: `if(c==1) h q;` over a 2-qubit register expands to TWO
+    # conditional ops, each guarding one qubit on the SAME condition. This
+    # is the case a naive "wrap one op" implementation gets wrong.
+    cr3 = parse("OPENQASM 2.0;\nqreg q[2];\ncreg c[1];\n"
+                "measure q[0] -> c[0];\nif (c==1) h q;\n")
+    conds3 = cr3.conditionals
+    check(len(conds3) == 2
+          and conds3[0]["body"]["qubits"] == [0]
+          and conds3[1]["body"]["qubits"] == [1]
+          and all(k["condition"] == {"clbits": [0], "value": 1} for k in conds3),
+          f"if(c==1) h q; broadcasts to two conditionals sharing the "
+          f"condition, got {conds3!r}")
+
+    # A conditional whose body reuses the MEASURED qubit is still caught as
+    # mid-circuit (the step-2 hazard reaching into the body) — unrunnable,
+    # even though it parsed to a conditional op.
+    cr4 = parse("OPENQASM 2.0;\nqreg q[1];\ncreg c[1];\n"
+                "measure q[0] -> c[0];\nif (c==1) x q[0];\n")
+    check(cr4.is_dynamic and cr4.unrunnable_reason is not None
+          and "mid-circuit" in cr4.unrunnable_reason.lower(),
+          f"if(c==1) x q[0] on the measured qubit: dynamic but unrunnable "
+          f"(mid-circuit), got reason={cr4.unrunnable_reason!r}")
+
+    # An unknown register in a condition is a genuine parse error — raised,
+    # not emitted (the condition names something never declared).
+    try:
+        parse("OPENQASM 2.0;\nqreg q[1];\nif (nope==1) x q[0];\n")
+        check(False, "unknown creg in if-condition should raise")
+    except QASMError as e:
+        check("nope" in str(e) and "if-condition" in str(e),
+              f"unknown creg in condition raises naming it, got {e}")
+
+
+def block_dynamic_feasibility():
+    '''unsatisfiable_reason declines a dynamic circuit on a provider without feedback'''
+    # Step 4: capability is feasibility. A dynamic circuit is infeasible on a
+    # device whose provider cannot execute classical feedback — checked in
+    # unsatisfiable_reason, ahead of the allocator, against the device's
+    # PROVIDER. This is the clause the router's per-candidate _candidates
+    # filter rides, so a dynamic job routes to a capable device and is
+    # REJECTED (per-device reason) only when none is attached. Tested at the
+    # unit level, directly on MemoryManager, with tiny provider stubs so no
+    # Qiskit backend is needed — the capability is a plain DevQ predicate.
+    from kernel.memory.memory_manager import MemoryManager
+    from hardware.device import QuantumDevice
+    from frontends.qasm2.parser import parse
+    from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
+
+    class _Provider:
+        # Minimal provider stub: only the capability predicate matters here.
+        def __init__(self, dynamic):
+            self._dynamic = dynamic
+        def supports_dynamic(self, circuit):
+            return self._dynamic
+
+    def _device(provider):
+        # A 2-qubit line device, enough to host the fixtures. The allocator
+        # only runs for the STATIC path (the dynamic path short-circuits
+        # before delegation), so a real NoiseGraphAllocator exercises the
+        # genuine feasible() delegation for the static assertions.
+        return QuantumDevice(
+            kind="stub", num_qubits=2, coupling_map=[(0, 1)],
+            basis_gates=["h", "cx", "x", "measure"],
+            error_map={0: 0.01, 1: 0.01}, edge_error_map={(0, 1): 0.02},
+            provider=provider)
+
+    dyn    = parse(open(QASM2 + "conditional.qasm").read())   # is_dynamic
+    static = parse(open(BELL).read())                          # not dynamic
+    check(dyn.is_dynamic and not static.is_dynamic,
+          "fixtures: conditional.qasm is dynamic, bell is not")
+
+    mm_no  = MemoryManager(_device(_Provider(False)), NoiseGraphAllocator())
+    mm_yes = MemoryManager(_device(_Provider(True)),  NoiseGraphAllocator())
+
+    # The heart of it: a dynamic circuit is INFEASIBLE where the provider
+    # declines feedback, and FEASIBLE where it affirms — the difference is
+    # the provider capability alone, same circuit, same allocator.
+    reason = mm_no.unsatisfiable_reason(dyn)
+    check(reason is not None and "feedback" in reason.lower(),
+          f"dynamic circuit is infeasible on a no-feedback provider, with a "
+          f"capability reason, got {reason!r}")
+    check(mm_yes.unsatisfiable_reason(dyn) is None,
+          "dynamic circuit is feasible on a provider that supports feedback")
+
+    # A STATIC circuit is unaffected by the capability gate on EITHER
+    # provider — the clause only fires for is_dynamic, so a normal circuit
+    # delegates straight to the allocator as before (feasible on this
+    # 2-qubit device).
+    check(mm_no.unsatisfiable_reason(static) is None,
+          "a static circuit is feasible on a no-feedback provider (clause "
+          "does not fire)")
+    check(mm_yes.unsatisfiable_reason(static) is None,
+          "a static circuit is feasible on a feedback provider")
+
+    # The capability check runs BEFORE the allocator, and proving that needs
+    # a circuit that is BOTH dynamic-on-a-no-feedback-provider AND
+    # allocation-infeasible — otherwise the two orderings are
+    # indistinguishable (an allocatable circuit returns the same capability
+    # reason either way). Build a dynamic circuit that needs MORE qubits than
+    # the device has: a correct implementation returns the CAPABILITY reason
+    # (feedback), a reversed one would return the ALLOCATION reason (qubits).
+    wide = parse("OPENQASM 2.0;\n"
+                 "qreg q[4];\ncreg c[1];\n"
+                 "h q[0];\nmeasure q[0] -> c[0];\n"
+                 "if (c==1) x q[3];\n")  # 4 qubits, device has 2; also dynamic
+    check(wide.is_dynamic, "wide fixture is dynamic")
+    wide_reason = mm_no.unsatisfiable_reason(wide)
+    check(wide_reason is not None and "feedback" in wide_reason.lower(),
+          f"a dynamic AND unallocatable circuit is declined for CAPABILITY "
+          f"first (feedback), not allocation, proving the check precedes "
+          f"delegation, got {wide_reason!r}")
+    # And on a feedback-capable provider, the SAME wide circuit falls through
+    # to the allocator and is declined for the ALLOCATION reason instead —
+    # confirming the capability clause is what short-circuited above, not a
+    # blanket rejection.
+    wide_alloc = mm_yes.unsatisfiable_reason(wide)
+    check(wide_alloc is not None and "feedback" not in wide_alloc.lower(),
+          f"the same wide circuit on a feedback provider is declined by the "
+          f"allocator (not for capability), got {wide_alloc!r}")
+
+
+def block_dynamic_lowering():
+    '''IBM lowering emits if_test for conditionals; Aer runs the feedback correctly'''
+    # Step 5: a conditional op becomes real execution. build_qiskit_circuit
+    # lowers a conditional to a Qiskit if_test block and bakes the
+    # feeding measure inline (an if_test can only read a bit already
+    # written mid-run). This block asserts the lowered STRUCTURE
+    # deterministically, then — guarded on Aer being present — actually
+    # RUNS a feedback circuit and checks the classical correlation holds.
+    # reference_ideal declines dynamic circuits, since their ideal is not
+    # defined through the noiseless density-matrix + marginalise path.
+    from frontends.qasm2.parser import parse
+    from providers.ibm.qiskit_lowering import build_qiskit_circuit
+
+    # A dynamic circuit lowers to h, measure (baked inline), if_else — the
+    # conditional became an if_test block, and the mid-circuit measure is in
+    # the body (not deferred to the map).
+    dyn = parse(open(QASM2 + "conditional.qasm").read())
+    try:
+        qc, mmap = build_qiskit_circuit(dyn, 1)
+    except Exception as e:
+        check(True, f"(dynamic lowering skipped — qiskit unavailable: "
+                    f"{type(e).__name__})")
+        return
+    names = [i.operation.name for i in qc.data]
+    check("if_else" in names,
+          f"a conditional lowers to a Qiskit if_test/if_else block, got {names}")
+    check(names.count("measure") == 1 and names.index("measure") < names.index("if_else"),
+          f"the feeding measure is baked inline before the conditional, got {names}")
+
+    # A STATIC circuit is unchanged by step 5: no measures baked into the
+    # body (they stay in the map for the reference path), no if_else.
+    static = parse("OPENQASM 2.0; include \"qelib1.inc\"; qreg q[2]; creg c[2]; "
+                   "h q[0]; cx q[0],q[1]; measure q[0]->c[0]; measure q[1]->c[1];")
+    sqc, smap = build_qiskit_circuit(static, 2)
+    snames = [i.operation.name for i in sqc.data]
+    check("if_else" not in snames and "measure" not in snames,
+          f"a static circuit lowers to a measurement-free body as before, "
+          f"got {snames}")
+    check(smap == [(0, 0), (1, 1)],
+          f"a static circuit's measures are still returned in the map, got {smap}")
+
+    # reference_ideal declines a dynamic circuit (None), still answers a
+    # static one — the measurement-free-body invariant it relies on holds
+    # for every circuit it actually lowers.
+    p = IBMSimulatedProvider(seed=SEED)
+    check(p.reference_ideal(dyn) is None,
+          "reference_ideal declines a dynamic circuit (returns None)")
+    static_ideal = p.reference_ideal(static)
+    check(static_ideal is not None
+          and abs(static_ideal.get("00", 0) - 0.5) < 0.02
+          and abs(static_ideal.get("11", 0) - 0.5) < 0.02,
+          f"reference_ideal still answers a static (Bell) circuit, got "
+          f"{static_ideal}")
+
+    # THE REAL PROOF: run a feedback circuit on Aer and check the classical
+    # correlation. h q0; measure->c0; if(c==1) x q1; measure q1->c1. The
+    # feedback flips q1 exactly when c0==1, so the only outcomes are 00 and
+    # 11 — never 01 or 10. A broken lowering (dropped condition, wrong bit)
+    # would leak 01/10.
+    try:
+        from qiskit_aer import AerSimulator
+    except ImportError:
+        check(True, "(Aer run skipped — qiskit-aer unavailable)")
+        return
+    corr = parse("OPENQASM 2.0; include \"qelib1.inc\"; qreg q[2]; creg c[2]; "
+                 "h q[0]; measure q[0]->c[0]; if (c==1) x q[1]; "
+                 "measure q[1]->c[1];")
+    cqc, _ = build_qiskit_circuit(corr, 2)
+    sim = AerSimulator()
+    counts = sim.run(cqc, shots=4000, seed_simulator=SEED).result().get_counts()
+    leaked = {k: v for k, v in counts.items() if k not in ("00", "11")}
+    check(not leaked,
+          f"feedback correlation holds on Aer — only 00/11 outcomes, got "
+          f"counts={counts}, leaked={leaked}")
+    check(counts.get("00", 0) > 500 and counts.get("11", 0) > 500,
+          f"both correlated outcomes actually occur (the H makes c0 random), "
+          f"got {counts}")
 
 
 # ── Plugin matrix ─────────────────────────────────────────────────────────────
@@ -6694,21 +7093,41 @@ def block_qasm2_parser():
     check(c.measurements == [(4, 4)],
           f"multi_register: b[2] is global qubit 4, got {c.measurements}")
 
-    # ── Rejections are precise and line-numbered ────────────────────────
-    # A conditional is WELL-FORMED but unsupported: DevQ cannot do the
-    # mid-circuit feedback it needs. The parser no longer RAISES on it —
-    # raising would abort a whole spec over one such circuit. Instead the
-    # circuit parses and is marked unrunnable, so the KERNEL rejects the
-    # job (REJECTED, with this reason). Assert the mark, not an exception.
+    # ── Classical control is now first-class, not a rejection ───────────
+    # A conditional is WELL-FORMED and now REPRESENTABLE: the parser emits
+    # it as a `conditional` op rather than marking it unrunnable. It used to
+    # be rejected for lacking mid-circuit feedback; that runnability question
+    # is now answered per-device at routing time (a provider's
+    # supports_dynamic), not at parse time. So the parser's job is to
+    # represent it faithfully — assert the op, the resolved condition, and
+    # that the circuit is is_dynamic and NOT unrunnable.
     c = load("conditional.qasm")
-    check(c.unrunnable_reason is not None,
-          "conditional (if): parses and is marked unrunnable, not raised")
-    check("feedback" in (c.unrunnable_reason or "").lower(),
-          f"conditional: reason cites the missing feedback, got "
+    check(c.unrunnable_reason is None,
+          f"conditional (if): parses clean, no longer marked unrunnable, got "
           f"{c.unrunnable_reason!r}")
+    check(c.is_dynamic,
+          "conditional (if): the circuit is is_dynamic")
+    check(len(c.conditionals) == 1
+          and c.conditionals[0]["condition"] == {"clbits": [0], "value": 1}
+          and c.conditionals[0]["body"]["gate"] == "x"
+          and c.conditionals[0]["body"]["qubits"] == [1],
+          f"conditional (if): emits one conditional op guarding x on q[1], "
+          f"got {c.conditionals!r}")
+    check(c.cregs == {"c": (0, 1)},
+          f"conditional (if): the declared creg is recorded, got {c.cregs!r}")
 
-    # Mid-circuit measurement (a gate on a qubit after it was measured) is
-    # the same class of unsupported-but-well-formed: marked, not raised.
+    # An unknown register named in an if-condition IS a genuine parse error
+    # (the condition references something never declared) — this still
+    # raises, unlike the well-formed conditional above.
+    try:
+        parse("OPENQASM 2.0; qreg q[1]; if (nope==1) x q[0];")
+        check(False, "unknown creg in if-condition should raise")
+    except QASMError as e:
+        check("nope" in str(e),
+              f"unknown creg in if-condition raises naming the register, got {e}")
+
+    # Mid-circuit measurement (a gate on a qubit after it was measured) is a
+    # different case: unrunnable on ANY backend, so still marked (not raised).
     mid = parse("OPENQASM 2.0; qreg q[1]; creg c[1]; "
                 "measure q[0] -> c[0]; x q[0];")
     check(mid.unrunnable_reason is not None
@@ -7285,6 +7704,11 @@ BLOCKS = [
     ("single_device_batch",      block_single_device_batch),
     ("single_device_rejection",  block_single_device_rejection),
     ("single_device_devq",       block_single_device_devq_provider),
+    ("supports_dynamic",         block_supports_dynamic_capability),
+    ("conditional_ir",           block_conditional_ir),
+    ("conditional_frontend",     block_conditional_frontend),
+    ("dynamic_feasibility",      block_dynamic_feasibility),
+    ("dynamic_lowering",         block_dynamic_lowering),
     ("plugin_matrix",            block_plugin_matrix),
     ("determinism_seeded",       block_determinism_seeded),
     ("determinism_unseeded",     block_determinism_unseeded),

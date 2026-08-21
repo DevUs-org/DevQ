@@ -71,8 +71,42 @@ class MemoryManager:
                              max_1q_gate_error=None):
         '''
         None if the job is satisfiable on a fully free device,
-        else the allocator's human-readable reason it never can be.
+        else a human-readable reason it never can be.
+
+        Two independent reasons a device can never run a circuit, checked
+        in order:
+
+        1. CAPABILITY (execution model). A dynamic circuit — one using
+           classical feedback (is_dynamic) — can only run on a provider
+           whose runtime honours feedback. This is a property of the
+           PROVIDER's execution model, not of the allocator (whose
+           feasible() contract is purely about whether the device's qubits
+           and error rates can host the circuit). So it is checked HERE,
+           against the device's provider, before delegating: the allocator
+           answers "can these qubits host it", the provider answers "can my
+           runtime run its control flow", and this method composes both.
+           Keeping the two apart means the allocator never learns about
+           execution-model capability and the provider never learns about
+           qubit placement.
+
+        2. ALLOCATION. Otherwise, ask the active allocator whether the
+           circuit could ever be placed on this device (pool state aside).
+
+        The router calls this per candidate device and keeps only the ones
+        that return None, so a dynamic circuit is routed to a capable
+        device when one is attached and REJECTED — with a per-device reason
+        — only when none is. This is the same per-candidate feasibility the
+        router already used for allocation; capability is one more reason a
+        candidate can be infeasible, expressed entirely in DevQ's terms.
         '''
+        if circuit.is_dynamic and not self.device.provider.supports_dynamic(
+                circuit):
+            return (
+                f"provider {type(self.device.provider).__name__} does not "
+                f"support classical feedback (dynamic circuit); its execution "
+                f"model cannot run a gate conditioned on a mid-circuit "
+                f"measurement")
+
         return self.allocator.feasible(
             circuit,
             self.device,

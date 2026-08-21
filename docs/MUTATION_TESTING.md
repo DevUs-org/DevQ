@@ -43,13 +43,29 @@ cannot.
 
 ## Results
 
-**181 distinct mutants, 178 killed, 3 excluded** (M10 equivalent, P7 and
+**196 distinct mutants, 193 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 178/175/3 from prior work
-plus 3 new full-layout mutants (all killed against
+The total is delta-consistent, not recounted: 193/190/3 from prior work
+plus 3 new dynamic-lowering mutants (all killed against `dynamic_lowering`
+— DL1 on the condition polarity, DL2 on baking the feeding measure inline,
+DL3 on reference_ideal declining dynamic circuits). The 193/190/3 was
+190/187/3 plus 3 new dynamic-feasibility mutants (all killed against
+`dynamic_feasibility` — MF1 on the `is_dynamic` guard, MF2 on the
+capability polarity, MF3 on the check-before-allocator ordering, killed
+only after the block was strengthened). The 190/187/3 was 187/184/3 plus 3
+new conditional-frontend mutants (all killed against `conditional_frontend`
+— FE1 on the parsed condition value, FE2 on wrapping every
+broadcast-produced op, FE3 on removing the bare ops before re-wrapping).
+The 187/184/3 was 184/181/3 plus 3 new conditional-IR mutants (all killed
+against `conditional_ir` — CI1 on `is_dynamic`, CI2 on the `cregs`
+defensive copy, CI3 on the mid-circuit hazard reaching into the conditional
+body). The 184/181/3 was 181/178/3 plus 3 new supports-dynamic mutants (all
+killed against `supports_dynamic` — SD1/SD2 on the capability's base
+decline and IBM affirm, SD3 on the boundary scan). The 181/178/3 was
+178/175/3 plus 3 new full-layout mutants (all killed against
 `large_device_full_layout`). The 178/175/3 was 177/174/3 from the async
 work plus 1 new event-log mutant (E10, killed by `event_log`). The
 177/174/3 was 171/168/3 plus 6 async-dispatch mutants (all killed against
@@ -420,6 +436,149 @@ entirely loses the register width. Both are caught by
 `counts_width_contract`, which asserts the helper directly rather than
 only through a provider's end-to-end counts. Each was run against that
 block, confirmed red, then reverted; `base_provider.py` was diffed clean.
+
+### Dynamic-circuit capability — `providers/base_provider.py`, `providers/ibm/ibm_provider.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| SD1 | `BaseProvider.supports_dynamic` default returns `True` instead of `False` | killed (1) |
+| SD2 | `IBMProvider.supports_dynamic` override returns `False` instead of `True` | killed (1) |
+| SD3 | a `from qiskit import …` planted in `kernel/kernel.py` (a boundary breach) | killed (1) |
+
+`supports_dynamic` is the provider-contract capability for dynamic
+circuits, shaped as the sibling of `reference_ideal`: the base declines,
+`IBMProvider` overrides once for both IBM subclasses. SD1 and SD2 are the
+two ways to break the capability itself — flipping the default makes every
+provider (including `devq.simulated`, which inherits it) wrongly claim
+feedback support; flipping the override makes capable IBM hardware wrongly
+decline. SD1 is caught by the "DevQ declines" check and SD2 by the
+"IBM affirms" check in `supports_dynamic`.
+
+SD3 is a different kind of mutant: it does not break the method, it breaks
+the *boundary* the method's block also guards. Planting a real `qiskit`
+import into a core file (`kernel/kernel.py`) simulates the leak the whole
+dynamic-circuit effort must avoid — qiskit escaping `providers/ibm/` into
+the kernel/IR/frontend/routing layer. The block's package scan catches it
+and names the offending file. This confirms the guard actually bites rather
+than passing vacuously; it is the standing regression that lets later
+dynamic-circuit steps (IR op, frontend emit, lowering) proceed without
+silently importing qiskit upstream of the driver. Each mutant was run
+against `supports_dynamic`, confirmed red, then reverted; `base_provider.py`,
+`ibm_provider.py` and `kernel/kernel.py` were diffed clean afterward.
+
+### Conditional IR — `circuits/circuit_rep.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| CI1 | `is_dynamic` matches `op == "gate"` instead of `"conditional"` | killed (1) |
+| CI2 | `cregs` returns the live `_cregs` dict instead of a copy | killed (1) |
+| CI3 | `find_mid_circuit_measurement` skips the conditional body | killed (1) |
+
+The `conditional` op makes classical feedback representable; these are the
+three ways a reasonable implementation gets the representation wrong. CI1
+breaks the flag the kernel routes on — matching `gate` makes every ordinary
+circuit report dynamic, caught by the "a circuit with no conditional is not
+dynamic" check. CI2 exposes the live register dict, so a caller mutating
+the view corrupts the circuit's own structure; caught by the copy-defence
+check that adds a key to the view and asserts it does not appear in the
+circuit. CI3 is the correctness hole: if the mid-circuit hazard check does
+not reach into the conditional body, a guarded gate on an already-measured
+qubit slips through — exactly the terminal-measurement hazard the check
+exists to catch — so it is caught by the body-gate-on-measured-qubit
+assertion. Each was run against `conditional_ir`, confirmed red, then
+reverted; `circuit_rep.py` was diffed clean afterward.
+
+### Conditional frontend — `frontends/qasm2/parser.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| FE1 | `_parse_if` discards the parsed value (hardcodes `value = 0`) | killed (1) |
+| FE2 | wrap only the first broadcast-produced op (`produced[:1]`) | killed (1) |
+| FE3 | omit `del instructions[mark:]` before re-wrapping | killed (1) |
+
+The rewritten `_parse_if` emits `conditional` ops; these are its three
+real failure modes. FE1 loses the condition value, so `if (c==1)` becomes
+`if (c==0)` — caught by the resolved-condition check. FE2 is the broadcast
+bug: `if (c==1) h q;` over a register produces several guarded ops, and
+wrapping only the first silently drops the condition on the rest — caught
+by the two-conditionals-from-broadcast check. FE3 is the double-execution
+bug: the guarded ops are appended bare by `_parse_statement`, then
+re-wrapped; if the bare ops are not deleted first, every guarded gate
+appears both unconditionally AND inside a conditional — caught by the
+source-order check, which sees an extra bare `gate` op. Each was run
+against `conditional_frontend`, confirmed red, then reverted;
+`parser.py` was diffed clean afterward.
+
+Note the fixtures shifted with this step: `conditional.qasm` was rewritten
+from a rejected circuit into a clean feedback circuit (guarded gate on a
+different qubit than the measured one), and a new `midcircuit.qasm` (a gate
+on a qubit after it is measured) took over as the still-unrunnable fixture
+for `rejection_semantics` and `unrunnable_circuits`. The reason those
+blocks assert on moved from "feedback" to "mid-circuit" accordingly —
+classical control is no longer the example of an unrunnable circuit,
+because it is now runnable per-device.
+
+### Dynamic feasibility — `kernel/memory/memory_manager.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| MF1 | drop the `is_dynamic` guard (capability checked for every circuit) | killed (1) |
+| MF2 | invert the polarity (decline where the provider DOES support feedback) | killed (1) |
+| MF3 | move the capability check AFTER the allocator delegation | killed (1)* |
+
+The capability clause in `unsatisfiable_reason` decides whether a dynamic
+circuit can run on a device, ahead of the allocator. MF1 makes the check
+fire for every circuit, so a static circuit is wrongly declined on a
+no-feedback provider — caught by the static-circuit-is-feasible checks. MF2
+reverses the verdict, declining exactly the capable providers and admitting
+the incapable ones — caught by both the "infeasible on no-feedback" and
+"feasible on feedback" checks.
+
+*MF3 is worth recording honestly: it **survived the first version of the
+block** and was only killed after the test was strengthened. The block
+originally used an allocatable dynamic circuit, so whether the capability
+check ran before or after the allocator made no observable difference — the
+allocator returned "feasible" either way and the capability reason came out
+regardless. The reordering is only observable for a circuit that is *both*
+dynamic-on-a-no-feedback-provider *and* allocation-infeasible: correct code
+returns the capability reason (feedback), reordered code returns the
+allocation reason (qubit count). A wide fixture (four qubits on a two-qubit
+device) was added to force that distinction, and MF3 then failed the
+ordering assertion. This is the mutation-testing loop doing its job — a
+surviving mutant exposed a real gap in the test, not a false alarm. Each
+mutant was run against `dynamic_feasibility`, confirmed red (MF3 after the
+fixture fix), then reverted; `memory_manager.py` was diffed clean
+afterward.
+
+### Dynamic lowering — `providers/ibm/qiskit_lowering.py`, `providers/ibm/ibm_simulated_provider.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| DL1 | invert the condition polarity in `_build_condition` | killed (1) |
+| DL2 | don't bake the feeding measure inline for dynamic circuits | killed (1) |
+| DL3 | `reference_ideal` no longer declines dynamic circuits | killed (1) |
+
+This is where a conditional becomes real execution, so the mutants attack
+the three things that make the feedback correct. DL1 flips the guard: q1
+fires when the bit is 0 instead of 1, and the Aer run leaks `01` outcomes —
+caught by the correlation check, which is the payoff of running the circuit
+rather than only inspecting its structure. DL2 stops baking the mid-circuit
+measure into the body, so the `if_test` reads a bit that was never written;
+caught by the structural check that the measure precedes the `if_else`.
+DL3 removes the dynamic-circuit decline in `reference_ideal`, so it would
+compute a bogus "ideal" from the noiseless read that cannot represent
+feedback — caught by the check that a dynamic circuit's ideal is None.
+Together they pin that the feedback fires on the right value, reads a real
+bit, and is not silently scored against a forged reference. Each was run
+against `dynamic_lowering`, confirmed red, then reverted; both files were
+diffed clean afterward.
+
+This step also touched both providers' execute paths (skip re-applying the
+measure map for dynamic circuits, since the builder baked those measures
+inline — a double-measure otherwise) and `reference_ideal`'s dynamic
+decline; those are exercised by `dynamic_lowering` and the existing
+`ibm_measurement` / `reference_tiers` / `fidelity` blocks, which stay green,
+confirming the static path is unchanged.
 
 ### Full-device layout — `providers/ibm/ibm_provider.py`, `providers/ibm/…`
 

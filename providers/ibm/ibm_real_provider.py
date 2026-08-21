@@ -326,8 +326,13 @@ class IBMRealProvider(IBMProvider):
         except UnknownGateError as e:
             return submit_async(lambda e=e: ExecutionResult(
                 counts={}, success=False, error=str(e)))
-        for q, c in measure_map:
-            qc.measure(q, c)
+        # For a DYNAMIC circuit the builder already baked every measure into
+        # the body inline (a conditional's guard reads its bit mid-run), so
+        # re-applying the map would double-measure. Only a STATIC circuit
+        # leaves the body measurement-free and needs the map applied here.
+        if not circuit.is_dynamic:
+            for q, c in measure_map:
+                qc.measure(q, c)
 
         # The allocator's physical placement, as a FULL-device-width layout:
         # virtual qubit v runs on physical v2p_map[v], every unused physical

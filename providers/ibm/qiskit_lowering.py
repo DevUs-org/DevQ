@@ -178,6 +178,36 @@ def _apply_gate(qc, gate, qubits, params):
     action(qc, qubits, params)
 
 
+def _build_condition(qc, clbits, value):
+    '''
+    Build a Qiskit classical-expression testing that the given clbits equal
+    `value`, LSB-first — clbits[0] is bit 0 of the value. Used to lower a
+    CircuitRep `conditional` op's guard into an `if_test` predicate.
+
+    WHY PER-BIT, NOT A REGISTER COMPARE. Qiskit's `if_test((creg, N))`
+    tests a whole ClassicalRegister, but a DevQ condition names specific
+    clbit indices in the flattened global classical space, which need not
+    be a whole Qiskit register (the lowered circuit has one anonymous
+    width-bit register). Conjoining a per-bit equality over exactly the
+    named bits is correct for ANY subset and any value, and reduces to a
+    single Clbit test in the common one-bit `if (c==0/1)` case — so it
+    covers 2.0's `if (creg==N)` uniformly without depending on register
+    boundaries that the flattening does not preserve.
+    '''
+    from qiskit.circuit.classical import expr
+
+    terms = []
+    for pos, cb in enumerate(clbits):
+        lit = expr.lift(qc.clbits[cb])
+        # Bit `pos` of value must be set (lit) or clear (not lit).
+        terms.append(lit if (value >> pos) & 1 else expr.logic_not(lit))
+
+    cond = terms[0]
+    for t in terms[1:]:
+        cond = expr.logic_and(cond, t)
+    return cond
+
+
 def resolve_measure_map(circuit, width):
     '''
     The RESOLVED (qubit, clbit) measurement pairs for a circuit, with the
@@ -236,6 +266,22 @@ def build_qiskit_circuit(circuit, width):
         holding gates and resets only, and measure_map is the resolved
         list of (qubit, clbit) pairs.
 
+    DYNAMIC CIRCUITS. A circuit with classical feedback (is_dynamic — it
+    holds `conditional` ops) is lowered differently in one respect: the
+    measures that a condition READS must be baked into the body inline, at
+    their source position, because an `if_test` can only test a classical
+    bit that has already been written during the run. So for a dynamic
+    circuit this walk applies `measure` ops in place (rather than deferring
+    them all to the returned map) and emits each `conditional` as a Qiskit
+    `if_test` block guarding its body gate. The returned measure_map still
+    lists the (qubit, clbit) pairs for the caller's terminal sampling, but
+    the mid-circuit measures are already in the body — so execute() must
+    NOT re-apply the ones already baked. This is only reachable via
+    execute(): reference_ideal() declines dynamic circuits (their ideal is
+    not defined through the noiseless density-matrix + marginalise path),
+    so the measurement-free-body invariant it relies on still holds for
+    every circuit it actually lowers.
+
     Raises:
         ImportError propagates if qiskit is not installed — callers guard
         it exactly as they guard their own qiskit imports.
@@ -244,9 +290,15 @@ def build_qiskit_circuit(circuit, width):
 
     qc = QuantumCircuit(circuit.num_qubits, width)
 
+    dynamic = circuit.is_dynamic
+
     # Walk the ordered stream. Gates and resets go onto the body in source
-    # position; measures are collected via resolve_measure_map, not applied
-    # here, so the body stays measurement-free for the reference path.
+    # position. Measures: for a STATIC circuit they are collected via
+    # resolve_measure_map and NOT applied here, keeping the body
+    # measurement-free for the reference path. For a DYNAMIC circuit they
+    # are applied inline, because a later conditional's guard must be able
+    # to read them mid-run. Conditionals lower to if_test blocks (dynamic
+    # circuits only — a static circuit never holds one).
     for inst in circuit.instructions:
         op = inst["op"]
         if op == "gate":
@@ -254,6 +306,19 @@ def build_qiskit_circuit(circuit, width):
                         inst["qubits"], inst.get("params", []))
         elif op == "reset":
             qc.reset(inst["qubit"])
-        # measure ops are intentionally skipped here; see resolve_measure_map
+        elif op == "measure":
+            # Baked inline for dynamic circuits so conditions can read the
+            # bit; deferred to the map for static circuits (see above).
+            if dynamic:
+                qc.measure(inst["qubit"], inst["clbit"])
+        elif op == "conditional":
+            # Guard the body gate on the classical condition. Only dynamic
+            # circuits reach here; the body is a single gate op.
+            cond = _build_condition(qc, inst["condition"]["clbits"],
+                                    inst["condition"]["value"])
+            body = inst["body"]
+            with qc.if_test(cond):
+                _apply_gate(qc, body["gate"].lower(),
+                            body["qubits"], body.get("params", []))
 
     return qc, resolve_measure_map(circuit, width)

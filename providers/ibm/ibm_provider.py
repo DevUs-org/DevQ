@@ -49,6 +49,20 @@ class IBMProvider(BaseProvider):
     and execution to the subclass.
     '''
 
+    def supports_dynamic(self, circuit) -> bool:
+        '''
+        The IBM providers can execute dynamic circuits — classical feedback
+        (`if (creg==N)`) and the mid-circuit measurement it builds on. Real
+        Heron hardware runs feedback natively; the Aer path runs it in
+        simulation. Overridden once here on the shared base so both
+        IBMSimulatedProvider and IBMRealProvider affirm it, the same
+        single-point inheritance they already share for circuit lowering. The
+        translation into Qiskit's dynamic-circuit form lives in
+        providers/ibm/qiskit_lowering.py; this method only declares the
+        capability in DevQ's terms.
+        '''
+        return True
+
     # ── Qiskit full-device-width layout ───────────────────────────────────────
 
     def full_layout(self, qc, v2p_map, device):
