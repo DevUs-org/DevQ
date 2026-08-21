@@ -280,6 +280,20 @@ may be REJECTED under contention here and RUNNING elsewhere — whereas
 `compute_ideals` is circuit-level and job-agnostic (its own skip covers
 `unrunnable_reason`, a property of the circuit, not of the run).
 
+The block also pins the **per-job label**: every `summary.per_job` row now
+carries `circuit_label` (the circuit's basename), so a consumer names a
+circuit without reconstructing from `reference`/`reject` records. This
+matters precisely for the REJECTED job here — it emits no `reference` record
+(filtered above), so a name sourced only from those records would miss it
+and fall back to a raw hash. The block asserts both the FINISHED and
+REJECTED rows carry their basename (`bell.qasm`, `ghz.qasm`) and that the
+label is a basename with no directory component — which reads cleanly and
+drops any directory-borne secret, the same masking the manifest applies to
+paths. This closed a real bug: a circuit that FINISHED with *no ideal* (a
+dynamic circuit, or one with an unlowerable gate) also emits neither
+`reference` nor `reject`, so before this it too displayed as a bare hash in
+the QASMBench table.
+
 The setup is chosen to isolate the filter's effect. It needs a
 reference-capable provider — only `ibm.simulated` overrides
 `reference_ideal`; a `devq.simulated`-only run emits no ideals at all and

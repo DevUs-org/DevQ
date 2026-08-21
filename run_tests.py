@@ -808,9 +808,10 @@ def block_rejected_no_ideal():
         recs = [json.loads(l) for l in open(log) if l.strip()]
         summary = [r for r in recs if r.get("event") == "summary"][-1]
 
-        # per_job rows carry state + circuit_hash (no label). BELL is the one
-        # FINISHED job, GHZ the one REJECTED job, so map by state. There is
-        # exactly one of each, which we assert before pulling their hashes.
+        # per_job rows carry state, circuit_hash, and now circuit_label
+        # (basename). BELL is the one FINISHED job, GHZ the one REJECTED job,
+        # so map by state. There is exactly one of each, which we assert
+        # before pulling their hashes.
         by_state = {}
         for row in summary["per_job"]:
             by_state.setdefault(row["state"], []).append(row["circuit_hash"])
@@ -837,6 +838,30 @@ def block_rejected_no_ideal():
               f"the REJECTED ghz circuit earns NO reference ideal (the "
               f"call-site filter), but its hash {ghz_hash[:8]} appeared in "
               f"reference records {sorted(h[:8] for h in ref_hashes)}")
+
+        # EVERY per_job row now carries a readable circuit_label (basename),
+        # so a consumer names a circuit without reconstructing from
+        # reference/reject records. This matters for exactly the REJECTED
+        # job: it emits no `reference` record (filtered above) and — for a
+        # runtime rejection like this — a name sourced only from
+        # reference/reject would miss it, falling back to a raw hash. Assert
+        # both rows carry their basename, and that the label is the BASENAME
+        # (no directory), which both reads cleanly and drops any
+        # directory-borne secret.
+        labels = {row["state"]: row.get("circuit_label")
+                  for row in summary["per_job"]}
+        check(labels.get("FINISHED") == "bell.qasm"
+              or (labels.get("FINISHED") or "").endswith("bell.qasm"),
+              f"the FINISHED job carries its basename label, got "
+              f"{labels.get('FINISHED')!r}")
+        check(labels.get("REJECTED") == "ghz.qasm"
+              or (labels.get("REJECTED") or "").endswith("ghz.qasm"),
+              f"the REJECTED job carries its basename label (not a bare "
+              f"hash), got {labels.get('REJECTED')!r}")
+        check(all(lbl is None or "/" not in lbl and "\\" not in lbl
+                  for lbl in labels.values()),
+              f"per_job labels are basenames, no directory component, got "
+              f"{labels}")
     finally:
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)

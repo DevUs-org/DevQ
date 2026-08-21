@@ -98,22 +98,28 @@ def _report(log_path, only=None):
     '''Print the per-circuit fidelity table and the session aggregate.'''
     records = [json.loads(line) for line in open(log_path)]
 
-    # circuit_hash -> readable label. Every job identifies its circuit in
-    # the log now: a run job via its `reference` record, a REJECTED job via
-    # its `reject` record (which echoes circuit_hash + circuit_label). So a
-    # rejected circuit shows its file name, not a raw hash. Build the map
-    # from both event types.
+    summary = [r for r in records if r.get("event") == "summary"][-1]
+    devices = summary.get("devices_attached", {})
+    rows = {row["job_id"]: row for row in summary["per_job"]}
+
+    # circuit_hash -> readable label. The summary's per_job rows now carry
+    # `circuit_label` on EVERY job (basename, already secret-masked), so a
+    # circuit shows its name whether it ran, was rejected, or FINISHED with
+    # no ideal — the last case previously fell through to a raw hash because
+    # it emits neither a `reference` nor a `reject` record. Source from the
+    # per_job rows first; fall back to the `reference`/`reject` records for
+    # older logs written before per_job carried the label.
     label = {}
+    for row in rows.values():
+        h, lbl = row.get("circuit_hash"), row.get("circuit_label")
+        if h and lbl and h not in label:
+            label[h] = lbl
     for r in records:
         if r.get("event") in ("reference", "reject"):
             h = r.get("circuit_hash")
             lbl = r.get("circuit_label") or r.get("label")
             if h and lbl and h not in label:
                 label[h] = os.path.basename(str(lbl))
-
-    summary = [r for r in records if r.get("event") == "summary"][-1]
-    devices = summary.get("devices_attached", {})
-    rows = {row["job_id"]: row for row in summary["per_job"]}
 
     fid = M.fidelity(records)
     per_job = fid["per_job"]

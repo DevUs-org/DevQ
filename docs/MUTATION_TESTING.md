@@ -43,33 +43,35 @@ cannot.
 
 ## Results
 
-**199 distinct mutants, 196 killed, 3 excluded** (M10 equivalent, P7 and
+**202 distinct mutants, 199 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 196/193/3 from prior work
-plus 3 new determinism mutants (all killed against `determinism_seeded`
-after it was strengthened — DS1/DS2/DS3, each breaking cross-session count
-reproducibility that the old block could not see). The 196/193/3 was
-193/190/3 plus 3 new dynamic-lowering mutants (all killed against
-`dynamic_lowering` — DL1 on the condition polarity, DL2 on baking the
-feeding measure inline, DL3 on reference_ideal declining dynamic circuits).
-The 193/190/3 was 190/187/3 plus 3 new dynamic-feasibility mutants (all
-killed against `dynamic_feasibility` — MF1 on the `is_dynamic` guard, MF2
-on the capability polarity, MF3 on the check-before-allocator ordering,
-killed only after the block was strengthened). The 190/187/3 was 187/184/3
-plus 3 new conditional-frontend mutants (all killed against
-`conditional_frontend` — FE1 on the parsed condition value, FE2 on wrapping
-every broadcast-produced op, FE3 on removing the bare ops before
-re-wrapping). The 187/184/3 was 184/181/3 plus 3 new conditional-IR mutants
-(all killed against `conditional_ir` — CI1 on `is_dynamic`, CI2 on the
-`cregs` defensive copy, CI3 on the mid-circuit hazard reaching into the
-conditional body). The 184/181/3 was 181/178/3 plus 3 new supports-dynamic
-mutants (all killed against `supports_dynamic` — SD1/SD2 on the
-capability's base decline and IBM affirm, SD3 on the boundary scan). The
-181/178/3 was 178/175/3 plus 3 new full-layout mutants (all killed against
-`large_device_full_layout`). The 178/175/3 was 177/174/3 from the async
+The total is delta-consistent, not recounted: 199/196/3 from prior work
+plus 3 new per-job-label mutants (all killed against `rejected_no_ideal` —
+LB1/LB2/LB3 on emitting the label, reducing it to a basename, and the
+present-label guard). The 199/196/3 was 196/193/3 plus 3 new determinism
+mutants (all killed against `determinism_seeded` after it was strengthened
+— DS1/DS2/DS3, each breaking cross-session count reproducibility that the
+old block could not see). The 196/193/3 was 193/190/3 plus 3 new
+dynamic-lowering mutants (all killed against `dynamic_lowering` — DL1 on the
+condition polarity, DL2 on baking the feeding measure inline, DL3 on
+reference_ideal declining dynamic circuits). The 193/190/3 was 190/187/3
+plus 3 new dynamic-feasibility mutants (all killed against
+`dynamic_feasibility` — MF1 on the `is_dynamic` guard, MF2 on the capability
+polarity, MF3 on the check-before-allocator ordering, killed only after the
+block was strengthened). The 190/187/3 was 187/184/3 plus 3 new
+conditional-frontend mutants (all killed against `conditional_frontend` —
+FE1 on the parsed condition value, FE2 on wrapping every broadcast-produced
+op, FE3 on removing the bare ops before re-wrapping). The 187/184/3 was
+184/181/3 plus 3 new conditional-IR mutants (all killed against
+`conditional_ir` — CI1 on `is_dynamic`, CI2 on the `cregs` defensive copy,
+CI3 on the mid-circuit hazard reaching into the conditional body). The
+184/181/3 was 181/178/3 plus 3 new supports-dynamic mutants (all killed
+against `supports_dynamic` — SD1/SD2 on the capability's base decline and
+IBM affirm, SD3 on the boundary scan). The 181/178/3 was 178/175/3 plus 3
+new full-layout mutants (all killed against `large_device_full_layout`). The 178/175/3 was 177/174/3 from the async
 work plus 1 new event-log mutant (E10, killed by `event_log`). The
 177/174/3 was 171/168/3 plus 6 async-dispatch mutants (all killed against
 `async_dispatch`; AD5 after the FINISHED-row counts assertion was
@@ -616,6 +618,26 @@ within-session counts on this Aer path (transpile/layout still varies per
 job), so it changes nothing observable and was not counted. Each counted
 mutant was run against `determinism_seeded`, confirmed red, then reverted;
 `ibm_simulated_provider.py` was diffed clean afterward.
+
+### Per-job label — `benchmark/runner.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| LB1 | omit `circuit_label` from the summary's per_job rows | killed (1) |
+| LB2 | emit the full path instead of the basename | killed (1) |
+| LB3 | invert the present-label guard (a present label becomes None) | killed (1) |
+
+Every summary per_job row carries the circuit's basename so a consumer can
+name any circuit — FINISHED, REJECTED, ideal or not — without reconstructing
+from `reference`/`reject` records, which a FINISHED-with-no-ideal circuit
+emits neither of. LB1 reverts to the pre-fix state (no label), so the label
+reads None and the FINISHED-job-carries-its-basename check fails. LB2 leaves
+the directory in, so the "no directory component" check fails (and a
+`${SECRET}`-bearing path would leak). LB3 flips the guard so a present label
+is dropped to None — the same observable failure as LB1 but a different
+defect, catching a plausible copy-paste inversion of the conditional. Each
+was run against `rejected_no_ideal` (extended for this), confirmed red, then
+reverted; `runner.py` was diffed clean afterward.
 
 ### Full-device layout — `providers/ibm/ibm_provider.py`, `providers/ibm/…`
 
