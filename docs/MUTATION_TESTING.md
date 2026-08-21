@@ -43,29 +43,32 @@ cannot.
 
 ## Results
 
-**196 distinct mutants, 193 killed, 3 excluded** (M10 equivalent, P7 and
+**199 distinct mutants, 196 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 193/190/3 from prior work
-plus 3 new dynamic-lowering mutants (all killed against `dynamic_lowering`
-— DL1 on the condition polarity, DL2 on baking the feeding measure inline,
-DL3 on reference_ideal declining dynamic circuits). The 193/190/3 was
-190/187/3 plus 3 new dynamic-feasibility mutants (all killed against
-`dynamic_feasibility` — MF1 on the `is_dynamic` guard, MF2 on the
-capability polarity, MF3 on the check-before-allocator ordering, killed
-only after the block was strengthened). The 190/187/3 was 187/184/3 plus 3
-new conditional-frontend mutants (all killed against `conditional_frontend`
-— FE1 on the parsed condition value, FE2 on wrapping every
-broadcast-produced op, FE3 on removing the bare ops before re-wrapping).
-The 187/184/3 was 184/181/3 plus 3 new conditional-IR mutants (all killed
-against `conditional_ir` — CI1 on `is_dynamic`, CI2 on the `cregs`
-defensive copy, CI3 on the mid-circuit hazard reaching into the conditional
-body). The 184/181/3 was 181/178/3 plus 3 new supports-dynamic mutants (all
-killed against `supports_dynamic` — SD1/SD2 on the capability's base
-decline and IBM affirm, SD3 on the boundary scan). The 181/178/3 was
-178/175/3 plus 3 new full-layout mutants (all killed against
+The total is delta-consistent, not recounted: 196/193/3 from prior work
+plus 3 new determinism mutants (all killed against `determinism_seeded`
+after it was strengthened — DS1/DS2/DS3, each breaking cross-session count
+reproducibility that the old block could not see). The 196/193/3 was
+193/190/3 plus 3 new dynamic-lowering mutants (all killed against
+`dynamic_lowering` — DL1 on the condition polarity, DL2 on baking the
+feeding measure inline, DL3 on reference_ideal declining dynamic circuits).
+The 193/190/3 was 190/187/3 plus 3 new dynamic-feasibility mutants (all
+killed against `dynamic_feasibility` — MF1 on the `is_dynamic` guard, MF2
+on the capability polarity, MF3 on the check-before-allocator ordering,
+killed only after the block was strengthened). The 190/187/3 was 187/184/3
+plus 3 new conditional-frontend mutants (all killed against
+`conditional_frontend` — FE1 on the parsed condition value, FE2 on wrapping
+every broadcast-produced op, FE3 on removing the bare ops before
+re-wrapping). The 187/184/3 was 184/181/3 plus 3 new conditional-IR mutants
+(all killed against `conditional_ir` — CI1 on `is_dynamic`, CI2 on the
+`cregs` defensive copy, CI3 on the mid-circuit hazard reaching into the
+conditional body). The 184/181/3 was 181/178/3 plus 3 new supports-dynamic
+mutants (all killed against `supports_dynamic` — SD1/SD2 on the
+capability's base decline and IBM affirm, SD3 on the boundary scan). The
+181/178/3 was 178/175/3 plus 3 new full-layout mutants (all killed against
 `large_device_full_layout`). The 178/175/3 was 177/174/3 from the async
 work plus 1 new event-log mutant (E10, killed by `event_log`). The
 177/174/3 was 171/168/3 plus 6 async-dispatch mutants (all killed against
@@ -579,6 +582,40 @@ inline — a double-measure otherwise) and `reference_ideal`'s dynamic
 decline; those are exercised by `dynamic_lowering` and the existing
 `ibm_measurement` / `reference_tiers` / `fidelity` blocks, which stay green,
 confirming the static path is unchanged.
+
+### Determinism (seeded) — `providers/ibm/ibm_simulated_provider.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| DS1 | mix wall-clock into the per-run seed | killed (1)* |
+| DS2 | mix `id(self)` (per provider instance) into the per-run seed | killed (1)* |
+| DS3 | mix `id(circuit)` into the per-run seed | killed (1)* |
+
+The per-run seed is `self.seed + self._submission_count`, derived on the
+dispatch thread so it reproduces across identical sessions. These three
+mutants each fold in a value that varies between two otherwise-identical
+`seed=42` sessions — wall-clock, the provider instance's identity, the
+circuit object's identity — so the same circuit run under the same nominal
+seed produces different counts in session A than in session B. That is
+precisely the "same seed reproduces counts" property `determinism_seeded`
+exists to guarantee.
+
+*All three are killed only by the STRENGTHENED block. This is recorded
+honestly because it is the point of the fix: the original block compared
+only the dispatch transcript (deterministic command echo) and a
+within-session count difference, and **passed all three mutants** — counts
+were never compared across sessions, so a broken per-run seed was invisible.
+This was verified directly: under DS1 the old block's three assertions
+(`a==b`, `a!=c`, `j1!=j2`) all still held. The block was strengthened to
+settle both sessions and compare each job's resolved counts across them
+(read race-free by job id after settling, the same path the within-session
+check already trusted), and the three mutants then failed the cross-session
+equality. A non-equivalent survivor was also found and discarded during this
+work — `run_seed = self.seed` (dropping the submission count) does NOT clone
+within-session counts on this Aer path (transpile/layout still varies per
+job), so it changes nothing observable and was not counted. Each counted
+mutant was run against `determinism_seeded`, confirmed red, then reverted;
+`ibm_simulated_provider.py` was diffed clean afterward.
 
 ### Full-device layout — `providers/ibm/ibm_provider.py`, `providers/ibm/…`
 

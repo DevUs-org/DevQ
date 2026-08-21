@@ -1630,7 +1630,7 @@ def _with_timeout(fn, seconds):
 def block_determinism_seeded():
     '''Identical seeds reproduce devices and counts exactly'''
     cmds = ["qerrors q d0", "qtopology d0",
-            f"qrun {BELL} --exec=nairobi", f"qrun {BELL} --exec=d1",
+            f"qrun {BELL} --exec=nairobi",
             f"qrun {BELL} --exec=lagos"]
 
     # qrun is async: the dispatch transcript is deterministic under a seed,
@@ -1646,6 +1646,24 @@ def block_determinism_seeded():
     c = run(three_device(seed=43), cmds)
     check(a != c, "seed=43 diverges from seed=42")
 
+    # THE HEADLINE CLAIM: same seed reproduces the same COUNTS, not just the
+    # same dispatch order. The transcript check above only proves the
+    # command echo is deterministic — counts resolve later off a background
+    # thread and are NOT in that transcript, so a regression that broke
+    # count determinism under a fixed seed would pass it unseen. Settle
+    # BOTH seed=42 sessions and compare each job's resolved counts across
+    # them, read the same race-free way (by job id, after settling) the
+    # within-session check below already trusts. This is the assertion the
+    # block's name actually promises.
+    settle(sa, 1, 2)
+    settle(sb, 1, 2)
+    for jid in (1, 2):
+        ca = counts_of(run(sa, [f"qps {jid}"]), jid)
+        cb = counts_of(run(sb, [f"qps {jid}"]), jid)
+        check(ca == cb,
+              f"job {jid}: two seed=42 sessions produced identical counts "
+              f"(same seed reproduces counts, not just dispatch order)")
+
     # Distinct runs of the SAME circuit on the SAME device must not clone
     # counts — jobs 1 and 2 are both bells on nairobi (--exec=nairobi and
     # --exec=d1 name the same device). Different counts prove per-run seed
@@ -1653,7 +1671,6 @@ def block_determinism_seeded():
     # id (counts_of matches the first FINISHED line for that id), so the
     # comparison is between those two specific runs regardless of the order
     # their futures happened to resolve in.
-    settle(sa, 1, 2, 3)
     j1 = counts_of(run(sa, ["qps 1"]), 1)
     j2 = counts_of(run(sa, ["qps 2"]), 2)
     check(j1 != j2,

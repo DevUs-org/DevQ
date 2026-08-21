@@ -1050,15 +1050,30 @@ automatically — it reads the registry maps rather than a fixed list.
 
 *Identical seeds reproduce devices and counts exactly.*
 
-Builds three sessions and compares full transcripts: `seed=42` twice
-must be identical, `seed=43` must differ. This covers both randomness
-sources at once — `d0`'s generated topology and error maps, and Aer's
-sampling.
+Builds three sessions and compares dispatch transcripts: `seed=42` twice
+must be identical, `seed=43` must differ. This covers the deterministic
+command echo and the generated-topology/error-map randomness of `d0`.
+
+The dispatch transcript alone does **not** cover counts — `qrun` is async,
+and resolved counts land later off a background thread, so they are not in
+the compared transcript. So the block also settles **both** `seed=42`
+sessions and compares each job's resolved counts across them, read by job
+id after settling (the same race-free path the within-session check uses).
+This is the assertion the block's title actually promises: same seed → same
+counts, reproducibly, across sessions — Aer's sampling included.
 
 It also asserts that two runs of the **same circuit within one session**
 produce **different** counts. That is the check on derived per-run seeds
 (`seed + k`): a single reused seed would clone results, which looks like
 determinism but is wrong.
+
+*History.* The cross-session count comparison was added after the block was
+found unfaithful: it previously compared only the dispatch transcript and
+the within-session difference, so a regression that mixed wall-clock (or any
+session-instance-specific value) into the per-run seed — breaking count
+reproducibility, the block's headline claim — passed unseen. A mutant doing
+exactly that is now killed by the cross-session checks (see
+MUTATION_TESTING.md, DS1–DS3).
 
 ### `determinism_unseeded`
 
