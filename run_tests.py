@@ -573,34 +573,34 @@ def block_rejection_semantics():
     check(m and "d1:" in m.group(1) and "d2:" in m.group(1),
           "job 3's rejection reason aggregates both d1 and d2")
 
-    # A circuit DevQ cannot faithfully run on ANY backend (here:
-    # mid-circuit measurement — a gate on a qubit after it is measured) is
-    # REJECTED — the SAME umbrella terminal state as an unsatisfiable
-    # allocation, not a parse crash. The reason is carried from the circuit
-    # layer (the frontend marked it unrunnable) through to the job, proving
-    # the two rejection sources converge on one outcome. NOTE: classical
-    # control (conditional.qasm) is deliberately NOT used here anymore — it
-    # is now a runnable dynamic circuit, declined per-device rather than
-    # circuit-globally, and is covered by the routing block instead.
-    sh2 = three_device()
+    # A circuit no attached device can run is REJECTED — the SAME umbrella
+    # terminal state as an unsatisfiable allocation, not a parse crash — and
+    # the reason propagates from the capability check through to the job.
+    # Here: mid-circuit measurement on a devq.simulated-only session. The
+    # devq provider's execution model is terminal-measurement, so it
+    # declines the capability (supports_mid_circuit_measurement is False),
+    # and with no capable device attached the job is REJECTED per-device.
+    # (On an IBM-backed session the same circuit RUNS — that is the point of
+    # the capability being per-device; the routing block covers that side.)
+    # This proves a capability rejection converges on the one REJECTED
+    # outcome, exactly as an allocation rejection does.
+    sh2 = session(devices=[("devq.simulated", "linear", 3, "dq", None)])
     out2 = run(sh2, [f"qrun {QASM2}midcircuit.qasm"])
     expect(out2, "REJECTED")
     m2 = re.search(r"Job \d+ REJECTED: ([^\n]*)", out2)
     check(m2 and "mid-circuit" in m2.group(1).lower(),
-          f"an unrunnable circuit rejects with its circuit-level reason, "
-          f"got {m2.group(1) if m2 else None!r}")
+          f"a mid-circuit circuit with no capable device rejects citing the "
+          f"capability, got {m2.group(1) if m2 else None!r}")
 
     # The SAME must hold on the SCHEDULING path (qsubmit + qrunpack), not
     # just the qrun fast path — they are separate guards in the kernel, and
-    # a regression could disable one while the other still rejects. Submit
-    # via the queue and drain: the unrunnable circuit must still be REJECTED
-    # before it ever routes to a device.
-    sh3 = three_device()
+    # a regression could disable one while the other still rejects.
+    sh3 = session(devices=[("devq.simulated", "linear", 3, "dq", None)])
     out3 = run(sh3, [f"qsubmit {QASM2}midcircuit.qasm", "qrunpack", "qps"])
     expect(out3, "REJECTED")
     m3 = re.search(r"Job \d+ REJECTED: ([^\n]*)", out3)
     check(m3 and "mid-circuit" in m3.group(1).lower(),
-          f"an unrunnable circuit is rejected on the scheduling path too, "
+          f"the capability rejection holds on the scheduling path too, "
           f"got {m3.group(1) if m3 else None!r}")
 
 
@@ -1368,10 +1368,13 @@ def block_conditional_frontend():
     # even though it parsed to a conditional op.
     cr4 = parse("OPENQASM 2.0;\nqreg q[1];\ncreg c[1];\n"
                 "measure q[0] -> c[0];\nif (c==1) x q[0];\n")
-    check(cr4.is_dynamic and cr4.unrunnable_reason is not None
-          and "mid-circuit" in cr4.unrunnable_reason.lower(),
-          f"if(c==1) x q[0] on the measured qubit: dynamic but unrunnable "
-          f"(mid-circuit), got reason={cr4.unrunnable_reason!r}")
+    check(cr4.is_dynamic and cr4.has_mid_circuit_measurement
+          and cr4.unrunnable_reason is None,
+          f"if(c==1) x q[0] on the measured qubit: both dynamic and "
+          f"has_mid_circuit_measurement, and NOT unrunnable (both are "
+          f"per-device capabilities now), got is_dynamic={cr4.is_dynamic} "
+          f"has_mid={cr4.has_mid_circuit_measurement} "
+          f"reason={cr4.unrunnable_reason!r}")
 
     # An unknown register in a condition is a genuine parse error — raised,
     # not emitted (the condition names something never declared).
@@ -1547,6 +1550,121 @@ def block_dynamic_lowering():
           f"counts={counts}, leaked={leaked}")
     check(counts.get("00", 0) > 500 and counts.get("11", 0) > 500,
           f"both correlated outcomes actually occur (the H makes c0 random), "
+          f"got {counts}")
+
+
+def block_mid_circuit_measurement():
+    '''Mid-circuit measurement is a third capability: detected, routed, run on Aer'''
+    # Part 1 of the mid-circuit work: a qubit measured and then reused (gate
+    # or reset after measure) is a per-device CAPABILITY, not a circuit-global
+    # rejection — the third optional provider capability, independent of both
+    # reference_ideal and supports_dynamic.
+    from frontends.qasm2.parser import parse
+    from providers.base_provider import BaseProvider
+    from providers.ibm.ibm_provider import IBMProvider
+    from providers.ibm.ibm_real_provider import IBMRealProvider
+    from providers.ibm.qiskit_lowering import build_qiskit_circuit
+    from kernel.memory.memory_manager import MemoryManager
+    from hardware.device import QuantumDevice
+    from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
+
+    # Detection: a gate-after-measure and a reset-after-measure both set
+    # has_mid_circuit_measurement, and are NOT marked unrunnable (the frontend
+    # marks nothing unrunnable now).
+    gate_after = parse("OPENQASM 2.0; qreg q[1]; creg c[2]; "
+                       "measure q[0]->c[0]; x q[0]; measure q[0]->c[1];")
+    reset_after = parse("OPENQASM 2.0; include \"qelib1.inc\"; qreg q[1]; "
+                        "creg c[2]; x q[0]; measure q[0]->c[0]; reset q[0]; "
+                        "measure q[0]->c[1];")
+    check(gate_after.has_mid_circuit_measurement
+          and gate_after.unrunnable_reason is None,
+          "a gate after measure sets has_mid_circuit_measurement, not unrunnable")
+    check(reset_after.has_mid_circuit_measurement
+          and reset_after.unrunnable_reason is None,
+          "a reset after measure sets has_mid_circuit_measurement, not unrunnable")
+    plain = parse("OPENQASM 2.0; qreg q[2]; creg c[2]; h q[0]; "
+                  "measure q[0]->c[0]; measure q[1]->c[1];")
+    check(not plain.has_mid_circuit_measurement,
+          "a terminal-measurement circuit is not flagged mid-circuit")
+
+    # Capability is INDEPENDENT of supports_dynamic and inherited from one
+    # place: the override lives on IBMProvider, both IBM subclasses affirm,
+    # DevQ inherits the BaseProvider decline. Function identity proves the
+    # single point of truth.
+    check(IBMRealProvider.supports_mid_circuit_measurement
+          is IBMProvider.supports_mid_circuit_measurement,
+          "IBM subclasses inherit the mid-circuit override from IBMProvider")
+    check(DevQSimulatedProvider.supports_mid_circuit_measurement
+          is BaseProvider.supports_mid_circuit_measurement,
+          "DevQ inherits the BaseProvider decline for mid-circuit")
+    check(IBMSimulatedProvider(seed=SEED)
+          .supports_mid_circuit_measurement(gate_after) is True
+          and DevQSimulatedProvider(seed=SEED)
+          .supports_mid_circuit_measurement(gate_after) is False,
+          "IBM affirms, DevQ declines the mid-circuit capability")
+    # It is a SEPARATE predicate: a mid-circuit circuit is not is_dynamic.
+    check(not gate_after.is_dynamic and gate_after.has_mid_circuit_measurement,
+          "mid-circuit measurement is tracked independently of is_dynamic")
+
+    # reference_ideal declines a mid-circuit circuit (same mixed-state
+    # problem as feedback), still answers a plain one.
+    p = IBMSimulatedProvider(seed=SEED)
+    check(p.reference_ideal(gate_after) is None,
+          "reference_ideal declines a mid-circuit circuit")
+
+    # Feasibility: a mid-circuit circuit is infeasible on a provider that
+    # declines the capability, feasible on one that affirms — the same
+    # circuit and allocator, differing only by supports_mid_circuit_measurement.
+    class _P:
+        def __init__(self, mid): self._mid = mid
+        def supports_dynamic(self, c): return False
+        def supports_mid_circuit_measurement(self, c): return self._mid
+    def _dev(prov):
+        return QuantumDevice(kind="stub", num_qubits=2, coupling_map=[(0, 1)],
+                             basis_gates=["h", "x", "measure"],
+                             error_map={0: 0.01, 1: 0.01},
+                             edge_error_map={(0, 1): 0.02}, provider=prov)
+    mm_no = MemoryManager(_dev(_P(False)), NoiseGraphAllocator())
+    mm_yes = MemoryManager(_dev(_P(True)), NoiseGraphAllocator())
+    r = mm_no.unsatisfiable_reason(gate_after)
+    check(r is not None and "mid-circuit" in r.lower(),
+          f"mid-circuit circuit infeasible on a declining provider, got {r!r}")
+    check(mm_yes.unsatisfiable_reason(gate_after) is None,
+          "mid-circuit circuit feasible on a provider that supports it")
+
+    # THE REAL PROOF, and the shor regression: a circuit whose conditions
+    # reference NEVER-WRITTEN clbits (if(c==N) over a wide register where
+    # only low bits are measured) must lower and run — the unwritten bits are
+    # 0, so a redundant term is skipped and an impossible one drops the body.
+    # This is the exact shape of QASMBench's Shor that Aer's noise path
+    # rejected as "invalid cbit index" before the fix.
+    try:
+        from qiskit_aer import AerSimulator
+    except ImportError:
+        check(True, "(Aer run skipped — qiskit-aer unavailable)")
+        return
+    # 5-bit creg, only clbits 0,1,2 ever measured, conditions name the whole
+    # register (clbits 0..4) — clbits 3,4 never written.
+    shor_like = parse("OPENQASM 2.0; include \"qelib1.inc\"; qreg q[1]; "
+                      "creg c[5]; h q[0]; measure q[0]->c[0]; reset q[0]; "
+                      "if (c==1) x q[0]; measure q[0]->c[1]; reset q[0]; "
+                      "if (c==3) x q[0]; if (c==2) x q[0]; measure q[0]->c[2];")
+    check(shor_like.has_mid_circuit_measurement and shor_like.is_dynamic,
+          "the shor-like fixture is both mid-circuit and dynamic")
+    qc, _ = build_qiskit_circuit(shor_like, 5)
+    # Run on a NOISE-MODEL sim (from_backend), not a plain AerSimulator: the
+    # "invalid cbit index" failure only surfaces on the noise-model path
+    # (a plain sim tolerates an if_test over an unwritten clbit). This is the
+    # exact configuration the real execute() uses, so the regression must be
+    # exercised there.
+    from qiskit_ibm_runtime.fake_provider import FakeNairobiV2
+    from qiskit import transpile
+    sim = AerSimulator.from_backend(FakeNairobiV2())
+    tqc = transpile(qc, sim, optimization_level=1)
+    counts = sim.run(tqc, shots=200, seed_simulator=SEED).result().get_counts()
+    check(len(counts) > 0,
+          f"a circuit conditioning on never-written clbits lowers and runs on "
+          f"the noise-model path (the shor 'invalid cbit index' regression), "
           f"got {counts}")
 
 
@@ -7168,14 +7286,18 @@ def block_qasm2_parser():
         check("nope" in str(e),
               f"unknown creg in if-condition raises naming the register, got {e}")
 
-    # Mid-circuit measurement (a gate on a qubit after it was measured) is a
-    # different case: unrunnable on ANY backend, so still marked (not raised).
+    # Mid-circuit measurement (a gate on a qubit after it was measured) is
+    # now a per-device CAPABILITY, not a circuit-global rejection: it is
+    # detected via has_mid_circuit_measurement and NOT marked unrunnable
+    # (the frontend marks nothing unrunnable now). A capable provider runs
+    # it; a terminal-measurement provider declines per-device.
     mid = parse("OPENQASM 2.0; qreg q[1]; creg c[1]; "
                 "measure q[0] -> c[0]; x q[0];")
-    check(mid.unrunnable_reason is not None
-          and "mid-circuit" in mid.unrunnable_reason.lower(),
-          f"mid-circuit measurement: marked unrunnable with a reason, got "
-          f"{mid.unrunnable_reason!r}")
+    check(mid.has_mid_circuit_measurement
+          and mid.unrunnable_reason is None,
+          f"mid-circuit measurement: detected via has_mid_circuit_measurement "
+          f"and NOT marked unrunnable, got has_mid="
+          f"{mid.has_mid_circuit_measurement} reason={mid.unrunnable_reason!r}")
 
     # A clean circuit is NOT flagged — the check does not fire on terminal
     # measurement (the normal case).
@@ -7751,6 +7873,7 @@ BLOCKS = [
     ("conditional_frontend",     block_conditional_frontend),
     ("dynamic_feasibility",      block_dynamic_feasibility),
     ("dynamic_lowering",         block_dynamic_lowering),
+    ("mid_circuit_measurement",  block_mid_circuit_measurement),
     ("plugin_matrix",            block_plugin_matrix),
     ("determinism_seeded",       block_determinism_seeded),
     ("determinism_unseeded",     block_determinism_unseeded),

@@ -674,19 +674,18 @@ def parse(source_text, source_name="<qasm>"):
     if circuit.num_qubits == 0:
         raise QASMError("no qreg declared — nothing to run")
 
-    # Structural check over the finished stream: a qubit operated on after
-    # measurement is mid-circuit measurement, which no current backend can
-    # faithfully run, so it is a circuit-global unrunnable_reason (distinct
-    # from a dynamic circuit, which is runnable on a capable device and
-    # only declined per-device). This is now the ONLY construct the 2.0
-    # frontend marks unrunnable: classical control used to be marked here
-    # too, but it is now emitted as first-class `conditional` ops and its
-    # runnability is a per-device capability question, not a circuit-global
-    # verdict. find_mid_circuit_measurement also reaches into conditional
-    # bodies, so a guarded gate on a measured qubit is caught the same way.
-    if circuit.unrunnable_reason is None:
-        mid = circuit.find_mid_circuit_measurement()
-        if mid is not None:
-            circuit.unrunnable_reason = mid
+    # Mid-circuit measurement (a qubit operated on after being measured) is
+    # NO LONGER marked unrunnable here. It is a per-device capability, just
+    # like classical feedback: a provider whose measurement is non-terminal
+    # (both IBM providers) runs it, one whose model is terminal-only
+    # (devq.simulated) declines, and the kernel routes the job to a capable
+    # device or REJECTs it per-device when none is attached (see
+    # MemoryManager.unsatisfiable_reason and
+    # CircuitRep.has_mid_circuit_measurement). The 2.0 frontend now marks NO
+    # circuit unrunnable: both former cases (classical control and
+    # mid-circuit measurement) became per-device capability questions. The
+    # unrunnable_reason field remains on CircuitRep for any future
+    # construct that truly no backend can run, and the kernel still honours
+    # it, but the frontend sets it for none.
 
     return circuit

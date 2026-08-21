@@ -63,6 +63,19 @@ class IBMProvider(BaseProvider):
         '''
         return True
 
+    def supports_mid_circuit_measurement(self, circuit) -> bool:
+        '''
+        The IBM providers can execute mid-circuit measurement — a qubit
+        measured and then reset or operated on again. Real Heron hardware
+        does this natively; the Aer path runs it in simulation. The IBM
+        lowering bakes measures inline in source order for such circuits, so
+        a later operation lands relative to the real mid-circuit measurement
+        rather than a hoisted one. Overridden once here on the shared base so
+        both IBM subclasses affirm it, and kept separate from
+        supports_dynamic because the two capabilities are independent.
+        '''
+        return True
+
     # ── Qiskit full-device-width layout ───────────────────────────────────────
 
     def full_layout(self, qc, v2p_map, device):

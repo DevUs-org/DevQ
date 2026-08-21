@@ -208,6 +208,25 @@ class CircuitRep:
         the instructions it summarises.'''
         return any(i["op"] == "conditional" for i in self.instructions)
 
+    @property
+    def has_mid_circuit_measurement(self):
+        '''True if any qubit is operated on AFTER being measured — a gate or
+        reset on a qubit that was already measured, or a conditional whose
+        body gate touches one. This is the boolean form of the structural
+        condition find_mid_circuit_measurement detects; it exists so the
+        kernel can check it against a provider's
+        supports_mid_circuit_measurement at routing time, exactly as it
+        checks is_dynamic against supports_dynamic.
+
+        This is a SEPARATE capability from is_dynamic: a circuit can need
+        mid-circuit measurement without any classical feedback (measure,
+        reset, reuse — no conditional), and a feedback circuit need not
+        reuse a measured qubit. So the two are tracked independently and a
+        provider may support one without the other. A derived boolean over
+        the ordered stream, so it cannot drift from the instructions it
+        summarises.'''
+        return self.find_mid_circuit_measurement() is not None
+
     def get_depth(self):
         # Depth is a property of the UNITARY gates only — measure and
         # reset are not gates and do not add circuit depth. Filter the
@@ -244,27 +263,34 @@ class CircuitRep:
         Return a reason string if any qubit is operated on AFTER it has
         been measured — mid-circuit measurement — else None.
 
-        WHY THIS IS UNRUNNABLE. DevQ's execution model treats measurement
-        as terminal: every provider reads out at the end. A measure
-        followed by a gate or reset on the SAME qubit means the later
-        operation acts on the post-measurement (collapsed) state, which
-        the model cannot represent — the IBM lowering hoists all measures
-        to the end, so it would apply that later operation to an
-        UNcollapsed qubit and silently execute a different circuit than
-        the one written. Because the measured run and the noiseless
-        reference share that lowering, both would be wrong identically and
-        a fidelity comparison would report a high, plausible number for a
-        circuit that was never actually run — the worst kind of failure,
-        invisible in a green suite. Detecting it lets the kernel reject the
-        job honestly instead.
+        WHAT THIS MEANS NOW. Mid-circuit measurement is a per-device
+        CAPABILITY, not a circuit-global rejection. A provider whose
+        runtime keeps measurement non-terminal (both IBM providers: Aer and
+        Heron run measure → reset/gate → reuse natively) can execute these
+        circuits; the IBM lowering bakes measures inline in source order for
+        them, so a later operation lands relative to the real mid-circuit
+        measurement rather than a hoisted one. A provider whose model is
+        terminal-measurement only (devq.simulated) declines, and the job
+        routes to a capable device — or is REJECTED per-device when none is
+        attached. This mirrors how classical feedback is handled.
+
+        So this method is a DETECTOR the capability check builds on
+        (has_mid_circuit_measurement), not a verdict of unrunnability. It
+        returns a human-readable reason (naming the first offending qubit)
+        so a per-device rejection can explain itself, and None when
+        measurement is terminal throughout.
+
+        (Historically this marked the circuit unrunnable, on the premise
+        that the lowering hoists all measures to the end — true of the
+        static path, but the inline path added for dynamic circuits does not
+        hoist, which is what makes these circuits runnable on a capable
+        provider.)
 
         This is a pure structural property of the ordered instruction
         stream, so it lives on CircuitRep rather than in one frontend:
         every frontend that lowers to CircuitRep gets the check, and a
         circuit built by any means is judged the same way. It does not set
-        unrunnable_reason itself — detection and marking are separate so a
-        caller can decide (a frontend marks; a diagnostic tool might only
-        report).
+        unrunnable_reason — detection and capability-routing are separate.
 
         Returns the reason for the FIRST offending qubit (source order),
         naming the qubit, or None if measurement is terminal throughout.
@@ -303,10 +329,12 @@ class CircuitRep:
                                 f"faithfully run")
             elif op == "reset":
                 # A reset after measure is legitimate on real hardware and
-                # is arguably representable, but the current lowering still
-                # hoists the measure, so the reset would land relative to
-                # an unmeasured qubit. Treat it as mid-circuit for now:
-                # honest reject over a silent wrong distribution.
+                # runs correctly through the inline lowering (the measure is
+                # baked in place, so the reset lands relative to the real
+                # mid-circuit measurement). It is detected here as
+                # mid-circuit measurement so the capability check routes it
+                # to a provider that supports it, rather than to one whose
+                # model is terminal-measurement only.
                 if inst["qubit"] in measured:
                     return (
                         f"mid-circuit measurement: qubit {inst['qubit']} is "

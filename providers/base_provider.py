@@ -278,6 +278,44 @@ class BaseProvider(ABC):
         '''
         return False
 
+    def supports_mid_circuit_measurement(self, circuit) -> bool:
+        '''
+        Whether this provider can faithfully EXECUTE a circuit that measures
+        a qubit and then operates on it again — a gate or reset on a qubit
+        after it was measured (has_mid_circuit_measurement).
+
+        A THIRD optional capability, independent of both reference_ideal and
+        supports_dynamic. It is deliberately separate from supports_dynamic:
+        mid-circuit measurement and classical feedback are distinct
+        execution-model properties — a circuit can reuse a measured qubit
+        with no conditional at all (measure, reset, reuse), and a feedback
+        circuit need not reuse a measured qubit — so a provider may support
+        one without the other, and the contract keeps them apart rather than
+        conflating them under one flag.
+
+        The default DECLINES by returning False: DevQ's own execution model
+        treats measurement as terminal, so DevQSimulatedProvider inherits
+        this and honestly declines. A provider whose runtime keeps
+        measurement non-terminal (the IBM providers — Aer and real Heron run
+        measure → reset/gate → reuse natively, and the IBM lowering bakes
+        measures inline in source order for such circuits) overrides this to
+        return True.
+
+        The kernel reads this at routing time, through the memory manager's
+        feasibility verdict, exactly as it reads supports_dynamic: a circuit
+        needing mid-circuit measurement is kept off a terminal-measurement
+        provider, routed to a capable device when one is attached, and
+        REJECTED with a per-device reason only when none is.
+
+        Args:
+            circuit : CircuitRep
+
+        Returns:
+            bool — True if this provider's runtime can execute mid-circuit
+            measurement; False (the default) to decline.
+        '''
+        return False
+
     def preferred_config(self) -> dict:
         '''
         Override to express provider-level configuration preferences.

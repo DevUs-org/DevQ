@@ -178,11 +178,25 @@ def _apply_gate(qc, gate, qubits, params):
     action(qc, qubits, params)
 
 
-def _build_condition(qc, clbits, value):
+# Sentinels returned by _build_condition for the two degenerate cases where
+# a condition references clbits the circuit never wrote (always 0):
+#   _NEVER  — the value requires an unwritten (always-0) bit to be 1, so the
+#             guard can never fire; the caller drops the body entirely.
+#   _ALWAYS — every named bit is unwritten-and-required-clear, so the guard
+#             is vacuously true; the caller emits the body unconditionally.
+# Unique objects compared by identity, never Qiskit expressions.
+_NEVER = object()
+_ALWAYS = object()
+
+
+def _build_condition(qc, clbits, value, written):
     '''
     Build a Qiskit classical-expression testing that the given clbits equal
     `value`, LSB-first — clbits[0] is bit 0 of the value. Used to lower a
     CircuitRep `conditional` op's guard into an `if_test` predicate.
+
+    Returns the expr, or the sentinel _NEVER when the condition is
+    provably unsatisfiable (see UNWRITTEN BITS below).
 
     WHY PER-BIT, NOT A REGISTER COMPARE. Qiskit's `if_test((creg, N))`
     tests a whole ClassicalRegister, but a DevQ condition names specific
@@ -193,14 +207,40 @@ def _build_condition(qc, clbits, value):
     single Clbit test in the common one-bit `if (c==0/1)` case — so it
     covers 2.0's `if (creg==N)` uniformly without depending on register
     boundaries that the flattening does not preserve.
+
+    UNWRITTEN BITS. A condition may name a clbit that no `measure` has
+    written at this point in the circuit — e.g. `if (c==3)` over a 5-bit
+    register where only the low bits are ever measured (QASMBench's Shor
+    does exactly this). Such a bit is 0 (Qiskit initialises cregs to 0),
+    so it contributes nothing to a value that requires it CLEAR, and we
+    must NOT emit a term referencing it: Aer's noise-model path rejects an
+    `if_test` that reads a clbit the circuit never wrote ("invalid cbit
+    index"). Two cases for an unwritten bit `pos`:
+      - value bit `pos` is 0 → the bit is already 0, so the term is
+        redundant and is SKIPPED.
+      - value bit `pos` is 1 → an always-0 bit can never equal 1, so the
+        whole condition is unsatisfiable; return _NEVER and let the caller
+        drop the guarded body (a dead branch that never fires).
+    A written bit always contributes its term, set or clear.
     '''
     from qiskit.circuit.classical import expr
 
     terms = []
     for pos, cb in enumerate(clbits):
+        bit_set = (value >> pos) & 1
+        if cb not in written:
+            # Never measured → always 0.
+            if bit_set:
+                return _NEVER          # 0 can't equal 1: dead condition.
+            continue                   # 0 equals 0: redundant, skip.
         lit = expr.lift(qc.clbits[cb])
-        # Bit `pos` of value must be set (lit) or clear (not lit).
-        terms.append(lit if (value >> pos) & 1 else expr.logic_not(lit))
+        terms.append(lit if bit_set else expr.logic_not(lit))
+
+    if not terms:
+        # Every named bit was unwritten-and-clear: condition is vacuously
+        # TRUE (all bits already equal the all-zero value). Signal that with
+        # _ALWAYS so the caller emits the body unconditionally.
+        return _ALWAYS
 
     cond = terms[0]
     for t in terms[1:]:
@@ -290,15 +330,30 @@ def build_qiskit_circuit(circuit, width):
 
     qc = QuantumCircuit(circuit.num_qubits, width)
 
-    dynamic = circuit.is_dynamic
+    # Measures are baked INLINE (in source order) rather than deferred to
+    # the measure map when the circuit is dynamic (a conditional's guard
+    # must read its bit mid-run) OR uses mid-circuit measurement (a later
+    # gate/reset on a measured qubit must land relative to the real
+    # measurement, not a hoisted one). Either way the body is no longer
+    # measurement-free, so the reference path declines these circuits
+    # (see reference_ideal). A purely static circuit keeps the
+    # measurement-free body the reference path relies on.
+    inline_measures = (circuit.is_dynamic
+                       or circuit.has_mid_circuit_measurement)
 
     # Walk the ordered stream. Gates and resets go onto the body in source
     # position. Measures: for a STATIC circuit they are collected via
     # resolve_measure_map and NOT applied here, keeping the body
-    # measurement-free for the reference path. For a DYNAMIC circuit they
-    # are applied inline, because a later conditional's guard must be able
-    # to read them mid-run. Conditionals lower to if_test blocks (dynamic
-    # circuits only — a static circuit never holds one).
+    # measurement-free for the reference path. When inline_measures is set
+    # they are applied in place. Conditionals lower to if_test blocks (only
+    # a dynamic circuit holds one).
+    #
+    # `written` tracks which clbits a measure has actually written so far, so
+    # a conditional that names a never-written clbit (always 0) is lowered
+    # correctly rather than referencing a cbit Aer's noise path rejects. Only
+    # meaningful when measures are baked inline; for a static circuit no
+    # conditional exists, so it stays empty and unused.
+    written = set()
     for inst in circuit.instructions:
         op = inst["op"]
         if op == "gate":
@@ -307,16 +362,26 @@ def build_qiskit_circuit(circuit, width):
         elif op == "reset":
             qc.reset(inst["qubit"])
         elif op == "measure":
-            # Baked inline for dynamic circuits so conditions can read the
-            # bit; deferred to the map for static circuits (see above).
-            if dynamic:
+            # Baked inline when a conditional must read the bit or a later
+            # op reuses the qubit; deferred to the map for static circuits.
+            if inline_measures:
                 qc.measure(inst["qubit"], inst["clbit"])
+                written.add(inst["clbit"])
         elif op == "conditional":
             # Guard the body gate on the classical condition. Only dynamic
             # circuits reach here; the body is a single gate op.
             cond = _build_condition(qc, inst["condition"]["clbits"],
-                                    inst["condition"]["value"])
+                                    inst["condition"]["value"], written)
             body = inst["body"]
+            if cond is _NEVER:
+                # The guard can never fire (it requires an always-0 bit to
+                # be 1); drop the body — it would never execute anyway.
+                continue
+            if cond is _ALWAYS:
+                # The guard is vacuously true; emit the body unconditionally.
+                _apply_gate(qc, body["gate"].lower(),
+                            body["qubits"], body.get("params", []))
+                continue
             with qc.if_test(cond):
                 _apply_gate(qc, body["gate"].lower(),
                             body["qubits"], body.get("params", []))

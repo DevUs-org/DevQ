@@ -43,12 +43,17 @@ cannot.
 
 ## Results
 
-**202 distinct mutants, 199 killed, 3 excluded** (M10 equivalent, P7 and
+**205 distinct mutants, 202 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 199/196/3 from prior work
+The total is delta-consistent, not recounted: 202/199/3 from prior work
+plus 3 new mid-circuit-measurement mutants (all killed against
+`mid_circuit_measurement` — MC1 on has_mid_circuit_measurement detection,
+MC2 on the never-written-clbit handling in _build_condition, MC3 on the
+mid-circuit feasibility polarity; MC2 killed only after the block's Shor
+check was moved onto the noise-model path). The 202/199/3 was 199/196/3
 plus 3 new per-job-label mutants (all killed against `rejected_no_ideal` —
 LB1/LB2/LB3 on emitting the label, reducing it to a basename, and the
 present-label guard). The 199/196/3 was 196/193/3 plus 3 new determinism
@@ -638,6 +643,47 @@ is dropped to None — the same observable failure as LB1 but a different
 defect, catching a plausible copy-paste inversion of the conditional. Each
 was run against `rejected_no_ideal` (extended for this), confirmed red, then
 reverted; `runner.py` was diffed clean afterward.
+
+### Mid-circuit measurement — `circuits/circuit_rep.py`, `providers/ibm/qiskit_lowering.py`, `kernel/memory/memory_manager.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| MC1 | `has_mid_circuit_measurement` always returns False | killed (1) |
+| MC2 | `_build_condition` ignores the `written` set (references unwritten clbits) | killed (1)* |
+| MC3 | invert the mid-circuit feasibility polarity (decline on a capable provider) | killed (1) |
+
+Mid-circuit measurement is the third independent provider capability. MC1
+breaks detection — nothing is ever flagged mid-circuit, so a gate-after-
+measure circuit reads as neither flagged nor routed; caught by the
+detection check. MC3 reverses the feasibility verdict, declining exactly the
+capable providers; caught by the "infeasible on a declining provider" check.
+
+*MC2 is the Shor regression, and it is recorded honestly because it
+**survived the block's first version**. `_build_condition` skips a condition
+bit whose clbit was never written (it is 0), because Aer's noise-model path
+rejects an `if_test` that reads an unwritten cbit ("invalid cbit index").
+MC2 removes that skip. It survived at first because the block's Shor-like
+check ran on a plain `AerSimulator`, which tolerates the unwritten-cbit
+reference — the failure only surfaces on the noise-model path
+(`AerSimulator.from_backend`), which is what the real `execute()` uses. The
+check was moved onto the noise-model path and MC2 then failed it. This is
+the same lesson as MF3 and the determinism mutants: a mutant that survives
+because the test exercises the wrong configuration is a gap in the test, not
+a safe mutation. Each mutant was run against `mid_circuit_measurement`,
+confirmed red (MC2 after the noise-model fix), then reverted;
+`circuit_rep.py`, `qiskit_lowering.py`, and `memory_manager.py` were diffed
+clean afterward.
+
+This step also relaxed `find_mid_circuit_measurement` from an
+unrunnable-verdict to a capability detector, widened the inline-lowering
+trigger and both execute paths' skip-guards to cover mid-circuit circuits,
+extended `reference_ideal`'s decline, and stopped the frontend marking
+mid-circuit measurement unrunnable. Those are exercised by
+`mid_circuit_measurement` and by four existing blocks updated for the new
+semantics (`conditional_frontend`, `qasm2_parser`, `rejection_semantics`,
+`unrunnable_circuits`), which stay green — mid-circuit measurement is now a
+per-device capability (`midcircuit.qasm` rejects only on a devq-only session
+and runs on an IBM-backed one).
 
 ### Full-device layout — `providers/ibm/ibm_provider.py`, `providers/ibm/…`
 

@@ -326,11 +326,13 @@ class IBMRealProvider(IBMProvider):
         except UnknownGateError as e:
             return submit_async(lambda e=e: ExecutionResult(
                 counts={}, success=False, error=str(e)))
-        # For a DYNAMIC circuit the builder already baked every measure into
-        # the body inline (a conditional's guard reads its bit mid-run), so
-        # re-applying the map would double-measure. Only a STATIC circuit
-        # leaves the body measurement-free and needs the map applied here.
-        if not circuit.is_dynamic:
+        # When the builder baked measures inline (a DYNAMIC circuit, whose
+        # conditional guard reads its bit mid-run, OR a MID-CIRCUIT circuit,
+        # whose later op reuses a measured qubit), re-applying the map would
+        # double-measure. Only a static circuit leaves the body
+        # measurement-free and needs the map applied here.
+        if not (circuit.is_dynamic
+                or circuit.has_mid_circuit_measurement):
             for q, c in measure_map:
                 qc.measure(q, c)
 

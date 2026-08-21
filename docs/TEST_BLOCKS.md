@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 80 sanity blocks in `run_tests.py`, covering
+Specification for the 81 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 80 blocks, one line each
+python run_tests.py              # all 81 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -1022,7 +1022,37 @@ IBM-dependent blocks; the structural checks above it need only qiskit.
 
 ---
 
-## Matrix and determinism
+### `mid_circuit_measurement`
+
+*Mid-circuit measurement is a third capability: detected, routed, run on
+Aer.*
+
+Mid-circuit measurement — a qubit measured and then reused (a gate or reset
+on it afterward) — is a per-device **capability**, not a circuit-global
+rejection, and a **third** optional provider capability independent of both
+`reference_ideal` and `supports_dynamic`. The block covers the full chain:
+detection (`has_mid_circuit_measurement` set for gate-after-measure and
+reset-after-measure, not for terminal measurement, and never marked
+unrunnable); the capability predicate
+(`supports_mid_circuit_measurement`, overridden once on `IBMProvider` so
+both IBM subclasses affirm by function identity, `devq.simulated` inheriting
+the `BaseProvider` decline); its **independence** from `is_dynamic` (a
+measure-reset-reuse circuit with no conditional is mid-circuit but not
+dynamic); `reference_ideal` declining a mid-circuit circuit (the same
+mixed-state problem as feedback); and feasibility routing (infeasible on a
+declining provider with a capability reason, feasible on one that affirms).
+
+The decisive check is the **Shor regression**. A circuit whose conditions
+name never-written clbits — `if (c==N)` over a wide register where only the
+low bits are ever measured, exactly QASMBench's Shor — must lower and run.
+Those bits are 0 (cregs initialise to 0), so `_build_condition` skips a
+redundant term and drops a body that requires an impossible bit; without
+that handling, the `if_test` references a clbit no `measure` wrote and Aer's
+**noise-model** path rejects it as "invalid cbit index". The check runs the
+circuit on `AerSimulator.from_backend(...)` — the noise-model path the real
+`execute()` uses, where the failure actually surfaces (a plain simulator
+tolerates it) — so a regression in the unwritten-bit handling is caught.
+Guarded on qiskit-aer being importable.
 
 ### `plugin_matrix`
 
