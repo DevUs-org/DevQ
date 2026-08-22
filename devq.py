@@ -73,13 +73,13 @@ from registry.keyspec import flatten_key
 from kernel.scheduler.fcfs_scheduler import FCFSScheduler
 from kernel.scheduler.shortest_depth_scheduler import ShortestDepthScheduler
 from kernel.scheduler.packing_scheduler import PackingScheduler
-from kernel.memory.allocators.static_allocator import StaticAllocator
-from kernel.memory.allocators.graph_allocator import GraphAllocator
-from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
+from kernel.memory.allocator.static_allocator import StaticAllocator
+from kernel.memory.allocator.graph_allocator import GraphAllocator
+from kernel.memory.allocator.noise_graph_allocator import NoiseGraphAllocator
 from kernel.router.noise_router import NoiseRouter
 from kernel.router.round_robin_router import RoundRobinRouter
-from providers.devq_simulated_provider import DevQSimulatedProvider
-from frontends.qasm2_frontend import QASM2Frontend
+from provider.devq_simulated_provider import DevQSimulatedProvider
+from frontend.qasm2_frontend import QASM2Frontend
 
 # DevQ's own components, seeded into every new DevQ instance's registry
 # through the SAME public register_*() path a third party uses. Nothing

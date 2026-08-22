@@ -21,7 +21,7 @@ import os
 import re
 import readline
 import atexit
-from frontends.resolver import resolve_frontend
+from frontend.resolver import resolve_frontend
 from shell.parser import parse_job_args
 
 _DEVICE_RE = re.compile(r"^d(\d+)$")

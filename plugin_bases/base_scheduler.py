@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from kernel.process.lifecycle import JobStates
 
 from kernel.sweep import Sweepable
-from kernel.memory.allocators.base_allocator import AllocationError
+from plugin_bases.base_allocator import AllocationError
 
 
 class BaseScheduler(Sweepable, ABC):

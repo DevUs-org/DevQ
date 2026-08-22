@@ -107,7 +107,7 @@ def select_reference_provider(providers):
     Returns:
         a provider instance, or None if none is reference-capable.
     '''
-    from providers.base_provider import BaseProvider
+    from plugin_bases.base_provider import BaseProvider
 
     for provider in providers:
         # Reference-capable iff the concrete class overrides the default.
@@ -171,7 +171,7 @@ def _registry_reference_ideal(circuit, registry):
     '''
     if registry is None:
         return None
-    from providers.base_provider import BaseProvider
+    from plugin_bases.base_provider import BaseProvider
     try:
         names = registry.names("provider")
     except Exception:

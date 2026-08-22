@@ -566,7 +566,7 @@ def submit_jobs(shell, spec, source="<spec>"):
 
     Returns the list of submitted QCBs.
     '''
-    from frontends.resolver import resolve_frontend, FrontendResolutionError
+    from frontend.resolver import resolve_frontend, FrontendResolutionError
     from benchmark.reference import circuit_hash
     from circuits.circuit_rep import CircuitRep
 

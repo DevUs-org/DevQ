@@ -15,7 +15,7 @@ on a device where it could never run — the rotation simply skips
 infeasible devices for that job.
 '''
 
-from kernel.router.base_router import BaseRouter
+from plugin_bases.base_router import BaseRouter
 
 
 class RoundRobinRouter(BaseRouter):

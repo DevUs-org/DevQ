@@ -37,7 +37,7 @@ Everything a subclass builds a QuantumDevice from can still call the shared
 _extract_* helpers here.
 '''
 
-from providers.base_provider import BaseProvider
+from plugin_bases.base_provider import BaseProvider
 
 
 class IBMProvider(BaseProvider):

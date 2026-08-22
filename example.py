@@ -31,7 +31,7 @@ across identical sessions. See "Reproducibility & Seeding" in the README.
 import argparse
 
 from devq import DevQ
-from providers.devq_simulated_provider import DevQSimulatedProvider
+from provider.devq_simulated_provider import DevQSimulatedProvider
 from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
 if __name__ == "__main__":

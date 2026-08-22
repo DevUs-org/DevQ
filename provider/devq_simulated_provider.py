@@ -16,9 +16,9 @@ Usage:
     DevQ(DevQSimulatedProvider().get_device("random", 10)).start()
 '''
 
-from providers.base_provider import BaseProvider
+from plugin_bases.base_provider import BaseProvider
 from hardware.device import QuantumDevice
-from providers.backend_factory import create_backend
+from provider.backend_factory import create_backend
 
 
 class DevQSimulatedProvider(BaseProvider):

@@ -90,7 +90,7 @@ def check_interactive():
     section("2. Interactive shell (never covered by run_tests.py)")
 
     from devq import DevQ
-    from providers.devq_simulated_provider import DevQSimulatedProvider
+    from provider.devq_simulated_provider import DevQSimulatedProvider
 
     try:
         with contextlib.redirect_stdout(io.StringIO()):
@@ -172,7 +172,7 @@ def check_event_log():
     section("4. Event log")
 
     from devq import DevQ
-    from providers.devq_simulated_provider import DevQSimulatedProvider
+    from provider.devq_simulated_provider import DevQSimulatedProvider
     from kernel.events import PrintSink, RecordSink, MultiSink
 
     def session(sink=None):
@@ -285,7 +285,7 @@ def check_concurrency():
     section("6. Concurrency (multi-core)")
 
     from devq import DevQ
-    from providers.devq_simulated_provider import DevQSimulatedProvider
+    from provider.devq_simulated_provider import DevQSimulatedProvider
 
     provider = DevQSimulatedProvider(seed=42)
     dq = DevQ()

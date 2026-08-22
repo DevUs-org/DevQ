@@ -41,7 +41,7 @@ Register with devq.register_scheduler("naqjs", NAQJSScheduler); benchmark
 against Packing/FCFS/SDF.
 '''
 
-from kernel.scheduler.base_scheduler import BaseScheduler
+from plugin_bases.base_scheduler import BaseScheduler
 from kernel.process.lifecycle import JobStates
 from registry.keyspec import KeySpec, non_negative, unit_interval
 

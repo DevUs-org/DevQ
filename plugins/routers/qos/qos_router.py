@@ -70,7 +70,7 @@ from __future__ import annotations
 
 import math
 
-from kernel.router.base_router import BaseRouter
+from plugin_bases.base_router import BaseRouter
 from registry.keyspec import KeySpec, unit_interval, non_negative
 
 

@@ -10,7 +10,7 @@ and less decoherence exposure in the NISQ era. REJECTED jobs are
 removed and skipped; a WAITING head ends the cycle.
 '''
 
-from .base_scheduler import BaseScheduler
+from ...plugin_bases.base_scheduler import BaseScheduler
 from kernel.process.lifecycle import JobStates
 
 class ShortestDepthScheduler(BaseScheduler):

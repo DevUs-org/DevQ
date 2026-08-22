@@ -16,7 +16,7 @@ connected block among eligible qubits.
 '''
 from collections import deque
 
-from .base_allocator import BaseAllocator, AllocationError
+from ....plugin_bases.base_allocator import BaseAllocator, AllocationError
 from .filtering import eligible_qubits, edge_allowed, has_connected_block
 
 

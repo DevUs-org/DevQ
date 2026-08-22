@@ -63,7 +63,7 @@ against NoiseGraph / Graph / Static.
 
 from collections import deque
 
-from kernel.memory.allocators.base_allocator import (
+from plugin_bases.base_allocator import (
     BaseAllocator, AllocationError,
 )
 from kernel.memory.allocators.filtering import (

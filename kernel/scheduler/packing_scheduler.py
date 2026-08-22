@@ -15,9 +15,9 @@ thresholds can never be satisfied on this device are classified
 REJECTED and removed from the queue entirely.
 '''
 
-from kernel.scheduler.base_scheduler import BaseScheduler
+from plugin_bases.base_scheduler import BaseScheduler
 from kernel.process.lifecycle import JobStates
-from kernel.memory.allocators.base_allocator import AllocationError
+from plugin_bases.base_allocator import AllocationError
 
 
 class PackingScheduler(BaseScheduler):

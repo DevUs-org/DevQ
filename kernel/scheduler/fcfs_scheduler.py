@@ -9,7 +9,7 @@ head does not: unsatisfiable jobs are removed and the next job is
 attempted in the same cycle.
 '''
 
-from .base_scheduler import BaseScheduler
+from ...plugin_bases.base_scheduler import BaseScheduler
 from kernel.process.lifecycle import JobStates
 
 class FCFSScheduler(BaseScheduler):

@@ -34,9 +34,9 @@ come from global config (router_queue_weight / router_noise_weight,
 default 0.5 / 0.5). Ties break by lower device index (deterministic).
 '''
 
-from kernel.router.base_router import BaseRouter
+from plugin_bases.base_router import BaseRouter
 from kernel.memory.qubit_pool import QubitPool
-from kernel.memory.allocators.base_allocator import AllocationError
+from plugin_bases.base_allocator import AllocationError
 
 class NoiseRouter(BaseRouter):
 

@@ -54,7 +54,7 @@ from abc import ABC, abstractmethod
 
 from kernel.sweep import Sweepable
 
-from .filtering import eligible_qubits
+from ..kernel.memory.allocators.filtering import eligible_qubits
 
 
 class AllocationError(Exception):

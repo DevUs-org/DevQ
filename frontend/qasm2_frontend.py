@@ -16,7 +16,7 @@ source position), so a circuit's measurement and reset semantics are
 executed, not just parsed.
 '''
 
-from .base_frontend import BaseFrontend
+from plugin_bases.base_frontend import BaseFrontend
 from .parser import parse, QASMError
 
 

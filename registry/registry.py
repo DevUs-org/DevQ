@@ -209,11 +209,11 @@ def _build_kinds():
     `from registry.keyspec import KeySpec` — the plugin-facing import —
     drag in the whole kernel.
     '''
-    from kernel.scheduler.base_scheduler import BaseScheduler
-    from kernel.memory.allocators.base_allocator import BaseAllocator
-    from kernel.router.base_router import BaseRouter
-    from providers.base_provider import BaseProvider
-    from frontends.base_frontend import BaseFrontend
+    from plugin_bases.base_scheduler import BaseScheduler
+    from plugin_bases.base_allocator import BaseAllocator
+    from plugin_bases.base_router import BaseRouter
+    from plugin_bases.base_provider import BaseProvider
+    from plugin_bases.base_frontend import BaseFrontend
 
     return {
         "scheduler": ComponentKind(

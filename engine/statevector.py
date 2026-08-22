@@ -58,7 +58,7 @@ engine's keys align with any provider's for a fidelity comparison.
 
 import numpy as np
 
-from providers.base_provider import BaseProvider
+from plugin_bases.base_provider import BaseProvider
 from engine.gates import gate_spec, UnknownGateError
 
 

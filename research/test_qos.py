@@ -47,7 +47,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from benchmark import runner as R
-from providers.devq_simulated_provider import DevQSimulatedProvider
+from provider.devq_simulated_provider import DevQSimulatedProvider
 from plugins.routers.qos.qos_router import QOSRouter
 
 
