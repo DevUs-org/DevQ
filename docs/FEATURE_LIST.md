@@ -119,7 +119,9 @@ REJECTED / RUNNING → FINISHED / FAILED`. READY is a queued job that has not
 yet attempted allocation; WAITING is transient (attempted, blocked on
 resources, will retry); **REJECTED** is the umbrella terminal state for any
 kernel-level rejection — device constraints excluding every device,
-unsatisfiable thresholds everywhere, or allocation classification inside a
+unsatisfiable thresholds everywhere, a provider capability that no attached
+device offers (a dynamic circuit needing classical feedback, when no
+device's provider supports it), or allocation classification inside a
 scheduler. Execution is **future-based** (`ExecutionFuture` /
 `AsyncExecutionFuture` behind one `done()`/`result()` interface), a design
 that later made truly asynchronous multi-device execution a drop-in.

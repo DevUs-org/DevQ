@@ -246,6 +246,21 @@ def _run_one(spec, config, out_dir, session_id, register_providers=None,
                     "state"         : j.state.value,
                     "device"        : j.device_index,
                     "circuit_hash"  : j.circuit_hash,
+                    # The circuit's readable name, carried on EVERY job here
+                    # so a consumer can name it regardless of whether it
+                    # produced an ideal or was rejected. Sourced from the
+                    # job's stamped circuit_label (the spec path, set for
+                    # every submitted job including parse-failure
+                    # placeholders), reduced to its basename: the display
+                    # form callers want, and it drops any directory-borne
+                    # ${SECRET} the way the manifest masks paths elsewhere.
+                    # Previously names were reconstructed only from
+                    # `reference`/`reject` records, which a FINISHED job with
+                    # no ideal emits neither of — so it fell back to a raw
+                    # hash. The summary is the per-job authority the runner
+                    # already reads, so the name belongs here.
+                    "circuit_label" : (os.path.basename(j.circuit_label)
+                                       if j.circuit_label else None),
                     "submitted_at"  : j.submitted_at,
                     "dispatched_at" : j.dispatched_at,
                     "resolved_at"   : j.resolved_at,

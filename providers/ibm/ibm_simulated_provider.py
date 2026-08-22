@@ -238,8 +238,18 @@ class IBMSimulatedProvider(IBMProvider):
                 # measure-all fallback); execute bakes those measures in to
                 # sample the classical register.
                 qc, measure_map = build_qiskit_circuit(circuit, num_clbits)
-                for q, c in measure_map:
-                    qc.measure(q, c)
+                # For a DYNAMIC circuit the builder already baked every
+                # measure into the body inline (a conditional's guard must
+                # read its bit mid-run), so re-applying the map here would
+                # measure those bits twice. Only a STATIC circuit leaves the
+                # body measurement-free and needs the map applied for
+                # sampling. The map is still returned for both, but when the
+                # builder baked measures inline (dynamic OR mid-circuit) it
+                # describes measures already present.
+                if not (circuit.is_dynamic
+                        or circuit.has_mid_circuit_measurement):
+                    for q, c in measure_map:
+                        qc.measure(q, c)
 
                 # The allocator's physical placement, as a FULL-device-width
                 # layout: virtual qubit v runs on physical v2p_map[v], and
@@ -373,6 +383,21 @@ class IBMSimulatedProvider(IBMProvider):
             build_qiskit_circuit, resolve_measure_map, UnknownGateError)
 
         width = self._counts_width(circuit)
+
+        # A DYNAMIC circuit (classical feedback) OR a MID-CIRCUIT-measurement
+        # circuit has no ideal through THIS path. reference_ideal reads exact
+        # probabilities off a noiseless density-matrix run of the UNMEASURED
+        # body and marginalises — but both constructs make the outcome depend
+        # on a mid-circuit measurement collapse the single unmeasured-state
+        # read cannot represent (a feedback branch taken or not; a qubit
+        # measured, reset, and reused). So decline with None, the same honest
+        # degrade as a missing Aer or an unlowerable gate: fidelity reports
+        # None rather than a forged number. A correct ideal for these needs a
+        # feedback-aware/sampled reference (a deferred, optional capability —
+        # see the mid-circuit design notes); it is intentionally not wired
+        # here.
+        if circuit.is_dynamic or circuit.has_mid_circuit_measurement:
+            return None
 
         # Same lowering as execute(): gate/reset body, no measures baked
         # in. The reference reads probabilities off the unmeasured state

@@ -149,6 +149,27 @@ so DevQ obtains ideals without core depending on any provider; a run with
 no capable provider simply reports fidelity as `None`. See
 [`METRICS.md`](METRICS.md) (fidelity) for how the ideal is used.
 
+**Optionally, `supports_dynamic(circuit)`** — the sibling capability to
+`reference_ideal`, and the same OPTIONAL-with-a-default shape: a predicate
+that returns whether this provider's runtime can EXECUTE a **dynamic
+circuit** — one whose later gates depend on the classical outcome of an
+earlier measurement (`if (creg==N)` classical control, the feedback loop
+mid-circuit measurement is the primitive for). Where `reference_ideal`
+asks "can you give me an ideal?", this asks "can you honour this circuit's
+classical feedback?". The default on `BaseProvider` DECLINES by returning
+`False` — DevQ's own execution model is terminal-measurement with no
+classical feedback, so `DevQSimulatedProvider` correctly inherits the
+decline. Override it to `True` if your runtime supports feedback; the IBM
+providers do, overriding once on the shared `IBMProvider` base so both the
+Aer-backed and real-hardware subclasses affirm from a single point. The
+`circuit` is passed (not just a bare flag) so a provider may later answer
+with finer granularity without a contract change. The kernel reads this at
+routing time through the memory manager's feasibility verdict: a job
+needing feedback is kept off a device whose provider declines, routed to a
+capable device when one is attached, and REJECTED with a per-device reason
+only when none is. Expressed entirely in DevQ's terms — the kernel never
+learns *how* a provider runs feedback, only whether it can.
+
 **New allocator** — subclass `BaseAllocator`, implement `allocate()` per the
 documented contract (reserve via `pool.allocate()` on success; signal "no
 placement possible" by raising `AllocationError`; honour thresholds as hard
