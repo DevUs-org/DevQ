@@ -1241,10 +1241,21 @@ def block_supports_dynamic_capability():
                 rel = os.path.relpath(path, root)
                 if any(rel.startswith(a) for a in ALLOWED):
                     continue
-                # research/ holds hardware-run scripts and mapomatic tests
-                # that legitimately drive qiskit-ibm-runtime; research is an
-                # entry point, not core, so exclude it explicitly.
+                # research/ holds hardware-run scripts that legitimately
+                # drive qiskit-ibm-runtime; research is an entry point, not
+                # core, so exclude it explicitly.
                 if rel.startswith("research" + os.sep):
+                    continue
+                # Standalone test harnesses (test_*.py) may import qiskit as
+                # an ORACLE — they cross-check a plugin's output against
+                # qiskit, exactly as the ibm and verify oracles do. They are
+                # run via `python -m ...`, never imported by DevQ at runtime,
+                # so a qiskit import in one is not a runtime leak into the
+                # plugin. (test_mapomatic, relocated from research/ to live
+                # beside its plugin, is the case this covers.) The plugin's
+                # own runtime modules are still scanned — only its tests are
+                # exempt.
+                if os.path.basename(rel).startswith("test_"):
                     continue
                 with open(path) as handle:
                     if import_re.search(handle.read()):

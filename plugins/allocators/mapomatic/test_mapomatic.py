@@ -35,9 +35,16 @@ import sys
 
 # `benchmark` and `research` are top-level packages at the repo root; import
 # them absolutely and make sure the repo root is on sys.path so this file runs
-# identically whether launched as `python -m research.test_mapomatic` or
-# `python research/test_mapomatic.py`. Anchored to this file, not the cwd.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# identically whether launched as
+# `python -m plugins.allocators.mapomatic.test_mapomatic` or as a plain
+# script. Anchored to this file, not the cwd: walk up to the repo root
+# (marked by run_tests.py) rather than counting dirnames, so relocating
+# this test does not silently break the path the way the research/ ->
+# plugins/ move did.
+_REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
+while (not os.path.isfile(os.path.join(_REPO_ROOT, "run_tests.py"))
+       and _REPO_ROOT != os.path.dirname(_REPO_ROOT)):
+    _REPO_ROOT = os.path.dirname(_REPO_ROOT)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
@@ -86,7 +93,7 @@ SEED = 7
 # naqjs workload. Referenced by the placement block so the fixture is a real,
 # runnable artifact rather than inline test data. Resolved from this file's
 # location so it works from any cwd.
-WORKLOAD = os.path.join(os.path.dirname(__file__), "workloads", "mapomatic.json")
+WORKLOAD = os.path.join(_REPO_ROOT, "research", "workloads", "mapomatic.json")
 
 
 def _device(num_qubits=8, kind="random", seed=SEED):

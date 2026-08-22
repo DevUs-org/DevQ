@@ -37,11 +37,16 @@ import tempfile
 # Both `benchmark` and `research` are top-level packages at the repo root, so
 # they must be imported absolutely (a relative `..benchmark` would climb past
 # the top-level package and fail). Ensure the repo root is on sys.path so this
-# resolves however the file is launched — `python -m research.test_naqjs`
-# already puts it there, and this guard makes a plain
-# `python research/test_naqjs.py` behave identically rather than failing on the
-# import. Anchored to this file, not the caller's cwd.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# resolves however the file is launched — `python -m
+# plugins.schedulers.naqjs.test_naqjs` already puts it there, and this guard
+# makes a plain-script launch behave identically. Anchored to this file, not
+# the caller's cwd: walk up to the repo root (marked by run_tests.py) rather
+# than counting dirnames, so relocating this test does not silently break the
+# path.
+_REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
+while (not os.path.isfile(os.path.join(_REPO_ROOT, "run_tests.py"))
+       and _REPO_ROOT != os.path.dirname(_REPO_ROOT)):
+    _REPO_ROOT = os.path.dirname(_REPO_ROOT)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
@@ -86,7 +91,7 @@ GHZ  = "test_circuits/ghz.qasm"
 # beside the sibling qasmbench_small workload; referenced by the seam block so
 # the fixture is a real, runnable artifact rather than inline test data.
 # Resolved from this file's location so it works from any cwd.
-WORKLOAD = os.path.join(os.path.dirname(__file__), "workloads", "naqjs.json")
+WORKLOAD = os.path.join(_REPO_ROOT, "research", "workloads", "naqjs.json")
 
 
 def _write_spec(tmp, jobs, num_qubits=8, eta=None, seed=7):

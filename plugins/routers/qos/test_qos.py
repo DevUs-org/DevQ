@@ -40,9 +40,14 @@ import sys
 
 # `benchmark` and `research` are top-level packages at the repo root; import
 # them absolutely and put the repo root on sys.path so this runs identically
-# whether launched as `python -m research.test_qos` or
-# `python research/test_qos.py`. Anchored to this file, not the cwd.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# whether launched as `python -m plugins.routers.qos.test_qos` or as a plain
+# script. Anchored to this file, not the cwd: walk up to the repo root
+# (marked by run_tests.py) rather than counting dirnames, so relocating this
+# test does not silently break the path.
+_REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
+while (not os.path.isfile(os.path.join(_REPO_ROOT, "run_tests.py"))
+       and _REPO_ROOT != os.path.dirname(_REPO_ROOT)):
+    _REPO_ROOT = os.path.dirname(_REPO_ROOT)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
@@ -87,7 +92,7 @@ SEED = 7
 # (a router decision is spatial: it needs more than one candidate to be
 # meaningful, unlike the single-device allocator fixture). Resolved from this
 # file's location so it works from any cwd.
-WORKLOAD = os.path.join(os.path.dirname(__file__), "workloads", "qos.json")
+WORKLOAD = os.path.join(_REPO_ROOT, "research", "workloads", "qos.json")
 
 
 def _device(kind="random", num_qubits=7, seed=SEED):
