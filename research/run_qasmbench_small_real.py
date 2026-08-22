@@ -56,6 +56,7 @@ historical calibration snapshot, not live hardware. See docs/REFERENCES.md.
 import argparse
 import json
 import os
+import tempfile
 
 from benchmark import runner as R
 from benchmark import metrics as M
@@ -74,17 +75,75 @@ SPEC = os.path.join(_HERE, "workloads", "qasmbench_small_real.json")
 SEED = 42
 
 
-def _run(out_dir):
-    '''Run the spec with ibm.simulated registered; return the JSONL path.'''
+def _label_matches(circuit_path, only):
+    '''True if a spec job's circuit path matches the --circuit label.
+
+    `only` is a bare label (qft_n4) or a filename (qft_n4.qasm); a job's
+    circuit is a repo-root-relative path. Match on basename, tolerating a
+    missing .qasm extension on the label.
+    '''
+    base = os.path.basename(circuit_path)
+    want = only if only.endswith(".qasm") else only + ".qasm"
+    return base == want
+
+
+def _single_circuit_spec(only):
+    '''Write a temp spec identical to SPEC but with jobs filtered to the one
+    circuit named by `only`, and return its path. Raises SystemExit if the
+    label matches no job — so a typo fails loudly instead of silently
+    running nothing (or, as before, everything).
+
+    Filtering happens on the RAW spec JSON, before load_spec resolves
+    ${ENV} placeholders, so device/secret/config resolution is unchanged;
+    only the jobs list is narrowed. This is what makes --circuit actually
+    execute one circuit rather than run the full spec and hide the rest at
+    report time — the bug that spent real QPU time on 40+ unwanted circuits.
+    '''
+    with open(SPEC) as fh:
+        raw = json.load(fh)
+
+    jobs = [j for j in raw.get("jobs", [])
+            if _label_matches(j.get("circuit", ""), only)]
+    if not jobs:
+        available = sorted({os.path.basename(j.get("circuit", ""))
+                            for j in raw.get("jobs", [])})
+        raise SystemExit(
+            f"--circuit {only!r} matched no circuit in the spec. "
+            f"Nothing was executed. Available: {', '.join(available)}"
+        )
+    raw["jobs"] = jobs
+
+    fd, path = tempfile.mkstemp(prefix="qasmbench_one_", suffix=".json",
+                               dir=_HERE)
+    with os.fdopen(fd, "w") as fh:
+        json.dump(raw, fh)
+    return path
+
+
+def _run(out_dir, only=None):
+    '''Run the spec with ibm.real registered; return the JSONL path.
+
+    When `only` is set, run a temp spec filtered to that single circuit so
+    ONLY it is executed on hardware — not the full spec.
+    '''
     # Circuit paths in the spec are repo-root-relative; ensure that is the
     # cwd so they resolve wherever this module was launched from.
     os.chdir(_REPO_ROOT)
-    R.run(
-        SPEC,
-        out_dir=out_dir,
-        register_providers={"ibm.real": IBMRealProvider},
-        quiet=True,
-    )
+    spec_path = SPEC
+    tmp_path = None
+    if only is not None:
+        tmp_path = _single_circuit_spec(only)
+        spec_path = tmp_path
+    try:
+        R.run(
+            spec_path,
+            out_dir=out_dir,
+            register_providers={"ibm.real": IBMRealProvider},
+            quiet=True,
+        )
+    finally:
+        if tmp_path is not None:
+            os.unlink(tmp_path)
     logs = [f for f in os.listdir(out_dir) if f.endswith(".jsonl")]
     if not logs:
         raise SystemExit(
@@ -162,12 +221,12 @@ def main():
         help="output directory for the JSONL log (default: results/qasmbench_small_real)")
     parser.add_argument(
         "--circuit", default=None,
-        help="report only this circuit by label, e.g. qft_n4 "
-             "(still runs the full spec; use a smaller spec to run just one)")
+        help="run and report ONLY this circuit by label, e.g. qft_n4 "
+             "(executes just this circuit on hardware, not the full spec)")
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    log_path = _run(args.out)
+    log_path = _run(args.out, only=args.circuit)
     _report(log_path, only=args.circuit)
     print(f"\nlog: {log_path}")
 
