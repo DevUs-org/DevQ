@@ -71,6 +71,32 @@ not ignored: `IBMSimulatedProvider` translates it into a transpiler
 A provider that drops it silently erases the allocator's effect on
 fidelity.
 
+The placement `v2p_map` names only the qubits the circuit uses, which is a
+*partial* layout. On a small backend a transpiler tolerates that, but Aer
+on a large device (a 156-qubit Heron fake, say) rejects it outright —
+`"The 'layout' must be full (with ancilla)."` — because it wants the
+layout to enumerate **every** physical qubit, the used ones plus every
+unused one as an ancilla. `IBMProvider.full_layout(qc, v2p_map, device)`
+builds exactly that: it adds an ancilla register to the circuit and
+returns a full-device-width `Layout` with the circuit's qubits at their
+allocated positions and each remaining physical qubit filled by an
+ancilla. Both IBM providers inherit it and call it in place of
+hand-building `initial_layout`, so the padding lives in one place rather
+than being copy-pasted (and mis-copied) per provider — the same
+single-source-of-truth discipline as `_counts_width` and `flatten_key`.
+
+It lives on `IBMProvider`, the **Qiskit-family base** (see below), not on
+`BaseProvider`: it returns a qiskit `Layout` and is meaningful only when a
+provider's placement API is a Qiskit `initial_layout`. A non-Qiskit
+provider (Braket, a photonic backend) subclasses `BaseProvider` directly
+and never inherits it, so `BaseProvider` carries no qiskit dependency —
+not even a deferred, function-local import. One consequence to respect:
+the transpile target must know the device's true width for the padded
+layout to validate — transpile against the backend (or an Aer simulator
+built from it), not a bare noise-model simulator that carries no coupling
+map. The ancilla widen the *layout* only; they never touch the classical
+register, so the counts width is unchanged.
+
 Third, **the counts a provider returns must obey a shared shape**, because
 cross-provider comparison (the fidelity metric, baseline sweeps) reads the
 bitstrings directly and a disagreement is silent. The result's `counts`
@@ -122,6 +148,27 @@ correctly). The shipped, vendor-neutral orchestrator in
 so DevQ obtains ideals without core depending on any provider; a run with
 no capable provider simply reports fidelity as `None`. See
 [`METRICS.md`](METRICS.md) (fidelity) for how the ideal is used.
+
+**Optionally, `supports_dynamic(circuit)`** — the sibling capability to
+`reference_ideal`, and the same OPTIONAL-with-a-default shape: a predicate
+that returns whether this provider's runtime can EXECUTE a **dynamic
+circuit** — one whose later gates depend on the classical outcome of an
+earlier measurement (`if (creg==N)` classical control, the feedback loop
+mid-circuit measurement is the primitive for). Where `reference_ideal`
+asks "can you give me an ideal?", this asks "can you honour this circuit's
+classical feedback?". The default on `BaseProvider` DECLINES by returning
+`False` — DevQ's own execution model is terminal-measurement with no
+classical feedback, so `DevQSimulatedProvider` correctly inherits the
+decline. Override it to `True` if your runtime supports feedback; the IBM
+providers do, overriding once on the shared `IBMProvider` base so both the
+Aer-backed and real-hardware subclasses affirm from a single point. The
+`circuit` is passed (not just a bare flag) so a provider may later answer
+with finer granularity without a contract change. The kernel reads this at
+routing time through the memory manager's feasibility verdict: a job
+needing feedback is kept off a device whose provider declines, routed to a
+capable device when one is attached, and REJECTED with a per-device reason
+only when none is. Expressed entirely in DevQ's terms — the kernel never
+learns *how* a provider runs feedback, only whether it can.
 
 **New allocator** — subclass `BaseAllocator`, implement `allocate()` per the
 documented contract (reserve via `pool.allocate()` on success; signal "no
@@ -596,5 +643,42 @@ class IonQProvider(BaseProvider):
 
 It is deliberately not abstract — it has a working default, and making
 it abstract would break providers written before it existed.
+
+### The Qiskit-family base: `IBMProvider`
+
+`BaseProvider` is vendor-neutral: it carries no qiskit dependency, not
+even a deferred one. But DevQ's two IBM providers —
+`IBMSimulatedProvider` (Qiskit V2 fake backends + an AerSimulator
+noise-model run) and `IBMRealProvider` (live hardware via
+`QiskitRuntimeService`) — share a lot precisely *because* they are
+qiskit-family: both read a Qiskit `BackendV2` `Target`, and both place
+circuits with a Qiskit `initial_layout`. That shared, qiskit-specific work
+lives on an intermediate base, `IBMProvider(BaseProvider)`, which both
+subclass:
+
+- **`full_layout(qc, v2p_map, device)`** — the full-device-width layout
+  builder described above. It returns a qiskit `Layout`, so it belongs on
+  the qiskit-family base, not on `BaseProvider`.
+- **The `_extract_*` calibration readers** — coupling map, readout error,
+  2q-edge error, 1q-gate error, T2, gate durations, all read out of a
+  `Target`. The work is identical whether the `Target` came from a fake
+  backend or a real one, so it lives once on `IBMProvider` rather than
+  being copied into each provider. Warning messages prefix
+  `type(self).__name__`, so a fake-backend warning still reads
+  `[IBMSimulatedProvider]` and a live one `[IBMRealProvider]`.
+
+`IBMProvider` deliberately leaves `__init__`, `_load_backend`,
+`get_device`/`on_attach`, `execute`, and `preferred_config` to the
+subclass — those are where the sim and the real provider genuinely differ
+(a fake-backend class vs `QiskitRuntimeService`, an AerSimulator run vs
+`SamplerV2`). Qiskit is imported lazily inside the methods that need it,
+so importing `ibm_provider` — or subclassing it — does not require qiskit
+to be installed; a subclass that never calls those methods never triggers
+the import.
+
+The rule of thumb: a **non-qiskit** provider (IonQ, Braket, a photonic
+backend) subclasses `BaseProvider` directly and never sees any of this. A
+**new qiskit-family** provider subclasses `IBMProvider` and inherits the
+`Target` readers and `full_layout` for free.
 
 ---

@@ -162,18 +162,7 @@ class Kernel:
         processed = self._route_ready_jobs()
 
         for ctx in self.contexts:
-            jobs = ctx.scheduler.schedule()
-
-            if not jobs:
-                continue
-
-            jobs = jobs if isinstance(jobs, list) else [jobs]
-
-            for job in jobs:
-                if job.state != JobStates.REJECTED:
-                    self._execute(job, ctx)
-
-            processed.extend(jobs)
+            processed.extend(self._schedule_ctx(ctx))
 
         # Emitted even when nothing happened, so a consumer can tell a
         # cycle that did no work from a cycle missing from the log.
@@ -181,22 +170,58 @@ class Kernel:
 
         return processed
 
+    def _schedule_ctx(self, ctx):
+        '''
+        Run one context's scheduler and dispatch the jobs it selects.
+
+        The single place scheduling turns into execution — shared by the
+        per-cycle step() loop and the retry that _resolve_pending()
+        triggers when a completing job frees qubits. Returns the jobs the
+        scheduler processed this pass (dispatched and/or rejected); the
+        caller decides what to do with them.
+        '''
+        jobs = ctx.scheduler.schedule()
+
+        if not jobs:
+            return []
+
+        jobs = jobs if isinstance(jobs, list) else [jobs]
+
+        for job in jobs:
+            if job.state != JobStates.REJECTED:
+                self._execute(job, ctx)
+
+        return jobs
+
     def run_job(self, qcb):
         '''
         Immediate priority execution for a single job, bypassing the
         scheduling cycle. Used by qrun.
 
         Routes the job immediately (respecting its device constraints),
-        attempts allocation on the routed context, executes, and blocks
-        until this job's own future resolves — qrun's contract is
-        synchronous by definition. Other pending futures resolve
-        opportunistically. On allocation failure the job stays WAITING
-        in the routed context's queue for a later qrunpack.
+        attempts allocation on the routed context, and dispatches —
+        then RETURNS without blocking. The job's future resolves on the
+        shared executor concurrently with further shell interaction; the
+        caller reads its outcome later via poll()/qps. On allocation
+        failure the job stays WAITING in the routed context's queue for
+        a later qrunpack. On dispatch the job is left RUNNING; the shell
+        is free to submit more work or query status meanwhile.
         '''
         # qrun bypasses step(), so it owns its cycle. Without this every
         # qrun event would carry the previous cycle's number and appear
         # to belong to a scheduling cycle it took no part in.
         self._cycle += 1
+
+        # Collect any previously dispatched futures that have ALREADY
+        # resolved, freeing their qubits, before this job routes and
+        # allocates. This is a non-blocking sweep — it waits on nothing
+        # still in flight — but it means a fast provider (the simulator
+        # resolves near-instantly) has its finished jobs' qubits returned
+        # to the pool in time for THIS job to use them, rather than this
+        # job spuriously WAITING on capacity that is logically free but
+        # not yet collected. A slow provider's futures are simply not done
+        # yet, so nothing is collected and the async contract is intact.
+        self._resolve_pending()
 
         self.router_queue.remove(qcb)
 
@@ -238,7 +263,6 @@ class Kernel:
             return
 
         self._execute(qcb, ctx)
-        self._wait_for(qcb)
 
     def _route_ready_jobs(self):
         '''Drain the router queue, binding or rejecting every job.'''
@@ -432,6 +456,7 @@ class Kernel:
         in flight stay pending (the async case).
         '''
         still_pending = []
+        freed_ctxs    = []
 
         for qcb in self._pending:
             if qcb.future and qcb.future.done():
@@ -441,6 +466,8 @@ class Kernel:
 
                 ctx.memory_manager.free(list(qcb.v2p_map.values()))
                 ctx.running_jobs -= 1
+                if ctx not in freed_ctxs:
+                    freed_ctxs.append(ctx)
 
                 qcb.state = (JobStates.FINISHED if result.success
                              else JobStates.FAILED)
@@ -458,6 +485,19 @@ class Kernel:
                 still_pending.append(qcb)
 
         self._pending = still_pending
+
+        # Freeing qubits is what unblocks a WAITING job, so retry the
+        # scheduler on every context that just completed a job. This is
+        # what makes async self-healing: a job that waited on contended
+        # qubits dispatches as soon as the holder finishes, wherever that
+        # completion is observed — step(), a qps snapshot's poll(), or
+        # drain(). No caller has to re-issue qrunpack to advance a
+        # waiter, and no foreground loop busy-waits to do it. A newly
+        # freed context may itself free nothing new, so this does not
+        # recurse; a job that still cannot allocate simply stays WAITING
+        # until the next completion.
+        for ctx in freed_ctxs:
+            self._schedule_ctx(ctx)
 
     def _wait_for(self, qcb, poll_interval=0.02, timeout=300):
         '''
@@ -504,6 +544,85 @@ class Kernel:
 
     def list_devices(self):
         return self.contexts
+
+    def poll(self):
+        '''
+        Resolve any dispatched futures that are DONE and return.
+
+        Non-blocking snapshot primitive: futures still in flight stay
+        pending, done ones finalise to FINISHED/FAILED. qps calls this
+        so already-complete jobs show settled state, without ever
+        waiting on work still running. This is the async counterpart to
+        the old synchronous qrun — status is pulled, never pushed.
+        '''
+        self._resolve_pending()
+
+    def drain(self, timeout=300):
+        '''
+        Block until the session reaches quiescence — nothing queued and
+        no future in flight — or `timeout` seconds elapse. Not used by
+        the interactive shell (qps is a pure snapshot and never waits),
+        but callers that need a settled view (batch drivers, the test
+        harness) use this to reach a deterministic end state.
+
+        Loops on has_queued() OR has_pending(), mirroring the benchmark
+        runner's drain: a WAITING job keeps has_queued() true, and each
+        _resolve_pending() both collects finished futures and — since a
+        completion frees qubits — retries the waiters they unblock. So a
+        job contended at dispatch still runs here without any caller
+        re-issuing a dispatch command.
+
+        Bounded for the same reason _wait_for is: a wedged provider or
+        dead executor must fail loudly rather than spin forever. Each
+        still-pending job past the deadline is failed with an explicit
+        timeout result.
+        '''
+        deadline = time.monotonic() + timeout
+
+        while self.has_queued() or self.has_pending():
+            if time.monotonic() > deadline:
+                for qcb in list(self._pending):
+                    self._pending.remove(qcb)
+                    ctx = self.contexts[qcb.device_index]
+                    ctx.memory_manager.free(list(qcb.v2p_map.values()))
+                    ctx.running_jobs -= 1
+                    qcb.state  = JobStates.FAILED
+                    qcb.result = ExecutionResult(
+                        counts  = None,
+                        success = False,
+                        error   = (f"execution did not resolve within "
+                                   f"{timeout}s — provider or executor "
+                                   f"may be wedged")
+                    )
+                    qcb.resolved_seq = self._seq
+                    qcb.resolved_at  = time.time()
+                    self._emit("resolve",
+                               job_id  = qcb.job_id,
+                               device  = qcb.device_index,
+                               state   = qcb.state.value,
+                               success = False,
+                               counts  = None,
+                               circuit_hash = qcb.circuit_hash,
+                               error   = qcb.result.error)
+                return
+
+            before_queued  = self.has_queued()
+            before_pending = len(self._pending)
+
+            # A full cycle: collect finished futures (which also retries
+            # the waiters they unblock) and route/schedule anything still
+            # queued. step() begins with its own _resolve_pending(), so
+            # this is one coherent pass, not two.
+            self.step()
+
+            # If nothing moved, every remaining job is blocked on a future
+            # still in flight. Stepping again cannot help and would only
+            # emit empty cycles — the 37,923-empty-cycle trap the runner's
+            # drain documents — so wait for the executor to make progress.
+            made_progress = (self.has_queued() != before_queued
+                             or len(self._pending) != before_pending)
+            if not made_progress:
+                time.sleep(0.02)
 
     def has_pending(self):
         '''True while any dispatched future is still unresolved.'''

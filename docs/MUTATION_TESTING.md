@@ -43,13 +43,46 @@ cannot.
 
 ## Results
 
-**171 distinct mutants, 168 killed, 3 excluded** (M10 equivalent, P7 and
+**205 distinct mutants, 202 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 165/162/3 from the prior
-state plus 6 new mutants below — 3 on the three-tier reference precedence
+The total is delta-consistent, not recounted: 202/199/3 from prior work
+plus 3 new mid-circuit-measurement mutants (all killed against
+`mid_circuit_measurement` — MC1 on has_mid_circuit_measurement detection,
+MC2 on the never-written-clbit handling in _build_condition, MC3 on the
+mid-circuit feasibility polarity; MC2 killed only after the block's Shor
+check was moved onto the noise-model path). The 202/199/3 was 199/196/3
+plus 3 new per-job-label mutants (all killed against `rejected_no_ideal` —
+LB1/LB2/LB3 on emitting the label, reducing it to a basename, and the
+present-label guard). The 199/196/3 was 196/193/3 plus 3 new determinism
+mutants (all killed against `determinism_seeded` after it was strengthened
+— DS1/DS2/DS3, each breaking cross-session count reproducibility that the
+old block could not see). The 196/193/3 was 193/190/3 plus 3 new
+dynamic-lowering mutants (all killed against `dynamic_lowering` — DL1 on the
+condition polarity, DL2 on baking the feeding measure inline, DL3 on
+reference_ideal declining dynamic circuits). The 193/190/3 was 190/187/3
+plus 3 new dynamic-feasibility mutants (all killed against
+`dynamic_feasibility` — MF1 on the `is_dynamic` guard, MF2 on the capability
+polarity, MF3 on the check-before-allocator ordering, killed only after the
+block was strengthened). The 190/187/3 was 187/184/3 plus 3 new
+conditional-frontend mutants (all killed against `conditional_frontend` —
+FE1 on the parsed condition value, FE2 on wrapping every broadcast-produced
+op, FE3 on removing the bare ops before re-wrapping). The 187/184/3 was
+184/181/3 plus 3 new conditional-IR mutants (all killed against
+`conditional_ir` — CI1 on `is_dynamic`, CI2 on the `cregs` defensive copy,
+CI3 on the mid-circuit hazard reaching into the conditional body). The
+184/181/3 was 181/178/3 plus 3 new supports-dynamic mutants (all killed
+against `supports_dynamic` — SD1/SD2 on the capability's base decline and
+IBM affirm, SD3 on the boundary scan). The 181/178/3 was 178/175/3 plus 3
+new full-layout mutants (all killed against `large_device_full_layout`). The 178/175/3 was 177/174/3 from the async
+work plus 1 new event-log mutant (E10, killed by `event_log`). The
+177/174/3 was 171/168/3 plus 6 async-dispatch mutants (all killed against
+`async_dispatch`; AD5 after the FINISHED-row counts assertion was
+strengthened, AD6 after a collection-lag assertion was added). The
+171/168/3 itself was 165/162/3 plus 6 new mutants — 3
+on the three-tier reference precedence
 (`benchmark/reference.py`, killed by `reference_tiers`) and 3 on the
 engine's seeded sampling (`run()` in `engine/statevector.py`, killed by
 `engine_statevector`). The 165/162/3 itself was 162/159/3 plus the 3
@@ -111,10 +144,20 @@ provider-contract mutants. The pre-existing set was taken as given.
 | E7 | kernel's sink call unguarded | killed (1) |
 | E8 | `cycle_end` never emitted | killed (1) |
 | E9 | `PrintSink` drops `dispatch` | killed (14) |
+| E10 | `PrintSink` echoes `resolve` to the console again | killed (1) |
 
 E9 failing 14 blocks is the useful signal: it confirms console output
 genuinely flows through the sink rather than a stray `print` left
-behind by the refactor.
+behind by the refactor. E10 guards the opposite direction: `PrintSink`
+must NOT echo the resolve event, because qps is now the result surface
+and the `[Kernel] Job N FINISHED. Counts: …` line would duplicate the
+qps row (landing at a confusing spot, since resolution is collected
+lazily by whatever command next pumps the kernel). `event_log` asserts
+the console carries the dispatch line but no FINISHED/FAILED echo, while
+the record stream still carries the resolve event — so re-adding the
+echo turns the block red, but silencing the event entirely (which would
+also break the metrics) is caught by the "resolve events are emitted"
+check.
 
 ### QCB timestamps — `kernel/process/qcb.py`
 
@@ -257,6 +300,49 @@ provider name. QR3 catches typed-order output — the `s p` test asserts
 providers appear before schedulers regardless of typed order, so canonical
 ordering cannot regress to input order.
 
+### Async dispatch & self-heal — `shell/qshell.py`, `kernel/kernel.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| AD1 | `run_job` blocks on `_wait_for` again (reverts async qrun) | killed (1) |
+| AD2 | `_resolve_pending` retry-on-free disabled (waiters never retried) | killed (1) |
+| AD3 | `qps` drops the REJECTED reason column | killed (1) |
+| AD4 | `qps` ignores the id filter, always lists all jobs | killed (1) |
+| AD5 | `qps` drops the counts column on a FINISHED job | killed (1) |
+| AD6 | `run_job` skips its pre-routing resolve (a finished job's qubits go uncollected, stranding the next qrun) | killed (1) |
+
+These guard the three halves of the async contract — non-blocking
+dispatch, result reporting through `qps`, and the self-healing retry —
+against the `async_dispatch` block. AD1 is the reversion mutant: putting
+the blocking wait back on the priority path means `qrun` returns only
+after the job finishes, so the "job is `RUNNING` the instant `qrun`
+returns" assertion catches it. AD2 is the subtlest and most important:
+if a completing job's freed qubits no longer retry the context's
+waiters, job 2 stays `WAITING` forever, and `settle` — bounded by its
+try count — fails the "reached a terminal state" guard rather than
+hanging. AD3/AD4/AD5 catch `qps` rendering regressions: a dropped reason,
+an ignored filter (the `qps 1` assertion requires job 2 be *absent*), and
+a dropped counts column. **AD5 initially survived** — the block read
+counts via `counts_of`, which also matches the kernel's resolve-log line,
+so a `qps` that printed `FINISHED` without counts still passed. The
+assertion was strengthened to match the counts on the `qps` row itself
+(`^N | … | FINISHED | Counts: {`), and only then did AD5 die — the same
+"a green suite can assert nothing" lesson as the P1 and LB5 survivors.
+AD6 is the collection-lag mutant: the simulator resolves near-instantly,
+so by the time a second `qrun` runs the first job's future is already
+done, but its qubits stay held until something collects it. Without the
+pre-routing `_resolve_pending()` in `run_job`, four sequential bells on a
+7-qubit sim strand the fourth in `WAITING` on capacity that is logically
+free — the reported screenshot bug. AD6 **initially survived** the
+self-heal assertions, because those force `WAITING` via an artificial
+pool restriction (genuine contention), not via collection lag; a
+dedicated assertion was added that lets three jobs finish on the pool
+without pumping the kernel, then checks the fourth `qrun` dispatches
+rather than waits — and only then did AD6 die. Each was run against
+`async_dispatch`, confirmed to turn it red, then reverted with `.pyc`
+cleared between runs; `kernel.py` and `qshell.py` were diffed clean
+afterward.
+
 ### Frontend dispatch — `frontends/resolver.py`, `shell/parser.py`, `devq.py`, `shell/qshell.py`
 
 | # | Mutation | Result |
@@ -360,6 +446,272 @@ entirely loses the register width. Both are caught by
 `counts_width_contract`, which asserts the helper directly rather than
 only through a provider's end-to-end counts. Each was run against that
 block, confirmed red, then reverted; `base_provider.py` was diffed clean.
+
+### Dynamic-circuit capability — `providers/base_provider.py`, `providers/ibm/ibm_provider.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| SD1 | `BaseProvider.supports_dynamic` default returns `True` instead of `False` | killed (1) |
+| SD2 | `IBMProvider.supports_dynamic` override returns `False` instead of `True` | killed (1) |
+| SD3 | a `from qiskit import …` planted in `kernel/kernel.py` (a boundary breach) | killed (1) |
+
+`supports_dynamic` is the provider-contract capability for dynamic
+circuits, shaped as the sibling of `reference_ideal`: the base declines,
+`IBMProvider` overrides once for both IBM subclasses. SD1 and SD2 are the
+two ways to break the capability itself — flipping the default makes every
+provider (including `devq.simulated`, which inherits it) wrongly claim
+feedback support; flipping the override makes capable IBM hardware wrongly
+decline. SD1 is caught by the "DevQ declines" check and SD2 by the
+"IBM affirms" check in `supports_dynamic`.
+
+SD3 is a different kind of mutant: it does not break the method, it breaks
+the *boundary* the method's block also guards. Planting a real `qiskit`
+import into a core file (`kernel/kernel.py`) simulates the leak the whole
+dynamic-circuit effort must avoid — qiskit escaping `providers/ibm/` into
+the kernel/IR/frontend/routing layer. The block's package scan catches it
+and names the offending file. This confirms the guard actually bites rather
+than passing vacuously; it is the standing regression that lets later
+dynamic-circuit steps (IR op, frontend emit, lowering) proceed without
+silently importing qiskit upstream of the driver. Each mutant was run
+against `supports_dynamic`, confirmed red, then reverted; `base_provider.py`,
+`ibm_provider.py` and `kernel/kernel.py` were diffed clean afterward.
+
+### Conditional IR — `circuits/circuit_rep.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| CI1 | `is_dynamic` matches `op == "gate"` instead of `"conditional"` | killed (1) |
+| CI2 | `cregs` returns the live `_cregs` dict instead of a copy | killed (1) |
+| CI3 | `find_mid_circuit_measurement` skips the conditional body | killed (1) |
+
+The `conditional` op makes classical feedback representable; these are the
+three ways a reasonable implementation gets the representation wrong. CI1
+breaks the flag the kernel routes on — matching `gate` makes every ordinary
+circuit report dynamic, caught by the "a circuit with no conditional is not
+dynamic" check. CI2 exposes the live register dict, so a caller mutating
+the view corrupts the circuit's own structure; caught by the copy-defence
+check that adds a key to the view and asserts it does not appear in the
+circuit. CI3 is the correctness hole: if the mid-circuit hazard check does
+not reach into the conditional body, a guarded gate on an already-measured
+qubit slips through — exactly the terminal-measurement hazard the check
+exists to catch — so it is caught by the body-gate-on-measured-qubit
+assertion. Each was run against `conditional_ir`, confirmed red, then
+reverted; `circuit_rep.py` was diffed clean afterward.
+
+### Conditional frontend — `frontends/qasm2/parser.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| FE1 | `_parse_if` discards the parsed value (hardcodes `value = 0`) | killed (1) |
+| FE2 | wrap only the first broadcast-produced op (`produced[:1]`) | killed (1) |
+| FE3 | omit `del instructions[mark:]` before re-wrapping | killed (1) |
+
+The rewritten `_parse_if` emits `conditional` ops; these are its three
+real failure modes. FE1 loses the condition value, so `if (c==1)` becomes
+`if (c==0)` — caught by the resolved-condition check. FE2 is the broadcast
+bug: `if (c==1) h q;` over a register produces several guarded ops, and
+wrapping only the first silently drops the condition on the rest — caught
+by the two-conditionals-from-broadcast check. FE3 is the double-execution
+bug: the guarded ops are appended bare by `_parse_statement`, then
+re-wrapped; if the bare ops are not deleted first, every guarded gate
+appears both unconditionally AND inside a conditional — caught by the
+source-order check, which sees an extra bare `gate` op. Each was run
+against `conditional_frontend`, confirmed red, then reverted;
+`parser.py` was diffed clean afterward.
+
+Note the fixtures shifted with this step: `conditional.qasm` was rewritten
+from a rejected circuit into a clean feedback circuit (guarded gate on a
+different qubit than the measured one), and a new `midcircuit.qasm` (a gate
+on a qubit after it is measured) took over as the still-unrunnable fixture
+for `rejection_semantics` and `unrunnable_circuits`. The reason those
+blocks assert on moved from "feedback" to "mid-circuit" accordingly —
+classical control is no longer the example of an unrunnable circuit,
+because it is now runnable per-device.
+
+### Dynamic feasibility — `kernel/memory/memory_manager.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| MF1 | drop the `is_dynamic` guard (capability checked for every circuit) | killed (1) |
+| MF2 | invert the polarity (decline where the provider DOES support feedback) | killed (1) |
+| MF3 | move the capability check AFTER the allocator delegation | killed (1)* |
+
+The capability clause in `unsatisfiable_reason` decides whether a dynamic
+circuit can run on a device, ahead of the allocator. MF1 makes the check
+fire for every circuit, so a static circuit is wrongly declined on a
+no-feedback provider — caught by the static-circuit-is-feasible checks. MF2
+reverses the verdict, declining exactly the capable providers and admitting
+the incapable ones — caught by both the "infeasible on no-feedback" and
+"feasible on feedback" checks.
+
+*MF3 is worth recording honestly: it **survived the first version of the
+block** and was only killed after the test was strengthened. The block
+originally used an allocatable dynamic circuit, so whether the capability
+check ran before or after the allocator made no observable difference — the
+allocator returned "feasible" either way and the capability reason came out
+regardless. The reordering is only observable for a circuit that is *both*
+dynamic-on-a-no-feedback-provider *and* allocation-infeasible: correct code
+returns the capability reason (feedback), reordered code returns the
+allocation reason (qubit count). A wide fixture (four qubits on a two-qubit
+device) was added to force that distinction, and MF3 then failed the
+ordering assertion. This is the mutation-testing loop doing its job — a
+surviving mutant exposed a real gap in the test, not a false alarm. Each
+mutant was run against `dynamic_feasibility`, confirmed red (MF3 after the
+fixture fix), then reverted; `memory_manager.py` was diffed clean
+afterward.
+
+### Dynamic lowering — `providers/ibm/qiskit_lowering.py`, `providers/ibm/ibm_simulated_provider.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| DL1 | invert the condition polarity in `_build_condition` | killed (1) |
+| DL2 | don't bake the feeding measure inline for dynamic circuits | killed (1) |
+| DL3 | `reference_ideal` no longer declines dynamic circuits | killed (1) |
+
+This is where a conditional becomes real execution, so the mutants attack
+the three things that make the feedback correct. DL1 flips the guard: q1
+fires when the bit is 0 instead of 1, and the Aer run leaks `01` outcomes —
+caught by the correlation check, which is the payoff of running the circuit
+rather than only inspecting its structure. DL2 stops baking the mid-circuit
+measure into the body, so the `if_test` reads a bit that was never written;
+caught by the structural check that the measure precedes the `if_else`.
+DL3 removes the dynamic-circuit decline in `reference_ideal`, so it would
+compute a bogus "ideal" from the noiseless read that cannot represent
+feedback — caught by the check that a dynamic circuit's ideal is None.
+Together they pin that the feedback fires on the right value, reads a real
+bit, and is not silently scored against a forged reference. Each was run
+against `dynamic_lowering`, confirmed red, then reverted; both files were
+diffed clean afterward.
+
+This step also touched both providers' execute paths (skip re-applying the
+measure map for dynamic circuits, since the builder baked those measures
+inline — a double-measure otherwise) and `reference_ideal`'s dynamic
+decline; those are exercised by `dynamic_lowering` and the existing
+`ibm_measurement` / `reference_tiers` / `fidelity` blocks, which stay green,
+confirming the static path is unchanged.
+
+### Determinism (seeded) — `providers/ibm/ibm_simulated_provider.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| DS1 | mix wall-clock into the per-run seed | killed (1)* |
+| DS2 | mix `id(self)` (per provider instance) into the per-run seed | killed (1)* |
+| DS3 | mix `id(circuit)` into the per-run seed | killed (1)* |
+
+The per-run seed is `self.seed + self._submission_count`, derived on the
+dispatch thread so it reproduces across identical sessions. These three
+mutants each fold in a value that varies between two otherwise-identical
+`seed=42` sessions — wall-clock, the provider instance's identity, the
+circuit object's identity — so the same circuit run under the same nominal
+seed produces different counts in session A than in session B. That is
+precisely the "same seed reproduces counts" property `determinism_seeded`
+exists to guarantee.
+
+*All three are killed only by the STRENGTHENED block. This is recorded
+honestly because it is the point of the fix: the original block compared
+only the dispatch transcript (deterministic command echo) and a
+within-session count difference, and **passed all three mutants** — counts
+were never compared across sessions, so a broken per-run seed was invisible.
+This was verified directly: under DS1 the old block's three assertions
+(`a==b`, `a!=c`, `j1!=j2`) all still held. The block was strengthened to
+settle both sessions and compare each job's resolved counts across them
+(read race-free by job id after settling, the same path the within-session
+check already trusted), and the three mutants then failed the cross-session
+equality. A non-equivalent survivor was also found and discarded during this
+work — `run_seed = self.seed` (dropping the submission count) does NOT clone
+within-session counts on this Aer path (transpile/layout still varies per
+job), so it changes nothing observable and was not counted. Each counted
+mutant was run against `determinism_seeded`, confirmed red, then reverted;
+`ibm_simulated_provider.py` was diffed clean afterward.
+
+### Per-job label — `benchmark/runner.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| LB1 | omit `circuit_label` from the summary's per_job rows | killed (1) |
+| LB2 | emit the full path instead of the basename | killed (1) |
+| LB3 | invert the present-label guard (a present label becomes None) | killed (1) |
+
+Every summary per_job row carries the circuit's basename so a consumer can
+name any circuit — FINISHED, REJECTED, ideal or not — without reconstructing
+from `reference`/`reject` records, which a FINISHED-with-no-ideal circuit
+emits neither of. LB1 reverts to the pre-fix state (no label), so the label
+reads None and the FINISHED-job-carries-its-basename check fails. LB2 leaves
+the directory in, so the "no directory component" check fails (and a
+`${SECRET}`-bearing path would leak). LB3 flips the guard so a present label
+is dropped to None — the same observable failure as LB1 but a different
+defect, catching a plausible copy-paste inversion of the conditional. Each
+was run against `rejected_no_ideal` (extended for this), confirmed red, then
+reverted; `runner.py` was diffed clean afterward.
+
+### Mid-circuit measurement — `circuits/circuit_rep.py`, `providers/ibm/qiskit_lowering.py`, `kernel/memory/memory_manager.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| MC1 | `has_mid_circuit_measurement` always returns False | killed (1) |
+| MC2 | `_build_condition` ignores the `written` set (references unwritten clbits) | killed (1)* |
+| MC3 | invert the mid-circuit feasibility polarity (decline on a capable provider) | killed (1) |
+
+Mid-circuit measurement is the third independent provider capability. MC1
+breaks detection — nothing is ever flagged mid-circuit, so a gate-after-
+measure circuit reads as neither flagged nor routed; caught by the
+detection check. MC3 reverses the feasibility verdict, declining exactly the
+capable providers; caught by the "infeasible on a declining provider" check.
+
+*MC2 is the Shor regression, and it is recorded honestly because it
+**survived the block's first version**. `_build_condition` skips a condition
+bit whose clbit was never written (it is 0), because Aer's noise-model path
+rejects an `if_test` that reads an unwritten cbit ("invalid cbit index").
+MC2 removes that skip. It survived at first because the block's Shor-like
+check ran on a plain `AerSimulator`, which tolerates the unwritten-cbit
+reference — the failure only surfaces on the noise-model path
+(`AerSimulator.from_backend`), which is what the real `execute()` uses. The
+check was moved onto the noise-model path and MC2 then failed it. This is
+the same lesson as MF3 and the determinism mutants: a mutant that survives
+because the test exercises the wrong configuration is a gap in the test, not
+a safe mutation. Each mutant was run against `mid_circuit_measurement`,
+confirmed red (MC2 after the noise-model fix), then reverted;
+`circuit_rep.py`, `qiskit_lowering.py`, and `memory_manager.py` were diffed
+clean afterward.
+
+This step also relaxed `find_mid_circuit_measurement` from an
+unrunnable-verdict to a capability detector, widened the inline-lowering
+trigger and both execute paths' skip-guards to cover mid-circuit circuits,
+extended `reference_ideal`'s decline, and stopped the frontend marking
+mid-circuit measurement unrunnable. Those are exercised by
+`mid_circuit_measurement` and by four existing blocks updated for the new
+semantics (`conditional_frontend`, `qasm2_parser`, `rejection_semantics`,
+`unrunnable_circuits`), which stay green — mid-circuit measurement is now a
+per-device capability (`midcircuit.qasm` rejects only on a devq-only session
+and runs on an IBM-backed one).
+
+### Full-device layout — `providers/ibm/ibm_provider.py`, `providers/ibm/…`
+
+| # | Mutation | Result |
+|---|---|---|
+| L1 | `full_layout` never pads unused qubits (partial layout) | killed (1) |
+| L2 | `full_layout` places used qubits by virtual index, ignoring `v2p_map` | killed (1) |
+| L3 | simulated provider transpiles against the bare noise sim, not the backend | killed (1) |
+
+`full_layout` builds the full-device-width `initial_layout` — used qubits
+at their allocated physical positions, every unused physical qubit filled
+with an ancilla — so a simulated run on a large backend does not hit Aer's
+`"The 'layout' must be full (with ancilla)."` It lives on the
+Qiskit-family base `IBMProvider` (both IBM providers inherit it), which is
+why L1/L2 mutate `ibm_provider.py`. These three are the distinct
+ways the fix can regress. L1 reintroduces the original bug (the helper's
+"covers every physical qubit" assertion catches it: 2 slots, not 156). L2
+is the subtle one — a full but *wrong* layout that still runs and still
+peaks, caught only because the block pins the used qubits at their
+allocated indices (`{0,1}` instead of `{136,143}`). L3 reverts the
+simulated provider's call site to transpiling against the bare
+noise-model `AerSimulator`, which does not carry the device width, so the
+padded layout no longer validates and the job produces no counts. All
+three are killed by `large_device_full_layout`, whose assertions run on
+the 156-qubit `FakeFez` specifically — the only place the partial-layout
+bug ever surfaced. Each was run against that block, confirmed red, then
+reverted with `.pyc` cleared between runs; `ibm_provider.py` and
+`ibm_simulated_provider.py` were diffed clean after.
 
 ### Workload spec — `benchmark/spec.py`, `providers/base_provider.py`
 

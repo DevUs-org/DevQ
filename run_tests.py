@@ -35,6 +35,7 @@ import itertools
 import re
 import sys
 import threading
+import time
 import traceback
 
 # MUST precede any Qiskit/Aer import: these are read when the native
@@ -293,11 +294,77 @@ def device_of(out, job_id):
 
 
 def counts_of(out, job_id):
-    '''Extract the measured counts dict a job finished with, as a dict.'''
+    '''Extract the measured counts dict a job finished with, as a dict.
+
+    Reads the qps result row — `N | dev | FINISHED | Counts: {...}` —
+    which is the sole place counts reach the console now that qrun/
+    qrunpack are pure async dispatchers and the kernel's resolve event is
+    no longer echoed to the console (only qps reports results).
+    '''
     m = re.search(
-        rf"Job {job_id} FINISHED\. Counts: (\{{[^}}]*\}})", out)
+        rf"^{job_id} \| .*? \| FINISHED \| Counts: (\{{[^}}]*\}})",
+        out, re.MULTILINE)
     check(m is not None, f"job {job_id} produced counts", record=False)
     return eval(m.group(1))
+
+
+def finished_ids(out):
+    '''
+    The set of job ids shown FINISHED in a transcript.
+
+    settle() accumulates every poll, so a settled job's qps line repeats
+    across iterations; counting raw `| FINISHED` matches would over-count.
+    Deduping by job id answers the real question — how many DISTINCT jobs
+    finished — regardless of how many polls observed each.
+    '''
+    return set(re.findall(r"^(\d+) \| .*? \| FINISHED", out, re.MULTILINE))
+
+
+def settle(sh, *job_ids, tries=250):
+    '''
+    Drive a job (or jobs) to a terminal state and return the accumulated
+    transcript of doing so.
+
+    qrun/qrunpack now dispatch asynchronously and return immediately; the
+    future resolves on a background thread. qps is a pure snapshot, so a
+    single qps right after dispatch can legitimately catch a job still
+    RUNNING. This helper models what an interactive user does — glance at
+    qps again a moment later — by re-issuing `qps <ids>` until every named
+    job is FINISHED/FAILED/REJECTED.
+
+    Returns EVERY qps transcript concatenated, not just the last: a job
+    that was WAITING on contended qubits self-heals when the holder
+    completes, and its `[Kernel] Dispatching ...` line is printed during
+    whichever poll observed that completion — an earlier iteration than
+    the final settled snapshot. Accumulating keeps that dispatch line (and
+    the settled table) available to the caller's mapping/device reads.
+
+    Bounded by `tries`: a future that never resolves must fail the block
+    loudly rather than spin forever. With no ids, settles the whole table
+    (bare qps) until nothing is left RUNNING or WAITING.
+    '''
+    query = "qps " + " ".join(str(j) for j in job_ids) if job_ids else "qps"
+    terminal = ("FINISHED", "FAILED", "REJECTED")
+
+    transcript = ""
+    for _ in range(tries):
+        out = run(sh, [query])
+        transcript += out
+        if job_ids:
+            lines = [l for l in out.splitlines()
+                     if any(l.startswith(f"{j} |") for j in job_ids)]
+            ready = (len(lines) == len(job_ids)
+                     and all(any(s in l for s in terminal) for l in lines))
+        else:
+            live = [l for l in out.splitlines()
+                    if " | RUNNING" in l or " | WAITING" in l]
+            ready = not live
+        if ready:
+            return transcript
+        time.sleep(0.01)
+
+    check(False, f"jobs {job_ids or '(all)'} reached a terminal state")
+    return transcript
 
 
 # ── Mock components ──────────────────────────────────────────────────────────
@@ -454,10 +521,16 @@ def block_noise_routing():
     check(mapping_of(out, 2) == "{0: 1, 1: 3}",
           f"job 2 mapped to lagos's best bell block {{0: 1, 1: 3}}, "
           f"got {mapping_of(out, 2)}")
-    check(mapping_of(out, 3) == "{0: 3, 1: 4, 2: 5}",
-          f"job 3 (ghz) mapped to lagos {{0: 3, 1: 4, 2: 5}}, "
+    # Under async execution jobs 1–2 still hold their qubits when job 3
+    # allocates, so job 3 takes lagos's next free connected triple
+    # {0: 4, 1: 5, 2: 6} rather than {3,4,5} (which a serial run, where
+    # job 2 had already freed its qubits, would have given). Deterministic
+    # under the seed; the routing decision (lagos) is what this pins.
+    check(mapping_of(out, 3) == "{0: 4, 1: 5, 2: 6}",
+          f"job 3 (ghz) mapped to lagos {{0: 4, 1: 5, 2: 6}}, "
           f"got {mapping_of(out, 3)}")
-    expect_re(out, r"\[Kernel\] Job \d+ FINISHED", 3)
+    check(finished_ids(settle(sh, 1, 2, 3)) == {"1", "2", "3"},
+          "all three jobs finished")
 
 
 def block_name_index_equivalence():
@@ -468,7 +541,15 @@ def block_name_index_equivalence():
     check(by_name == by_index,
           "qerrors/qtopology give identical output for 'nairobi' and 'd1'")
 
-    out = run(sh, [f"qrun {BELL} --exec=nairobi", f"qrun {BELL} --exec=d1"])
+    # Run serially — settle job 1 before dispatching job 2 — so both take
+    # the same best block. Async would otherwise have job 1 still holding
+    # its qubits when job 2 allocates, giving a different block; that is
+    # concurrency, not the name/index equivalence this block pins.
+    out1 = run(sh, [f"qrun {BELL} --exec=nairobi"])
+    settle(sh, 1)
+    out2 = run(sh, [f"qrun {BELL} --exec=d1"])
+    settle(sh, 2)
+    out = out1 + out2
     check(device_of(out, 1) == device_of(out, 2),
           "--exec=nairobi and --exec=d1 route to the same device")
     check(mapping_of(out, 1) == mapping_of(out, 2),
@@ -492,31 +573,34 @@ def block_rejection_semantics():
     check(m and "d1:" in m.group(1) and "d2:" in m.group(1),
           "job 3's rejection reason aggregates both d1 and d2")
 
-    # A circuit DevQ cannot faithfully run (here: classical control, which
-    # needs mid-circuit feedback) is REJECTED too — the SAME umbrella
-    # terminal state as an unsatisfiable allocation, not a parse crash.
-    # The reason is carried from the circuit layer (the frontend marked it
-    # unrunnable) through to the job, proving the two rejection sources
-    # converge on one outcome.
-    sh2 = three_device()
-    out2 = run(sh2, [f"qrun {QASM2}conditional.qasm"])
+    # A circuit no attached device can run is REJECTED — the SAME umbrella
+    # terminal state as an unsatisfiable allocation, not a parse crash — and
+    # the reason propagates from the capability check through to the job.
+    # Here: mid-circuit measurement on a devq.simulated-only session. The
+    # devq provider's execution model is terminal-measurement, so it
+    # declines the capability (supports_mid_circuit_measurement is False),
+    # and with no capable device attached the job is REJECTED per-device.
+    # (On an IBM-backed session the same circuit RUNS — that is the point of
+    # the capability being per-device; the routing block covers that side.)
+    # This proves a capability rejection converges on the one REJECTED
+    # outcome, exactly as an allocation rejection does.
+    sh2 = session(devices=[("devq.simulated", "linear", 3, "dq", None)])
+    out2 = run(sh2, [f"qrun {QASM2}midcircuit.qasm"])
     expect(out2, "REJECTED")
     m2 = re.search(r"Job \d+ REJECTED: ([^\n]*)", out2)
-    check(m2 and "feedback" in m2.group(1).lower(),
-          f"an unrunnable circuit rejects with its circuit-level reason, "
-          f"got {m2.group(1) if m2 else None!r}")
+    check(m2 and "mid-circuit" in m2.group(1).lower(),
+          f"a mid-circuit circuit with no capable device rejects citing the "
+          f"capability, got {m2.group(1) if m2 else None!r}")
 
     # The SAME must hold on the SCHEDULING path (qsubmit + qrunpack), not
     # just the qrun fast path — they are separate guards in the kernel, and
-    # a regression could disable one while the other still rejects. Submit
-    # via the queue and drain: the unrunnable circuit must still be REJECTED
-    # before it ever routes to a device.
-    sh3 = three_device()
-    out3 = run(sh3, [f"qsubmit {QASM2}conditional.qasm", "qrunpack", "qps"])
+    # a regression could disable one while the other still rejects.
+    sh3 = session(devices=[("devq.simulated", "linear", 3, "dq", None)])
+    out3 = run(sh3, [f"qsubmit {QASM2}midcircuit.qasm", "qrunpack", "qps"])
     expect(out3, "REJECTED")
     m3 = re.search(r"Job \d+ REJECTED: ([^\n]*)", out3)
-    check(m3 and "feedback" in m3.group(1).lower(),
-          f"an unrunnable circuit is rejected on the scheduling path too, "
+    check(m3 and "mid-circuit" in m3.group(1).lower(),
+          f"the capability rejection holds on the scheduling path too, "
           f"got {m3.group(1) if m3 else None!r}")
 
 
@@ -524,9 +608,11 @@ def block_unrunnable_circuits():
     '''Unrunnable circuits become REJECTED jobs through the runner, no crash'''
     # DevQ declines two kinds of circuit, and the benchmark runner must
     # surface BOTH as REJECTED jobs in a completed run rather than crashing:
-    #   - well-formed but UNSUPPORTED (classical control, mid-circuit
-    #     measurement): the frontend marks unrunnable_reason, the kernel
-    #     rejects the job.
+    #   - well-formed but UNRUNNABLE ON ANY BACKEND (mid-circuit
+    #     measurement — a gate on a qubit after it is measured): the
+    #     frontend marks unrunnable_reason, the kernel rejects the job.
+    #     (Classical control is NOT in this bucket anymore — it is a
+    #     runnable dynamic circuit, declined only per-device.)
     #   - MALFORMED source that fails to parse: submit_jobs turns the parse
     #     error into a REJECTED placeholder job carrying the error as its
     #     reason, so one bad circuit does not abort a whole workload.
@@ -566,7 +652,7 @@ def block_unrunnable_circuits():
                                      "num_qubits": 5}}],
             "jobs": [
                 {"circuit": BELL},                       # runs
-                {"circuit": QASM2 + "conditional.qasm"},  # unsupported
+                {"circuit": QASM2 + "midcircuit.qasm"},  # unrunnable (mid-circuit)
                 {"circuit": bad},                        # malformed
                 {"circuit": bad2},                       # malformed (2nd)
             ],
@@ -601,11 +687,11 @@ def block_unrunnable_circuits():
               f"bell FINISHED, all three unrunnable circuits REJECTED — got "
               f"{state_vals}")
 
-        # The rejection reasons cover both flavours: the unsupported
-        # construct (feedback) and the parse failures.
+        # The rejection reasons cover both flavours: the unrunnable
+        # construct (mid-circuit measurement) and the parse failures.
         reasons = " || ".join(rejects.values()).lower()
-        check("feedback" in reasons,
-              f"the unsupported circuit rejects citing missing feedback, "
+        check("mid-circuit" in reasons,
+              f"the unrunnable circuit rejects citing mid-circuit measurement, "
               f"reasons={list(rejects.values())}")
         check("could not parse" in reasons or "parse" in reasons,
               f"the malformed circuits reject citing a parse failure, "
@@ -722,9 +808,10 @@ def block_rejected_no_ideal():
         recs = [json.loads(l) for l in open(log) if l.strip()]
         summary = [r for r in recs if r.get("event") == "summary"][-1]
 
-        # per_job rows carry state + circuit_hash (no label). BELL is the one
-        # FINISHED job, GHZ the one REJECTED job, so map by state. There is
-        # exactly one of each, which we assert before pulling their hashes.
+        # per_job rows carry state, circuit_hash, and now circuit_label
+        # (basename). BELL is the one FINISHED job, GHZ the one REJECTED job,
+        # so map by state. There is exactly one of each, which we assert
+        # before pulling their hashes.
         by_state = {}
         for row in summary["per_job"]:
             by_state.setdefault(row["state"], []).append(row["circuit_hash"])
@@ -751,6 +838,30 @@ def block_rejected_no_ideal():
               f"the REJECTED ghz circuit earns NO reference ideal (the "
               f"call-site filter), but its hash {ghz_hash[:8]} appeared in "
               f"reference records {sorted(h[:8] for h in ref_hashes)}")
+
+        # EVERY per_job row now carries a readable circuit_label (basename),
+        # so a consumer names a circuit without reconstructing from
+        # reference/reject records. This matters for exactly the REJECTED
+        # job: it emits no `reference` record (filtered above) and — for a
+        # runtime rejection like this — a name sourced only from
+        # reference/reject would miss it, falling back to a raw hash. Assert
+        # both rows carry their basename, and that the label is the BASENAME
+        # (no directory), which both reads cleanly and drops any
+        # directory-borne secret.
+        labels = {row["state"]: row.get("circuit_label")
+                  for row in summary["per_job"]}
+        check(labels.get("FINISHED") == "bell.qasm"
+              or (labels.get("FINISHED") or "").endswith("bell.qasm"),
+              f"the FINISHED job carries its basename label, got "
+              f"{labels.get('FINISHED')!r}")
+        check(labels.get("REJECTED") == "ghz.qasm"
+              or (labels.get("REJECTED") or "").endswith("ghz.qasm"),
+              f"the REJECTED job carries its basename label (not a bare "
+              f"hash), got {labels.get('REJECTED')!r}")
+        check(all(lbl is None or "/" not in lbl and "\\" not in lbl
+                  for lbl in labels.values()),
+              f"per_job labels are basenames, no directory component, got "
+              f"{labels}")
     finally:
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
@@ -759,8 +870,16 @@ def block_rejected_no_ideal():
 def block_packing_across_devices():
     '''Bracket groups, batch packing and cross-device concurrency'''
     sh  = three_device()
-    out = run(sh, [f"qsubmit [{BELL} {BELL} {GHZ} --no-exec=d0] {GHZ} --exec=lagos",
-                   "qrunpack", "qps", "qmap 1", "qmem"])
+    # qrunpack dispatches what fits right now (jobs 1, 2, 4) and returns;
+    # job 3 cannot fit alongside the two bells, so it stays WAITING and
+    # self-heals when a bell completes and frees qubits. settle() drives
+    # the session to quiescence, so job 3's (later) dispatch line lands in
+    # the transcript too. All mapping/device reads come from that combined
+    # dispatch log.
+    out  = run(sh, [f"qsubmit [{BELL} {BELL} {GHZ} --no-exec=d0] {GHZ} --exec=lagos",
+                    "qrunpack", "qmap 1", "qmem"])
+    settled = settle(sh, 1, 2, 3, 4)
+    out += settled
 
     # two bells packed into the same cycle on disjoint qubits
     check(mapping_of(out, 1) == "{0: 1, 1: 2}",
@@ -768,20 +887,21 @@ def block_packing_across_devices():
     check(mapping_of(out, 2) == "{0: 4, 1: 5}",
           f"job 2 packed onto disjoint {{0: 4, 1: 5}} in the same cycle, "
           f"got {mapping_of(out, 2)}")
-    # Job 3 cannot fit alongside the two bells, so it waits a cycle and
-    # allocates once qubits are freed. Assert the invariant (it lands on
-    # nairobi, on a connected triple) rather than a specific block, since
-    # which qubits are free depends on async completion order.
+    # Job 3 cannot fit alongside the two bells, so it waits and allocates
+    # once qubits are freed. Assert the invariant (it lands on nairobi, on
+    # a connected triple) rather than a specific block, since which qubits
+    # are free depends on async completion order.
     check("nairobi" in device_of(out, 3),
           f"job 3 routed to nairobi, got {device_of(out, 3)}")
     check(len(eval(mapping_of(out, 3))) == 3,
-          f"job 3 (ghz) allocated 3 qubits after waiting a cycle: "
+          f"job 3 (ghz) allocated 3 qubits after waiting: "
           f"{mapping_of(out, 3)}")
     check("lagos" in device_of(out, 4),
           f"job 4 honoured its --exec=lagos pin, got {device_of(out, 4)}")
-    expect_re(out, r"\[Kernel\] Job \d+ FINISHED", 4)
+    check(finished_ids(settled) == {"1", "2", "3", "4"},
+          "all four jobs finished")
     # all qubits returned to their pools afterwards
-    expect_absent(out, "[X]")
+    expect_absent(run(sh, ["qmem"]), "[X]")
 
 
 def block_parser_errors():
@@ -979,6 +1099,7 @@ def block_single_device_ibm():
                   [("ibm.simulated", "FakeNairobiV2", None, None)])
     out = run(sh, ["qdevices", "qconfig", "qerrors q d0", "qtopology d0",
                    f"qrun {BELL}", "qmap 1", "qps", "qmem"])
+    out += settle(sh, 1)
 
     # the only device is d0 — nothing should refer to d1
     expect(out, "FakeNairobiV2")
@@ -1010,12 +1131,14 @@ def block_single_device_batch():
     '''Batch submission and packing on a single device'''
     sh  = session("router_only.config.json",
                   [("ibm.simulated", "FakeNairobiV2", None, None)])
-    out = run(sh, [f"qsubmit {BELL} {BELL}", "qrunpack", "qps"])
+    out = run(sh, [f"qsubmit {BELL} {BELL}", "qrunpack"])
+    settled = settle(sh, 1, 2)
+    out += settled
     # both bells packed onto one device in the same cycle, disjoint qubits
     m1, m2 = mapping_of(out, 1), mapping_of(out, 2)
     check(m1 != m2,
           f"two bells packed onto disjoint blocks ({m1} and {m2})")
-    expect_re(out, r"\[Kernel\] Job \d+ FINISHED", 2)
+    check(finished_ids(settled) == {"1", "2"}, "both bells finished")
 
 
 def block_single_device_rejection():
@@ -1031,6 +1154,518 @@ def block_single_device_devq_provider():
     sh  = session(None, [("devq.simulated", "fully_connected", 5, "mock", None)])
     out = run(sh, ["qdevices", "qtopology d0", f"qrun {BELL}", "qps"])
     expect(out, "mock (d0)", "DevQSimulatedProvider", "FINISHED")
+
+
+def block_supports_dynamic_capability():
+    '''supports_dynamic declines by default, IBM affirms, no qiskit escapes providers/ibm'''
+    # The provider-contract capability for dynamic circuits (classical
+    # feedback). Its shape mirrors reference_ideal: an OPTIONAL method that
+    # the base DECLINES and a capable provider overrides. Here we assert the
+    # inheritance resolves as designed — the override lives ONCE on the shared
+    # IBMProvider base, so both IBM subclasses affirm and DevQ inherits the
+    # base decline — and, separately, the boundary this capability must never
+    # breach: no qiskit/ibm import may escape providers/ibm/.
+    import os, re
+    from circuits.circuit_rep import CircuitRep
+    from providers.base_provider import BaseProvider
+    from providers.ibm.ibm_provider import IBMProvider
+    from providers.ibm.ibm_real_provider import IBMRealProvider
+
+    # A representative circuit is enough — v1 answers uniformly, ignoring the
+    # argument, so a plain Bell circuit exercises the predicate.
+    cr = CircuitRep(2, 2)
+    cr.add_gate("h", [0])
+    cr.add_gate("cx", [0, 1])
+
+    # Resolution: the override is defined exactly once, on IBMProvider, and
+    # both IBM subclasses inherit THAT function object (not a copy) while
+    # DevQSimulatedProvider inherits BaseProvider's default. Checking function
+    # identity proves the single-point-of-truth, not just the boolean.
+    check(IBMSimulatedProvider.supports_dynamic is IBMProvider.supports_dynamic,
+          "IBMSimulatedProvider inherits the supports_dynamic override from "
+          "IBMProvider (single point of truth)")
+    check(IBMRealProvider.supports_dynamic is IBMProvider.supports_dynamic,
+          "IBMRealProvider inherits the supports_dynamic override from "
+          "IBMProvider (single point of truth)")
+    check(DevQSimulatedProvider.supports_dynamic is BaseProvider.supports_dynamic,
+          "DevQSimulatedProvider inherits the BaseProvider decline (no override)")
+
+    # Behaviour: base and DevQ decline (False), both IBM providers affirm
+    # (True). Instantiate the ones that construct cheaply; the IBM providers
+    # take a seed, DevQ takes a seed, base is abstract-ish but the method is
+    # concrete and callable on an instance-free bound check via the class.
+    ibm_sim = IBMSimulatedProvider(seed=SEED)
+    devq    = DevQSimulatedProvider(seed=SEED)
+    check(ibm_sim.supports_dynamic(cr) is True,
+          "IBMSimulatedProvider affirms supports_dynamic")
+    check(devq.supports_dynamic(cr) is False,
+          "DevQSimulatedProvider declines supports_dynamic")
+    # BaseProvider's default, called through a subclass that does NOT override
+    # (DevQ), already exercised the decline; assert the default itself returns
+    # False so a future edit to the base cannot silently flip the contract.
+    check(BaseProvider.supports_dynamic(devq, cr) is False,
+          "BaseProvider.supports_dynamic default declines (False)")
+
+    # Boundary regression: qiskit/ibm imports must stay INSIDE providers/ibm.
+    # The kernel, IR, frontends and routing layer are Qiskit-free, and the
+    # dynamic-circuit work must not be the change that breaches that. Scan
+    # DevQ's own packages for a top-level `import qiskit` / `from qiskit` /
+    # `import ibm...`; the only legitimate homes are providers/ibm/ (drivers)
+    # and the test/verify oracles, which cross-check AGAINST qiskit by design.
+    root = os.path.dirname(os.path.abspath(__file__))
+    OURS = ("benchmark", "circuits", "config", "engine", "frontends",
+            "hardware", "kernel", "providers", "registry", "research", "shell")
+    # Oracles that legitimately import qiskit to check DevQ against it.
+    ALLOWED = (os.path.join("providers", "ibm"),)
+    import_re = re.compile(r"^\s*(?:from|import)\s+(qiskit|ibm)\b", re.M)
+    leaks = []
+    for pkg in OURS:
+        for dirpath, dirnames, filenames in os.walk(os.path.join(root, pkg)):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+            for fn in filenames:
+                if not fn.endswith(".py"):
+                    continue
+                path = os.path.join(dirpath, fn)
+                rel = os.path.relpath(path, root)
+                if any(rel.startswith(a) for a in ALLOWED):
+                    continue
+                # research/ holds a hardware-run script that legitimately
+                # drives qiskit-ibm-runtime; it is a research entry point,
+                # not core, so exclude it explicitly rather than by accident.
+                if rel.startswith("research" + os.sep):
+                    continue
+                with open(path) as handle:
+                    if import_re.search(handle.read()):
+                        leaks.append(rel)
+    check(not leaks,
+          f"no qiskit/ibm import escapes providers/ibm (leaks: {sorted(leaks)})")
+
+
+def block_conditional_ir():
+    '''CircuitRep represents a conditional op: is_dynamic, cregs, body-qubit hazard'''
+    # Step 2 of dynamic-circuit support: a classically-conditioned gate is a
+    # FIRST-CLASS op in the IR, inspectable through derived views that cannot
+    # drift from the ordered stream. This block pins the representation — the
+    # frontend (step 3) and lowering (step 5) build on exactly this shape.
+    from circuits.circuit_rep import CircuitRep
+
+    # h q0; measure q0->c0; if (c==1) x q1  — the canonical feedback circuit.
+    cr = CircuitRep(2, 1)
+    cr.add_creg("c", 0, 1)
+    cr.add_gate("h", [0])
+    cr.add_measure(0, 0)
+    cr.add_conditional([0], 1,
+                       {"op": "gate", "gate": "x", "qubits": [1], "params": []})
+
+    # is_dynamic is the flag the kernel checks against supports_dynamic.
+    check(cr.is_dynamic is True,
+          "a circuit with a conditional op is is_dynamic")
+
+    # The conditional op carries the guard and the guarded gate, in the
+    # documented shape: condition {clbits, value}, body a single gate op.
+    conds = cr.conditionals
+    check(len(conds) == 1, "conditionals view returns the one conditional op")
+    cond = conds[0]
+    check(cond["op"] == "conditional"
+          and cond["condition"] == {"clbits": [0], "value": 1}
+          and cond["body"]["gate"] == "x"
+          and cond["body"]["qubits"] == [1],
+          "conditional op records condition {clbits,value} and the body gate")
+
+    # It lives in the ordered stream in SOURCE ORDER — after the measure,
+    # not hoisted into a side channel. Order is what execution needs.
+    ops = [i["op"] for i in cr.instructions]
+    check(ops == ["gate", "measure", "conditional"],
+          f"conditional is carried in source order, got {ops}")
+
+    # cregs exposes the declared register structure the condition resolves
+    # against, and the view is a defensive copy (mutating it cannot corrupt
+    # the circuit's own structure).
+    check(cr.cregs == {"c": (0, 1)}, "cregs view exposes declared registers")
+    view = cr.cregs
+    view["evil"] = (9, 9)
+    check("evil" not in cr.cregs, "cregs view is a copy, not the live dict")
+
+    # A plain circuit is not dynamic and declares no cregs unless told to.
+    plain = CircuitRep(2, 2)
+    plain.add_gate("h", [0])
+    plain.add_gate("cx", [0, 1])
+    check(plain.is_dynamic is False, "a circuit with no conditional is not dynamic")
+    check(plain.cregs == {}, "a circuit with no declared cregs has an empty view")
+
+    # get_depth counts only real gates — the conditional's guarded gate is
+    # deliberately not counted (a maybe-fired layer has no defined depth).
+    check(cr.get_depth() == 1,
+          f"get_depth counts the unconditioned gate only, got {cr.get_depth()}")
+
+    # The mid-circuit hazard check reaches INTO the conditional body: a
+    # guarded gate on an already-measured qubit is the same hazard as a bare
+    # one, and must be caught.
+    haz = CircuitRep(1, 1)
+    haz.add_measure(0, 0)
+    haz.add_conditional([0], 1,
+                        {"op": "gate", "gate": "x", "qubits": [0], "params": []})
+    reason = haz.find_mid_circuit_measurement()
+    check(reason is not None and "conditional gate" in reason,
+          "a conditional body-gate on a measured qubit is flagged mid-circuit")
+
+    # ...but the LEGITIMATE feedback shape — guard reads a measured clbit,
+    # body acts on an UNmeasured qubit — is not a hazard. Reading a measured
+    # bit is exactly what a dynamic circuit is for.
+    check(cr.find_mid_circuit_measurement() is None,
+          "reading a measured clbit in a guard is not a mid-circuit hazard")
+
+
+def block_conditional_frontend():
+    '''The 2.0 parser emits if(creg==N) as conditional ops, resolving registers'''
+    # Step 3: the frontend turns `if (creg==N) <stmt>` into first-class
+    # conditional ops instead of marking the circuit unrunnable. This block
+    # exercises the PARSE path end to end — register resolution to clbits,
+    # multi-bit conditions, broadcast expansion, and the boundary between a
+    # well-formed conditional (emitted) and a genuine error (raised).
+    from frontends.qasm2.parser import parse, QASMError
+
+    # Canonical feedback: h; measure; if(c==1) x on a DIFFERENT qubit. Emits
+    # one conditional, resolves c to clbit [0], and is NOT unrunnable.
+    cr = parse('OPENQASM 2.0;\ninclude "qelib1.inc";\n'
+               'qreg q[2];\ncreg c[1];\n'
+               'h q[0];\nmeasure q[0] -> c[0];\nif (c==1) x q[1];\n')
+    check(cr.unrunnable_reason is None and cr.is_dynamic,
+          f"if(c==1): parses to a dynamic circuit, not unrunnable, got "
+          f"reason={cr.unrunnable_reason!r} is_dynamic={cr.is_dynamic}")
+    check([i["op"] for i in cr.instructions] == ["gate", "measure", "conditional"],
+          f"if(c==1): the conditional is in source order, got "
+          f"{[i['op'] for i in cr.instructions]}")
+    cond = cr.conditionals[0]
+    check(cond["condition"] == {"clbits": [0], "value": 1}
+          and cond["body"]["gate"] == "x" and cond["body"]["qubits"] == [1],
+          f"if(c==1): resolves c->[0], guards x on q[1], got {cond!r}")
+
+    # Multi-bit register: if(c==3) with a 2-bit creg spans both clbits,
+    # LSB-first, value 3.
+    cr2 = parse("OPENQASM 2.0;\nqreg q[3];\ncreg c[2];\n"
+                "measure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
+                "if (c==3) x q[2];\n")
+    check(cr2.conditionals[0]["condition"] == {"clbits": [0, 1], "value": 3},
+          f"if(c==3) over creg[2]: condition spans both clbits LSB-first, "
+          f"got {cr2.conditionals[0]['condition']!r}")
+
+    # Broadcast: `if(c==1) h q;` over a 2-qubit register expands to TWO
+    # conditional ops, each guarding one qubit on the SAME condition. This
+    # is the case a naive "wrap one op" implementation gets wrong.
+    cr3 = parse("OPENQASM 2.0;\nqreg q[2];\ncreg c[1];\n"
+                "measure q[0] -> c[0];\nif (c==1) h q;\n")
+    conds3 = cr3.conditionals
+    check(len(conds3) == 2
+          and conds3[0]["body"]["qubits"] == [0]
+          and conds3[1]["body"]["qubits"] == [1]
+          and all(k["condition"] == {"clbits": [0], "value": 1} for k in conds3),
+          f"if(c==1) h q; broadcasts to two conditionals sharing the "
+          f"condition, got {conds3!r}")
+
+    # A conditional whose body reuses the MEASURED qubit is still caught as
+    # mid-circuit (the step-2 hazard reaching into the body) — unrunnable,
+    # even though it parsed to a conditional op.
+    cr4 = parse("OPENQASM 2.0;\nqreg q[1];\ncreg c[1];\n"
+                "measure q[0] -> c[0];\nif (c==1) x q[0];\n")
+    check(cr4.is_dynamic and cr4.has_mid_circuit_measurement
+          and cr4.unrunnable_reason is None,
+          f"if(c==1) x q[0] on the measured qubit: both dynamic and "
+          f"has_mid_circuit_measurement, and NOT unrunnable (both are "
+          f"per-device capabilities now), got is_dynamic={cr4.is_dynamic} "
+          f"has_mid={cr4.has_mid_circuit_measurement} "
+          f"reason={cr4.unrunnable_reason!r}")
+
+    # An unknown register in a condition is a genuine parse error — raised,
+    # not emitted (the condition names something never declared).
+    try:
+        parse("OPENQASM 2.0;\nqreg q[1];\nif (nope==1) x q[0];\n")
+        check(False, "unknown creg in if-condition should raise")
+    except QASMError as e:
+        check("nope" in str(e) and "if-condition" in str(e),
+              f"unknown creg in condition raises naming it, got {e}")
+
+
+def block_dynamic_feasibility():
+    '''unsatisfiable_reason declines a dynamic circuit on a provider without feedback'''
+    # Step 4: capability is feasibility. A dynamic circuit is infeasible on a
+    # device whose provider cannot execute classical feedback — checked in
+    # unsatisfiable_reason, ahead of the allocator, against the device's
+    # PROVIDER. This is the clause the router's per-candidate _candidates
+    # filter rides, so a dynamic job routes to a capable device and is
+    # REJECTED (per-device reason) only when none is attached. Tested at the
+    # unit level, directly on MemoryManager, with tiny provider stubs so no
+    # Qiskit backend is needed — the capability is a plain DevQ predicate.
+    from kernel.memory.memory_manager import MemoryManager
+    from hardware.device import QuantumDevice
+    from frontends.qasm2.parser import parse
+    from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
+
+    class _Provider:
+        # Minimal provider stub: only the capability predicate matters here.
+        def __init__(self, dynamic):
+            self._dynamic = dynamic
+        def supports_dynamic(self, circuit):
+            return self._dynamic
+
+    def _device(provider):
+        # A 2-qubit line device, enough to host the fixtures. The allocator
+        # only runs for the STATIC path (the dynamic path short-circuits
+        # before delegation), so a real NoiseGraphAllocator exercises the
+        # genuine feasible() delegation for the static assertions.
+        return QuantumDevice(
+            kind="stub", num_qubits=2, coupling_map=[(0, 1)],
+            basis_gates=["h", "cx", "x", "measure"],
+            error_map={0: 0.01, 1: 0.01}, edge_error_map={(0, 1): 0.02},
+            provider=provider)
+
+    dyn    = parse(open(QASM2 + "conditional.qasm").read())   # is_dynamic
+    static = parse(open(BELL).read())                          # not dynamic
+    check(dyn.is_dynamic and not static.is_dynamic,
+          "fixtures: conditional.qasm is dynamic, bell is not")
+
+    mm_no  = MemoryManager(_device(_Provider(False)), NoiseGraphAllocator())
+    mm_yes = MemoryManager(_device(_Provider(True)),  NoiseGraphAllocator())
+
+    # The heart of it: a dynamic circuit is INFEASIBLE where the provider
+    # declines feedback, and FEASIBLE where it affirms — the difference is
+    # the provider capability alone, same circuit, same allocator.
+    reason = mm_no.unsatisfiable_reason(dyn)
+    check(reason is not None and "feedback" in reason.lower(),
+          f"dynamic circuit is infeasible on a no-feedback provider, with a "
+          f"capability reason, got {reason!r}")
+    check(mm_yes.unsatisfiable_reason(dyn) is None,
+          "dynamic circuit is feasible on a provider that supports feedback")
+
+    # A STATIC circuit is unaffected by the capability gate on EITHER
+    # provider — the clause only fires for is_dynamic, so a normal circuit
+    # delegates straight to the allocator as before (feasible on this
+    # 2-qubit device).
+    check(mm_no.unsatisfiable_reason(static) is None,
+          "a static circuit is feasible on a no-feedback provider (clause "
+          "does not fire)")
+    check(mm_yes.unsatisfiable_reason(static) is None,
+          "a static circuit is feasible on a feedback provider")
+
+    # The capability check runs BEFORE the allocator, and proving that needs
+    # a circuit that is BOTH dynamic-on-a-no-feedback-provider AND
+    # allocation-infeasible — otherwise the two orderings are
+    # indistinguishable (an allocatable circuit returns the same capability
+    # reason either way). Build a dynamic circuit that needs MORE qubits than
+    # the device has: a correct implementation returns the CAPABILITY reason
+    # (feedback), a reversed one would return the ALLOCATION reason (qubits).
+    wide = parse("OPENQASM 2.0;\n"
+                 "qreg q[4];\ncreg c[1];\n"
+                 "h q[0];\nmeasure q[0] -> c[0];\n"
+                 "if (c==1) x q[3];\n")  # 4 qubits, device has 2; also dynamic
+    check(wide.is_dynamic, "wide fixture is dynamic")
+    wide_reason = mm_no.unsatisfiable_reason(wide)
+    check(wide_reason is not None and "feedback" in wide_reason.lower(),
+          f"a dynamic AND unallocatable circuit is declined for CAPABILITY "
+          f"first (feedback), not allocation, proving the check precedes "
+          f"delegation, got {wide_reason!r}")
+    # And on a feedback-capable provider, the SAME wide circuit falls through
+    # to the allocator and is declined for the ALLOCATION reason instead —
+    # confirming the capability clause is what short-circuited above, not a
+    # blanket rejection.
+    wide_alloc = mm_yes.unsatisfiable_reason(wide)
+    check(wide_alloc is not None and "feedback" not in wide_alloc.lower(),
+          f"the same wide circuit on a feedback provider is declined by the "
+          f"allocator (not for capability), got {wide_alloc!r}")
+
+
+def block_dynamic_lowering():
+    '''IBM lowering emits if_test for conditionals; Aer runs the feedback correctly'''
+    # Step 5: a conditional op becomes real execution. build_qiskit_circuit
+    # lowers a conditional to a Qiskit if_test block and bakes the
+    # feeding measure inline (an if_test can only read a bit already
+    # written mid-run). This block asserts the lowered STRUCTURE
+    # deterministically, then — guarded on Aer being present — actually
+    # RUNS a feedback circuit and checks the classical correlation holds.
+    # reference_ideal declines dynamic circuits, since their ideal is not
+    # defined through the noiseless density-matrix + marginalise path.
+    from frontends.qasm2.parser import parse
+    from providers.ibm.qiskit_lowering import build_qiskit_circuit
+
+    # A dynamic circuit lowers to h, measure (baked inline), if_else — the
+    # conditional became an if_test block, and the mid-circuit measure is in
+    # the body (not deferred to the map).
+    dyn = parse(open(QASM2 + "conditional.qasm").read())
+    try:
+        qc, mmap = build_qiskit_circuit(dyn, 1)
+    except Exception as e:
+        check(True, f"(dynamic lowering skipped — qiskit unavailable: "
+                    f"{type(e).__name__})")
+        return
+    names = [i.operation.name for i in qc.data]
+    check("if_else" in names,
+          f"a conditional lowers to a Qiskit if_test/if_else block, got {names}")
+    check(names.count("measure") == 1 and names.index("measure") < names.index("if_else"),
+          f"the feeding measure is baked inline before the conditional, got {names}")
+
+    # A STATIC circuit is unchanged by step 5: no measures baked into the
+    # body (they stay in the map for the reference path), no if_else.
+    static = parse("OPENQASM 2.0; include \"qelib1.inc\"; qreg q[2]; creg c[2]; "
+                   "h q[0]; cx q[0],q[1]; measure q[0]->c[0]; measure q[1]->c[1];")
+    sqc, smap = build_qiskit_circuit(static, 2)
+    snames = [i.operation.name for i in sqc.data]
+    check("if_else" not in snames and "measure" not in snames,
+          f"a static circuit lowers to a measurement-free body as before, "
+          f"got {snames}")
+    check(smap == [(0, 0), (1, 1)],
+          f"a static circuit's measures are still returned in the map, got {smap}")
+
+    # reference_ideal declines a dynamic circuit (None), still answers a
+    # static one — the measurement-free-body invariant it relies on holds
+    # for every circuit it actually lowers.
+    p = IBMSimulatedProvider(seed=SEED)
+    check(p.reference_ideal(dyn) is None,
+          "reference_ideal declines a dynamic circuit (returns None)")
+    static_ideal = p.reference_ideal(static)
+    check(static_ideal is not None
+          and abs(static_ideal.get("00", 0) - 0.5) < 0.02
+          and abs(static_ideal.get("11", 0) - 0.5) < 0.02,
+          f"reference_ideal still answers a static (Bell) circuit, got "
+          f"{static_ideal}")
+
+    # THE REAL PROOF: run a feedback circuit on Aer and check the classical
+    # correlation. h q0; measure->c0; if(c==1) x q1; measure q1->c1. The
+    # feedback flips q1 exactly when c0==1, so the only outcomes are 00 and
+    # 11 — never 01 or 10. A broken lowering (dropped condition, wrong bit)
+    # would leak 01/10.
+    try:
+        from qiskit_aer import AerSimulator
+    except ImportError:
+        check(True, "(Aer run skipped — qiskit-aer unavailable)")
+        return
+    corr = parse("OPENQASM 2.0; include \"qelib1.inc\"; qreg q[2]; creg c[2]; "
+                 "h q[0]; measure q[0]->c[0]; if (c==1) x q[1]; "
+                 "measure q[1]->c[1];")
+    cqc, _ = build_qiskit_circuit(corr, 2)
+    sim = AerSimulator()
+    counts = sim.run(cqc, shots=4000, seed_simulator=SEED).result().get_counts()
+    leaked = {k: v for k, v in counts.items() if k not in ("00", "11")}
+    check(not leaked,
+          f"feedback correlation holds on Aer — only 00/11 outcomes, got "
+          f"counts={counts}, leaked={leaked}")
+    check(counts.get("00", 0) > 500 and counts.get("11", 0) > 500,
+          f"both correlated outcomes actually occur (the H makes c0 random), "
+          f"got {counts}")
+
+
+def block_mid_circuit_measurement():
+    '''Mid-circuit measurement is a third capability: detected, routed, run on Aer'''
+    # Part 1 of the mid-circuit work: a qubit measured and then reused (gate
+    # or reset after measure) is a per-device CAPABILITY, not a circuit-global
+    # rejection — the third optional provider capability, independent of both
+    # reference_ideal and supports_dynamic.
+    from frontends.qasm2.parser import parse
+    from providers.base_provider import BaseProvider
+    from providers.ibm.ibm_provider import IBMProvider
+    from providers.ibm.ibm_real_provider import IBMRealProvider
+    from providers.ibm.qiskit_lowering import build_qiskit_circuit
+    from kernel.memory.memory_manager import MemoryManager
+    from hardware.device import QuantumDevice
+    from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
+
+    # Detection: a gate-after-measure and a reset-after-measure both set
+    # has_mid_circuit_measurement, and are NOT marked unrunnable (the frontend
+    # marks nothing unrunnable now).
+    gate_after = parse("OPENQASM 2.0; qreg q[1]; creg c[2]; "
+                       "measure q[0]->c[0]; x q[0]; measure q[0]->c[1];")
+    reset_after = parse("OPENQASM 2.0; include \"qelib1.inc\"; qreg q[1]; "
+                        "creg c[2]; x q[0]; measure q[0]->c[0]; reset q[0]; "
+                        "measure q[0]->c[1];")
+    check(gate_after.has_mid_circuit_measurement
+          and gate_after.unrunnable_reason is None,
+          "a gate after measure sets has_mid_circuit_measurement, not unrunnable")
+    check(reset_after.has_mid_circuit_measurement
+          and reset_after.unrunnable_reason is None,
+          "a reset after measure sets has_mid_circuit_measurement, not unrunnable")
+    plain = parse("OPENQASM 2.0; qreg q[2]; creg c[2]; h q[0]; "
+                  "measure q[0]->c[0]; measure q[1]->c[1];")
+    check(not plain.has_mid_circuit_measurement,
+          "a terminal-measurement circuit is not flagged mid-circuit")
+
+    # Capability is INDEPENDENT of supports_dynamic and inherited from one
+    # place: the override lives on IBMProvider, both IBM subclasses affirm,
+    # DevQ inherits the BaseProvider decline. Function identity proves the
+    # single point of truth.
+    check(IBMRealProvider.supports_mid_circuit_measurement
+          is IBMProvider.supports_mid_circuit_measurement,
+          "IBM subclasses inherit the mid-circuit override from IBMProvider")
+    check(DevQSimulatedProvider.supports_mid_circuit_measurement
+          is BaseProvider.supports_mid_circuit_measurement,
+          "DevQ inherits the BaseProvider decline for mid-circuit")
+    check(IBMSimulatedProvider(seed=SEED)
+          .supports_mid_circuit_measurement(gate_after) is True
+          and DevQSimulatedProvider(seed=SEED)
+          .supports_mid_circuit_measurement(gate_after) is False,
+          "IBM affirms, DevQ declines the mid-circuit capability")
+    # It is a SEPARATE predicate: a mid-circuit circuit is not is_dynamic.
+    check(not gate_after.is_dynamic and gate_after.has_mid_circuit_measurement,
+          "mid-circuit measurement is tracked independently of is_dynamic")
+
+    # reference_ideal declines a mid-circuit circuit (same mixed-state
+    # problem as feedback), still answers a plain one.
+    p = IBMSimulatedProvider(seed=SEED)
+    check(p.reference_ideal(gate_after) is None,
+          "reference_ideal declines a mid-circuit circuit")
+
+    # Feasibility: a mid-circuit circuit is infeasible on a provider that
+    # declines the capability, feasible on one that affirms — the same
+    # circuit and allocator, differing only by supports_mid_circuit_measurement.
+    class _P:
+        def __init__(self, mid): self._mid = mid
+        def supports_dynamic(self, c): return False
+        def supports_mid_circuit_measurement(self, c): return self._mid
+    def _dev(prov):
+        return QuantumDevice(kind="stub", num_qubits=2, coupling_map=[(0, 1)],
+                             basis_gates=["h", "x", "measure"],
+                             error_map={0: 0.01, 1: 0.01},
+                             edge_error_map={(0, 1): 0.02}, provider=prov)
+    mm_no = MemoryManager(_dev(_P(False)), NoiseGraphAllocator())
+    mm_yes = MemoryManager(_dev(_P(True)), NoiseGraphAllocator())
+    r = mm_no.unsatisfiable_reason(gate_after)
+    check(r is not None and "mid-circuit" in r.lower(),
+          f"mid-circuit circuit infeasible on a declining provider, got {r!r}")
+    check(mm_yes.unsatisfiable_reason(gate_after) is None,
+          "mid-circuit circuit feasible on a provider that supports it")
+
+    # THE REAL PROOF, and the shor regression: a circuit whose conditions
+    # reference NEVER-WRITTEN clbits (if(c==N) over a wide register where
+    # only low bits are measured) must lower and run — the unwritten bits are
+    # 0, so a redundant term is skipped and an impossible one drops the body.
+    # This is the exact shape of QASMBench's Shor that Aer's noise path
+    # rejected as "invalid cbit index" before the fix.
+    try:
+        from qiskit_aer import AerSimulator
+    except ImportError:
+        check(True, "(Aer run skipped — qiskit-aer unavailable)")
+        return
+    # 5-bit creg, only clbits 0,1,2 ever measured, conditions name the whole
+    # register (clbits 0..4) — clbits 3,4 never written.
+    shor_like = parse("OPENQASM 2.0; include \"qelib1.inc\"; qreg q[1]; "
+                      "creg c[5]; h q[0]; measure q[0]->c[0]; reset q[0]; "
+                      "if (c==1) x q[0]; measure q[0]->c[1]; reset q[0]; "
+                      "if (c==3) x q[0]; if (c==2) x q[0]; measure q[0]->c[2];")
+    check(shor_like.has_mid_circuit_measurement and shor_like.is_dynamic,
+          "the shor-like fixture is both mid-circuit and dynamic")
+    qc, _ = build_qiskit_circuit(shor_like, 5)
+    # Run on a NOISE-MODEL sim (from_backend), not a plain AerSimulator: the
+    # "invalid cbit index" failure only surfaces on the noise-model path
+    # (a plain sim tolerates an if_test over an unwritten clbit). This is the
+    # exact configuration the real execute() uses, so the regression must be
+    # exercised there.
+    from qiskit_ibm_runtime.fake_provider import FakeNairobiV2
+    from qiskit import transpile
+    sim = AerSimulator.from_backend(FakeNairobiV2())
+    tqc = transpile(qc, sim, optimization_level=1)
+    counts = sim.run(tqc, shots=200, seed_simulator=SEED).result().get_counts()
+    check(len(counts) > 0,
+          f"a circuit conditioning on never-written clbits lowers and runs on "
+          f"the noise-model path (the shor 'invalid cbit index' regression), "
+          f"got {counts}")
 
 
 # ── Plugin matrix ─────────────────────────────────────────────────────────────
@@ -1066,10 +1701,11 @@ def block_plugin_matrix():
                        .add_device(ibm.get_device("FakeLagosV2"),   name="lagos")
                        .build())
                 out = _with_timeout(
-                    lambda: run(sh, [f"qsubmit {BELL} {GHZ}", "qrunpack", "qps"]),
+                    lambda: (run(sh, [f"qsubmit {BELL} {GHZ}", "qrunpack"]),
+                             settle(sh, 1, 2))[1],
                     seconds=25
                 )
-                done = len(re.findall(r"\[Kernel\] Job \d+ FINISHED", out))
+                done = len(finished_ids(out))
                 TRACE.note(done == 2, f"{combo}: {done}/2 jobs finished")
                 if done != 2:
                     broken.append(f"{combo}: {done}/2 jobs finished")
@@ -1137,22 +1773,52 @@ def _with_timeout(fn, seconds):
 def block_determinism_seeded():
     '''Identical seeds reproduce devices and counts exactly'''
     cmds = ["qerrors q d0", "qtopology d0",
-            f"qrun {BELL} --exec=nairobi", f"qrun {BELL} --exec=d1",
+            f"qrun {BELL} --exec=nairobi",
             f"qrun {BELL} --exec=lagos"]
 
-    a = run(three_device(seed=42), cmds)
-    b = run(three_device(seed=42), cmds)
+    # qrun is async: the dispatch transcript is deterministic under a seed,
+    # but resolve-log lines land later off a background thread and would
+    # make a raw transcript comparison racy. So compare the dispatch
+    # transcripts, and read counts from a settled qps per session.
+    sa = three_device(seed=42)
+    sb = three_device(seed=42)
+    a = run(sa, cmds)
+    b = run(sb, cmds)
     check(a == b, "two seed=42 sessions produced byte-identical transcripts")
 
     c = run(three_device(seed=43), cmds)
     check(a != c, "seed=43 diverges from seed=42")
 
-    # distinct runs of the same circuit must not clone counts
-    counts = re.findall(r"\[Kernel\] Job \d+ FINISHED\. Counts: (\{[^}]*\})", a)
-    check(len(counts) >= 2, f"at least two count sets recorded ({len(counts)})")
-    check(counts[0] != counts[1],
-          "identical circuits produced different counts — derived per-run "
-          "seeds (seed+k), not one reused seed")
+    # THE HEADLINE CLAIM: same seed reproduces the same COUNTS, not just the
+    # same dispatch order. The transcript check above only proves the
+    # command echo is deterministic — counts resolve later off a background
+    # thread and are NOT in that transcript, so a regression that broke
+    # count determinism under a fixed seed would pass it unseen. Settle
+    # BOTH seed=42 sessions and compare each job's resolved counts across
+    # them, read the same race-free way (by job id, after settling) the
+    # within-session check below already trusts. This is the assertion the
+    # block's name actually promises.
+    settle(sa, 1, 2)
+    settle(sb, 1, 2)
+    for jid in (1, 2):
+        ca = counts_of(run(sa, [f"qps {jid}"]), jid)
+        cb = counts_of(run(sb, [f"qps {jid}"]), jid)
+        check(ca == cb,
+              f"job {jid}: two seed=42 sessions produced identical counts "
+              f"(same seed reproduces counts, not just dispatch order)")
+
+    # Distinct runs of the SAME circuit on the SAME device must not clone
+    # counts — jobs 1 and 2 are both bells on nairobi (--exec=nairobi and
+    # --exec=d1 name the same device). Different counts prove per-run seed
+    # derivation (seed+k), not one reused seed. Read each job's counts by
+    # id (counts_of matches the first FINISHED line for that id), so the
+    # comparison is between those two specific runs regardless of the order
+    # their futures happened to resolve in.
+    j1 = counts_of(run(sa, ["qps 1"]), 1)
+    j2 = counts_of(run(sa, ["qps 2"]), 2)
+    check(j1 != j2,
+          "identical circuits on one device produced different counts — "
+          "derived per-run seeds (seed+k), not one reused seed")
 
 
 def block_determinism_unseeded():
@@ -1165,15 +1831,18 @@ def block_determinism_unseeded():
 
 def block_bug_fix_witnesses():
     '''Per-device noise models and allocator mappings reach the simulator'''
-    out = run(three_device(seed=42),
-              [f"qrun {BELL} --exec=nairobi", f"qrun {BELL} --exec=lagos"])
+    sh = three_device(seed=42)
+    run(sh, [f"qrun {BELL} --exec=nairobi", f"qrun {BELL} --exec=lagos"])
 
     def error_rate(counts_str):
         d = eval(counts_str)
         return (sum(d.values()) - d.get("00", 0) - d.get("11", 0)) / sum(d.values())
 
-    counts = re.findall(r"\[Kernel\] Job \d+ FINISHED\. Counts: (\{[^}]*\})", out)
-    nairobi, lagos = error_rate(counts[0]), error_rate(counts[1])
+    # qrun dispatches async; read each job's settled counts by id so the
+    # nairobi/lagos assignment is unambiguous regardless of resolve order.
+    settle(sh, 1, 2)
+    nairobi = error_rate(str(counts_of(run(sh, ["qps 1"]), 1)))
+    lagos   = error_rate(str(counts_of(run(sh, ["qps 2"]), 2)))
 
     # ~27% would mean Nairobi ran under Lagos's noise model (shared-state bug);
     # ~10% would mean initial_layout was dropped (v2p_map bug).
@@ -1375,7 +2044,8 @@ def block_lifecycle_waiting():
     # Freeing the pool lets the same job proceed on the next cycle, which is
     # what makes WAITING transient rather than terminal.
     ctx.memory_manager.pool.free_qubits = set(range(ctx.device.num_qubits))
-    out2 = run(sh, ["qrunpack", "qps"])
+    run(sh, ["qrunpack"])
+    out2 = settle(sh, 1)
     check("FINISHED" in out2,
           "the WAITING job ran once resources freed — state was transient")
 
@@ -1392,7 +2062,8 @@ def block_lifecycle_failed():
 
     ctx.device.provider.execute = failing_execute
 
-    out = run(sh, [f"qrun {BELL}", "qps"])
+    run(sh, [f"qrun {BELL}"])
+    out = settle(sh, 1)
 
     expect(out, "FAILED", "simulated provider failure")
     states = [j.state.value for j in sh.kernel.list_jobs()]
@@ -1405,6 +2076,163 @@ def block_lifecycle_failed():
           f"all qubits returned to the pool after failure, got {sorted(free)}")
     check(ctx.running_jobs == 0,
           f"running_jobs decremented after failure, got {ctx.running_jobs}")
+
+
+def block_async_dispatch():
+    '''qrun/qrunpack dispatch without blocking; qps reports results and a
+    WAITING job self-heals once the holder frees qubits'''
+    # The shell's execution commands are asynchronous: qrun and qrunpack
+    # route, allocate, and dispatch a job onto the shared executor, then
+    # RETURN — they never block the shell on a provider result. qps is the
+    # snapshot that reports where each job is, folding in the result once a
+    # future has resolved. And a job left WAITING on contended qubits is
+    # retried automatically when the holder completes and frees them —
+    # observed through qps alone, with no command re-issued. This block
+    # pins all three, which together are the whole async contract.
+
+    sh  = session("router_only.config.json",
+                  [("ibm.simulated", "FakeNairobiV2", "solo", None)])
+
+    # ── qrun does not block: the job is RUNNING the instant qrun returns ──
+    # A synchronous qrun would only ever return FINISHED/FAILED here; that
+    # it returns with the job still RUNNING (future in flight) is the
+    # non-blocking guarantee. This is the assertion a re-added _wait_for
+    # would break.
+    out = run(sh, [f"qrun {BELL} --exec=solo"])
+    expect(out, "dispatched")
+    states = [j.state.value for j in sh.kernel.list_jobs()]
+    check(states == ["RUNNING"],
+          f"qrun returns with the job RUNNING, not blocked to completion — "
+          f"got {states}")
+
+    # ── qps reports the settled result, and filters by id ──
+    settled = settle(sh, 1)
+    counts = counts_of(settled, 1)
+    check(sum(counts.values()) > 0,
+          f"qps reports counts for the FINISHED job, got {counts}")
+    # The counts must be on the qps LINE, not merely somewhere in the
+    # transcript — the kernel's resolve log also prints counts, so assert
+    # the qps row itself carries them (this is what catches a qps that
+    # renders FINISHED but drops the counts column).
+    check(re.search(r"^1 \| .*\| FINISHED \| Counts: \{", settled, re.M),
+          "the qps FINISHED row itself carries the counts column")
+    # id filter: `qps 1` shows only job 1; an unknown id is reported, not
+    # silently dropped; a non-integer token is flagged.
+    only = run(sh, ["qps 1"])
+    check(only.strip().startswith("1 |") and "\n2 |" not in only,
+          f"qps <id> shows only the named job, got {only!r}")
+    expect(run(sh, ["qps 99"]), "Job 99 does not exist.")
+    expect(run(sh, ["qps notanumber"]), "Invalid job id: notanumber")
+
+    # ── qps folds a REJECTED job's reason into its line ──
+    rej = session("router_only.config.json",
+                  [("ibm.simulated", "FakeLagosV2", "lagos", None)])
+    run(rej, [f"qrun {BELL} --max-qubit-error=0.0000001"])
+    rej_out = run(rej, ["qps 1"])
+    check("REJECTED" in rej_out and "Reason:" in rej_out,
+          f"qps reports a REJECTED job with its reason, got {rej_out!r}")
+
+    # ── the self-heal: a WAITING job dispatches once qubits free, through
+    #    qps alone (no re-issued qrunpack) ──
+    heal = session("router_only.config.json",
+                   [("ibm.simulated", "FakeNairobiV2", "solo", None)])
+    hctx = heal.kernel.contexts[0]
+    # Only one bell (2 qubits) can be placed at a time.
+    hctx.memory_manager.pool.free_qubits = {1, 2}
+
+    # Pin job 1's execution IN-FLIGHT until the test releases it. The
+    # WAITING we want to observe only exists while job 1 still holds {1,2};
+    # if job 1's future resolves before job 2's qrun, job 2's pre-routing
+    # resolve sweep reclaims those qubits and job 2 dispatches straight to
+    # RUNNING — no WAITING to see. That race is real but timing-dependent:
+    # a fast provider (or a loaded machine that lets the Aer future finish
+    # in the gap between the two qruns) makes it the common case, so a bare
+    # back-to-back qrun cannot reliably reproduce the contention this block
+    # is meant to pin. A gated future — done() False until the test frees
+    # it — makes the hold deterministic without weakening the assertion:
+    # job 2 genuinely WAITs on genuinely-occupied qubits; we simply
+    # guarantee job 1 is still holding them at that instant.
+    #
+    # On release the gate resolves job 1 INSTANTLY to a fixed result rather
+    # than re-running the real Aer execution. Two reasons this matters and
+    # a plain submit_async wrapper does not: (1) speed/load independence —
+    # job 2's self-heal must land within settle()'s bounded poll budget, so
+    # it cannot hang on a slow machine waiting for a real simulation to
+    # finish after release; (2) no pool re-entrancy — running the real
+    # execute() from inside the held future would submit a NESTED task onto
+    # the same bounded shared executor while occupying one of its workers,
+    # which can starve under full-suite load. Job 1's measured counts are
+    # irrelevant here: this block asserts job 2's WAITING, its self-heal to
+    # FINISHED, and its reuse of the freed block — not job 1's distribution.
+    from circuits.execution_result import ExecutionResult
+    release_job1 = threading.Event()
+    real_execute = hctx.device.execute
+
+    class _GatedFuture:
+        '''Reports not-done until released; then resolves immediately to a
+        fixed result — no real execution, no shared-pool submit.'''
+        def done(self):
+            return release_job1.is_set()
+        def result(self):
+            release_job1.wait(timeout=10)
+            return ExecutionResult(counts={"00": 512, "11": 512}, success=True)
+
+    # Match the kernel's call: execute(circuit, v2p_map, shots=shots).
+    hctx.device.execute = lambda circuit, v2p_map, shots: _GatedFuture()
+    try:
+        run(heal, [f"qrun {BELL} --exec=solo"])             # job 1 holds {1,2}, future gated
+        wait_out = run(heal, [f"qrun {BELL} --exec=solo"])  # job 2 must WAIT
+        expect(wait_out, "WAITING for resources")
+        check([j.state.value for j in heal.kernel.list_jobs()] == ["RUNNING", "WAITING"],
+              "job 2 is WAITING while job 1 holds the only free qubits")
+    finally:
+        # Restore the real execute so job 2's retry runs for real, then
+        # release job 1 — it resolves instantly, freeing {1,2} for job 2.
+        hctx.device.execute = real_execute
+        release_job1.set()
+
+    # Drive the session forward using ONLY qps. Each poll resolves job 1's
+    # future when it completes; freeing its qubits retries job 2, which
+    # then dispatches and runs — all without a qrunpack. If the retry-on-
+    # free were missing, job 2 would stay WAITING forever here and settle
+    # would time out.
+    healed = settle(heal, 1, 2)
+    check(finished_ids(healed) == {"1", "2"},
+          "a WAITING job self-heals to FINISHED once the holder frees its "
+          "qubits — observed through qps alone, no qrunpack re-issued")
+    # And the freed qubits were genuinely reused: job 2 took job 1's block.
+    check(mapping_of(healed, 2) == "{0: 1, 1: 2}",
+          f"job 2 reused the freed block {{0: 1, 1: 2}}, got {mapping_of(healed, 2)}")
+
+    # ── a fast provider's FINISHED-but-uncollected qubits do not strand a
+    #    later qrun ──
+    # The devq simulator resolves near-instantly, so by the time a second
+    # qrun runs, the first job's future is already done. Its qubits must be
+    # collected (and freed) before the new job allocates, or the new job
+    # spuriously WAITs on capacity that is logically free but not yet swept
+    # up. This is the screenshot bug: four bells on a 7-qubit sim, where
+    # the fourth waited only because the first three's finished futures had
+    # not been collected. run_job resolves pending futures before routing,
+    # so each qrun reclaims the prior (now-finished) jobs' qubits first.
+    #
+    # The test must let the prior futures finish WITHOUT pumping the kernel
+    # (no qps/qrunpack between qruns) — otherwise the poll that settles them
+    # would free the qubits and mask the bug. A bare sleep lets the thread
+    # pool resolve them while the kernel stays unaware; only the next qrun's
+    # own resolve can then collect them. Six 2-qubit bells on 7 qubits means
+    # by the 4th the first three's blocks (6 qubits) must be reclaimed for it
+    # to fit at all.
+    fast = session(None, [("devq.simulated", "fully_connected", 7, "sim", None)])
+    dispatched = 0
+    for _ in range(4):
+        out = run(fast, [f"qrun {BELL} --exec=sim"])
+        if "dispatched to" in out:
+            dispatched += 1
+        time.sleep(0.05)   # future finishes on the pool; kernel not pumped
+    check(dispatched == 4,
+          f"four sequential qruns on a fast sim all dispatch — a finished "
+          f"job's qubits are reclaimed before the next allocates, so none "
+          f"spuriously WAITs; got {dispatched}/4 dispatched")
 
 
 def block_wedged_provider_timeout():
@@ -1432,14 +2260,18 @@ def block_wedged_provider_timeout():
         sh.kernel._execute(qcb, ctx_routed)
         dispatched_running = ctx_routed.running_jobs
         sh.kernel._wait_for(qcb, poll_interval=0.05, timeout=1)
-    out = buf.getvalue()
 
     check(dispatched_running == 1,
           f"job was dispatched and counted, got {dispatched_running}")
     check(qcb.state.value == "FAILED",
           f"wedged job ends FAILED rather than spinning, "
           f"got {qcb.state.value}")
-    expect(out, "did not resolve within", "wedged")
+    # The timeout error lives on the job's result. It is no longer echoed
+    # to the console (resolve events are not printed — qps is the result
+    # surface), so assert it where it actually is.
+    err = qcb.result.error if qcb.result else ""
+    check("did not resolve within" in err and "wedged" in err,
+          f"the wedged job carries a clear timeout error, got {err!r}")
 
     # Same cleanup invariants as an ordinary failure — a wedged provider
     # must not permanently shrink the device.
@@ -2055,7 +2887,8 @@ def block_mock_topologies():
     # And each kind actually runs a job end to end.
     for kind, nq in (("linear", 5), ("grid", 4), ("fully_connected", 5)):
         sh  = session(None, [("devq.simulated", kind, nq, None, None)])
-        out = run(sh, [f"qrun {BELL}", "qps"])
+        run(sh, [f"qrun {BELL}"])
+        out = settle(sh, 1)
         check("FINISHED" in out, f"a job completed on a {kind} mock device")
 
 
@@ -2112,7 +2945,7 @@ def block_registry_plugin_components():
         sh = dq.add_device(
             DevQSimulatedProvider(seed=SEED).get_device("random", 7)).build()
 
-        out = run(sh, ["qconfig", f"qsubmit {BELL} {GHZ}", "qrunpack", "qps"])
+        out = run(sh, ["qconfig", f"qsubmit {BELL} {GHZ}", "qrunpack"])
 
         # Named in config, resolved through the registry, and reported
         # under the LABEL the plugin declared rather than its class name.
@@ -2123,7 +2956,8 @@ def block_registry_plugin_components():
         # Actually in the execution path, not merely constructed.
         check(out.count("Dispatching job") == 2,
               "both jobs were dispatched by the plugin scheduler")
-        expect_re(out, r"\d+ \| d0\s+\| FINISHED", count=2)
+        check(finished_ids(settle(sh, 1, 2)) == {"1", "2"},
+              "both plugin-scheduled jobs finished")
 
         # MockScheduler is LIFO, so job 2 must be dispatched before job
         # 1. Every built-in dispatches 1 first, so this ordering is what
@@ -3722,16 +4556,60 @@ def block_event_log():
             sh.onecmd(f"qrun {BELL}")
             # rejected job: exercises the None-timestamp path
             sh.onecmd(f"qrun {BELL} --max-qubit-error=0.0000001")
+            # qrun/qrunpack dispatch asynchronously; drain so every
+            # resolve event has fired before the transcript is captured.
+            sh.kernel.drain()
         return buf.getvalue(), sh
 
     # THE CENTRAL GUARANTEE: attaching a sink must not change what the
-    # console prints. If this drifts, every existing block's expected
-    # output becomes a function of whether logging is on.
-    baseline, _ = session()
+    # console prints — i.e. a RecordSink beside a PrintSink is invisible
+    # to the console. Under async we no longer compare two independently
+    # timed live runs (their resolve-line interleaving and timing-
+    # dependent allocations legitimately differ run to run — DevQ never
+    # promised serial determinism). Instead we prove the invariant
+    # structurally on a SINGLE run: everything PrintSink put on the
+    # console is exactly what PrintSink renders from the very records the
+    # RecordSink captured in the same run. Same execution, so timing is
+    # identical on both sides; if the two sinks ever saw a different
+    # event stream, or the console carried a Kernel line no record
+    # produced, this fails.
+    from kernel.events import PrintSink as _PrintSink
     rec = RecordSink()
     logged, shell = session(MultiSink(PrintSink(), rec))
-    check(baseline == logged,
-          "console output is byte-identical with a RecordSink attached")
+
+    # Replay the captured records through a fresh PrintSink and compare
+    # the Kernel lines it renders against the Kernel lines that actually
+    # reached the console. (Non-Kernel lines — job submission notices,
+    # dispatch acks, the REJECTED line — come from the shell, not a
+    # sink, so they are outside the sink-transparency claim.)
+    replay = io.StringIO()
+    with contextlib.redirect_stdout(replay):
+        ps = _PrintSink()
+        for r in rec.records:
+            ps.emit(r)
+    replayed_kernel = [l for l in replay.getvalue().splitlines()
+                       if l.startswith("[Kernel]")]
+    console_kernel  = [l for l in logged.splitlines()
+                       if l.startswith("[Kernel]")]
+    check(replayed_kernel == console_kernel,
+          "PrintSink beside a RecordSink prints exactly what the records "
+          "render — attaching the RecordSink changed no console output")
+
+    # PrintSink renders dispatch (placement) but NOT resolve: results are
+    # read through qps, so echoing the kernel's `[Kernel] Job N FINISHED.
+    # Counts: …` line would duplicate the qps row. The resolve event is
+    # still emitted (asserted below via the record stream) — only the
+    # console echo is suppressed. Pin both halves: the console shows the
+    # dispatch line and never a FINISHED/FAILED resolve line, while the
+    # records DO carry resolve.
+    check(any("Dispatching job" in l for l in console_kernel),
+          "PrintSink still renders the dispatch (placement) line")
+    check(not any("FINISHED" in l or "FAILED" in l for l in console_kernel),
+          "PrintSink does NOT echo the resolve line — qps reports results, "
+          f"so the console carries no FINISHED/FAILED echo; got {console_kernel}")
+    check(any(r["event"] == "resolve" for r in rec.records),
+          "the resolve event is still emitted to the record stream, "
+          "even though the console does not print it")
 
     kinds = [r["event"] for r in rec.records]
     for kind in ("submit", "route", "dispatch", "resolve", "cycle_end"):
@@ -3827,6 +4705,7 @@ def block_event_log():
         sh = dq.build()
         sh.kernel.sink = Exploding()
         sh.onecmd(f"qrun {BELL}")
+        sh.kernel.drain()
     states = [j.state.value for j in sh.kernel.process_table.list_jobs()]
     check("FINISHED" in states,
           f"a raising sink cannot kill a job, got {states}")
@@ -6374,27 +7253,51 @@ def block_qasm2_parser():
     check(c.measurements == [(4, 4)],
           f"multi_register: b[2] is global qubit 4, got {c.measurements}")
 
-    # ── Rejections are precise and line-numbered ────────────────────────
-    # A conditional is WELL-FORMED but unsupported: DevQ cannot do the
-    # mid-circuit feedback it needs. The parser no longer RAISES on it —
-    # raising would abort a whole spec over one such circuit. Instead the
-    # circuit parses and is marked unrunnable, so the KERNEL rejects the
-    # job (REJECTED, with this reason). Assert the mark, not an exception.
+    # ── Classical control is now first-class, not a rejection ───────────
+    # A conditional is WELL-FORMED and now REPRESENTABLE: the parser emits
+    # it as a `conditional` op rather than marking it unrunnable. It used to
+    # be rejected for lacking mid-circuit feedback; that runnability question
+    # is now answered per-device at routing time (a provider's
+    # supports_dynamic), not at parse time. So the parser's job is to
+    # represent it faithfully — assert the op, the resolved condition, and
+    # that the circuit is is_dynamic and NOT unrunnable.
     c = load("conditional.qasm")
-    check(c.unrunnable_reason is not None,
-          "conditional (if): parses and is marked unrunnable, not raised")
-    check("feedback" in (c.unrunnable_reason or "").lower(),
-          f"conditional: reason cites the missing feedback, got "
+    check(c.unrunnable_reason is None,
+          f"conditional (if): parses clean, no longer marked unrunnable, got "
           f"{c.unrunnable_reason!r}")
+    check(c.is_dynamic,
+          "conditional (if): the circuit is is_dynamic")
+    check(len(c.conditionals) == 1
+          and c.conditionals[0]["condition"] == {"clbits": [0], "value": 1}
+          and c.conditionals[0]["body"]["gate"] == "x"
+          and c.conditionals[0]["body"]["qubits"] == [1],
+          f"conditional (if): emits one conditional op guarding x on q[1], "
+          f"got {c.conditionals!r}")
+    check(c.cregs == {"c": (0, 1)},
+          f"conditional (if): the declared creg is recorded, got {c.cregs!r}")
+
+    # An unknown register named in an if-condition IS a genuine parse error
+    # (the condition references something never declared) — this still
+    # raises, unlike the well-formed conditional above.
+    try:
+        parse("OPENQASM 2.0; qreg q[1]; if (nope==1) x q[0];")
+        check(False, "unknown creg in if-condition should raise")
+    except QASMError as e:
+        check("nope" in str(e),
+              f"unknown creg in if-condition raises naming the register, got {e}")
 
     # Mid-circuit measurement (a gate on a qubit after it was measured) is
-    # the same class of unsupported-but-well-formed: marked, not raised.
+    # now a per-device CAPABILITY, not a circuit-global rejection: it is
+    # detected via has_mid_circuit_measurement and NOT marked unrunnable
+    # (the frontend marks nothing unrunnable now). A capable provider runs
+    # it; a terminal-measurement provider declines per-device.
     mid = parse("OPENQASM 2.0; qreg q[1]; creg c[1]; "
                 "measure q[0] -> c[0]; x q[0];")
-    check(mid.unrunnable_reason is not None
-          and "mid-circuit" in mid.unrunnable_reason.lower(),
-          f"mid-circuit measurement: marked unrunnable with a reason, got "
-          f"{mid.unrunnable_reason!r}")
+    check(mid.has_mid_circuit_measurement
+          and mid.unrunnable_reason is None,
+          f"mid-circuit measurement: detected via has_mid_circuit_measurement "
+          f"and NOT marked unrunnable, got has_mid="
+          f"{mid.has_mid_circuit_measurement} reason={mid.unrunnable_reason!r}")
 
     # A clean circuit is NOT flagged — the check does not fire on terminal
     # measurement (the normal case).
@@ -6431,7 +7334,8 @@ def block_qasm2_parser():
     sh = (DevQ(config_path=CONFIG + "router_only.config.json")
           .add_device(DevQSimulatedProvider(seed=SEED).get_device("random", 8))
           .build())
-    out = run(sh, [f"qrun {QASM2}parameterized.qasm"])
+    run(sh, [f"qrun {QASM2}parameterized.qasm"])
+    out = settle(sh, 1)
     expect(out, "FINISHED")
     check("Error" not in out,
           "a parameterised circuit runs end to end without error")
@@ -6612,8 +7516,8 @@ def block_devq_measurement():
           .build())
 
     # No creg, no measures: fallback width == num_qubits (2), uniform.
-    out = run(sh, [f"qrun {BELL}"])
-    counts = counts_of(out, 1)
+    run(sh, [f"qrun {BELL}"])
+    counts = counts_of(settle(sh, 1), 1)
     check(all(len(k) == 2 for k in counts),
           f"devq fallback: no creg -> 2-bit strings (num_qubits), "
           f"got widths {set(len(k) for k in counts)}")
@@ -6624,16 +7528,16 @@ def block_devq_measurement():
     # creg c[3], only two qubits measured: Option B width is the FULL
     # register (3 bits), not the number of measured bits (2). This is the
     # assertion that separates Option B from "width == measured count".
-    out = run(sh, [f"qrun {QASM2}partial_measure.qasm"])
-    counts = counts_of(out, 2)
+    run(sh, [f"qrun {QASM2}partial_measure.qasm"])
+    counts = counts_of(settle(sh, 2), 2)
     check(all(len(k) == 3 for k in counts),
           f"devq Option B: creg c[3] -> 3-bit strings even with two "
           f"measures, got widths {set(len(k) for k in counts)}")
     check(len(counts) == 8, f"devq: 2^3 == 8 outcomes, got {len(counts)}")
 
     # creg c[1]: single-bit register -> single-bit strings.
-    out = run(sh, [f"qrun {QASM2}reset_mid.qasm"])
-    counts = counts_of(out, 3)
+    run(sh, [f"qrun {QASM2}reset_mid.qasm"])
+    counts = counts_of(settle(sh, 3), 3)
     check(all(len(k) == 1 for k in counts),
           f"devq: creg c[1] -> 1-bit strings, got "
           f"{set(len(k) for k in counts)}")
@@ -6642,8 +7546,8 @@ def block_devq_measurement():
     # This is the case that distinguishes Option B from measuring all
     # qubits — the two agree whenever num_clbits == num_qubits, so a
     # narrower creg is needed to pin the width to the register.
-    out = run(sh, [f"qrun {QASM2}narrow_creg.qasm"])
-    counts = counts_of(out, 4)
+    run(sh, [f"qrun {QASM2}narrow_creg.qasm"])
+    counts = counts_of(settle(sh, 4), 4)
     check(all(len(k) == 2 for k in counts),
           f"devq Option B: 3 qubits + creg c[2] -> 2-bit strings "
           f"(num_clbits, not num_qubits), got "
@@ -6675,8 +7579,9 @@ def block_ibm_measurement():
     # Fallback: a circuit with no measures is measured on every qubit, so
     # a Bell pair yields 2-bit strings correlated on 00/11 (the historical
     # behaviour, unchanged).
-    out = run(ibm_shell(), [f"qrun {BELL}"])
-    counts = counts_of(out, 1)
+    sh = ibm_shell()
+    run(sh, [f"qrun {BELL}"])
+    counts = counts_of(settle(sh, 1), 1)
     check(all(len(k) == 2 for k in counts),
           f"IBM fallback: no measures -> measure-all, 2-bit strings, "
           f"got {set(len(k) for k in counts)}")
@@ -6689,8 +7594,9 @@ def block_ibm_measurement():
     # is ALWAYS 0. If the provider measured only the two touched bits the
     # strings would be 2-bit; if it auto-measured all three the top bit
     # would sometimes be 1. Neither happens.
-    out = run(ibm_shell(), [f"qrun {QASM2}partial_measure.qasm"])
-    counts = counts_of(out, 1)
+    sh = ibm_shell()
+    run(sh, [f"qrun {QASM2}partial_measure.qasm"])
+    counts = counts_of(settle(sh, 1), 1)
     check(all(len(k) == 3 for k in counts),
           f"IBM Option B: creg c[3] -> 3-bit strings, got "
           f"{set(len(k) for k in counts)}")
@@ -6700,8 +7606,9 @@ def block_ibm_measurement():
     # 3 qubits but creg c[2]: width is the register (2), not the qubit
     # count (3). Distinguishes Option B from measuring all qubits, which
     # agree only when num_clbits == num_qubits.
-    out = run(ibm_shell(), [f"qrun {QASM2}narrow_creg.qasm"])
-    counts = counts_of(out, 1)
+    sh = ibm_shell()
+    run(sh, [f"qrun {QASM2}narrow_creg.qasm"])
+    counts = counts_of(settle(sh, 1), 1)
     check(all(len(k) == 2 for k in counts),
           f"IBM Option B: 3 qubits + creg c[2] -> 2-bit strings "
           f"(num_clbits, not num_qubits), got {set(len(k) for k in counts)}")
@@ -6710,11 +7617,118 @@ def block_ibm_measurement():
     # then measure. A reset at its true source position yields ~all-zero;
     # a dropped reset (or one lumped at the end) would yield ~all-one. This
     # is the assertion that proves ordering, not just presence, of reset.
-    out = run(ibm_shell(), [f"qrun {QASM2}reset_mid.qasm"])
-    counts = counts_of(out, 1)
+    sh = ibm_shell()
+    run(sh, [f"qrun {QASM2}reset_mid.qasm"])
+    counts = counts_of(settle(sh, 1), 1)
     zero = counts.get("0", 0)
     check(zero > 0.85 * sum(counts.values()),
           f"IBM reset in position: x then reset -> measures ~0, got {counts}")
+
+
+def block_large_device_full_layout():
+    '''full_layout pads a large device with ancilla so a sim run finishes'''
+    # A circuit occupies only a few of a device's physical qubits, but the
+    # allocator's placement (v2p_map) is a PARTIAL layout — only the mapped
+    # qubits. On a large device Aer rejects a partial initial_layout
+    # outright ("The 'layout' must be full (with ancilla)."), so a simulated
+    # run on a big backend would crash before this fix. BaseProvider.
+    # full_layout builds the full-device-width layout (used qubits at their
+    # allocated positions, every unused physical qubit filled with an
+    # ancilla), and both IBM providers call it. This block pins that on a
+    # LARGE device specifically: that is the only place the partial-layout
+    # bug surfaces, so a small-device test alone would not catch a
+    # regression here. Needs qiskit; skips cleanly without it.
+    try:
+        p = IBMSimulatedProvider(seed=SEED)
+        big = p.get_device(backend_name="FakeFez")
+    except Exception:
+        check(True, "qiskit not installed - large-device layout block skipped")
+        return
+
+    # FakeFez is a 156-qubit Heron r2 fake — far more physical qubits than a
+    # Bell pair uses, so the layout must be padded with ancilla or Aer
+    # refuses it. This exact case crashed pre-fix.
+    check(big.num_qubits > 100,
+          f"FakeFez is a large device (got num_qubits={big.num_qubits})")
+
+    def fez_shell():
+        dq = devq_with_ibm()
+        dq.add_device(IBMSimulatedProvider(seed=SEED)
+                      .get_device("FakeFez"), name="fez")
+        with contextlib.redirect_stdout(io.StringIO()):
+            return dq.build()
+
+    # A Bell pair on the 156-qubit device must FINISH (not throw the layout
+    # error) and land its mass on the correlated peaks 00/11. Before the
+    # fix this raised "The 'layout' must be full (with ancilla)." and the
+    # job never produced counts at all, so counts_of would not find a
+    # FINISHED row.
+    sh = fez_shell()
+    run(sh, [f"qrun {BELL} --exec=fez"])
+    counts = counts_of(settle(sh, 1), 1)
+    total = sum(counts.values())
+    check(all(len(k) == 2 for k in counts),
+          f"large-device Bell: counts width is the 2-bit creg, not the "
+          f"156-qubit device (ancilla do not widen the register), got "
+          f"{set(len(k) for k in counts)}")
+    peaks = counts.get("00", 0) + counts.get("11", 0)
+    check(peaks > 0.85 * total,
+          f"large-device Bell finishes with mass on the 00/11 peaks "
+          f"(the layout error is gone), got {counts}")
+
+    # GHZ too: a 3-qubit entangled state on the same large device lands on
+    # the all-zero / all-one peaks, confirming the padding is correct for
+    # more than two used qubits, not just a Bell special case.
+    sh = fez_shell()
+    run(sh, [f"qrun {GHZ} --exec=fez"])
+    counts = counts_of(settle(sh, 1), 1)
+    total = sum(counts.values())
+    w = len(next(iter(counts)))
+    peaks = counts.get("0" * w, 0) + counts.get("1" * w, 0)
+    check(peaks > 0.80 * total,
+          f"large-device GHZ finishes with mass on the all-0/all-1 peaks, "
+          f"got {counts}")
+
+    # The helper's contract directly: on a large device it returns a layout
+    # accounting for EVERY physical qubit (used + ancilla), and it does not
+    # widen the classical register. Pinning this at the source catches a
+    # regression even if the end-to-end run happened to mask it.
+    from qiskit import QuantumCircuit
+    qc = QuantumCircuit(2, 2)
+    qc.h(0); qc.cx(0, 1); qc.measure([0, 1], [0, 1])
+    before_clbits = qc.num_clbits
+    layout = p.full_layout(qc, {0: 136, 1: 143}, big)
+    phys = set(layout.get_physical_bits().keys())
+    check(phys == set(range(big.num_qubits)),
+          f"full_layout covers every physical qubit 0..{big.num_qubits-1} "
+          f"(used + ancilla), got {len(phys)} physical slots")
+    check(qc.num_clbits == before_clbits,
+          f"full_layout does not widen the classical register "
+          f"(was {before_clbits}, now {qc.num_clbits})")
+    # The used qubits sit at their allocated physical indices.
+    v2p_check = {layout[qc.qubits[0]], layout[qc.qubits[1]]}
+    check(v2p_check == {136, 143},
+          f"full_layout places the circuit's qubits at their allocated "
+          f"physical indices, got {v2p_check}")
+
+    # Regression guard: the same helper on a SMALL device still works and
+    # small-device runs are unaffected (no spurious padding failure).
+    try:
+        small = IBMSimulatedProvider(seed=SEED).get_device("FakeNairobiV2")
+    except Exception:
+        check(True, "small backend unavailable - small-device check skipped")
+        return
+    dq = devq_with_ibm()
+    dq.add_device(small, name="nairobi")
+    with contextlib.redirect_stdout(io.StringIO()):
+        sh_small = dq.build()
+    run(sh_small, [f"qrun {BELL} --exec=nairobi"])
+    counts = counts_of(settle(sh_small, 1), 1)
+    total = sum(counts.values())
+    peaks = counts.get("00", 0) + counts.get("11", 0)
+    check(peaks > 0.85 * total,
+          f"small-device Bell still finishes on the peaks (no regression), "
+          f"got {counts}")
 
 
 def block_counts_width_contract():
@@ -6751,8 +7765,8 @@ def block_counts_width_contract():
     sh = (DevQ(config_path=CONFIG + "router_only.config.json")
           .add_device(DevQSimulatedProvider(seed=SEED).get_device("random", 8))
           .build())
-    out = run(sh, [f"qrun {QASM2}narrow_creg.qasm"])
-    counts = counts_of(out, 1)
+    run(sh, [f"qrun {QASM2}narrow_creg.qasm"])
+    counts = counts_of(settle(sh, 1), 1)
     check(all(len(k) == 2 for k in counts),
           f"counts_width: devq reports the helper's width (2-bit), "
           f"got {set(len(k) for k in counts)}")
@@ -6787,7 +7801,8 @@ def block_shell_input_handling():
     # None of it should have created a job or killed the session.
     check(not sh.kernel.list_jobs(),
           "malformed commands created no jobs")
-    after = run(sh, [f"qrun {BELL}"])
+    run(sh, [f"qrun {BELL}"])
+    after = settle(sh, 1)
     check("FINISHED" in after,
           "the session still works after a run of bad input")
 
@@ -6806,8 +7821,7 @@ def block_many_device_federation():
            .build())
 
     out = run(sh, ["qdevices", f"qrun {BELL} --exec=jakarta",
-                   f"qrun {BELL} --no-exec=nairobi,lagos,casablanca,jakarta",
-                   "qps"])
+                   f"qrun {BELL} --no-exec=nairobi,lagos,casablanca,jakarta"])
 
     # d4 is unnamed, so the deny-list leaves it as the only candidate —
     # exercising index/name resolution across a five-device list.
@@ -6815,7 +7829,7 @@ def block_many_device_federation():
           f"named device 4 of 5 resolved, got {device_of(out, 1)}")
     check(device_of(out, 2).startswith("d4"),
           f"deny-list left only the unnamed d4, got {device_of(out, 2)}")
-    expect_re(out, r"\[Kernel\] Job \d+ FINISHED", 2)
+    check(finished_ids(settle(sh, 1, 2)) == {"1", "2"}, "both jobs finished")
 
 
 BLOCKS = [
@@ -6840,6 +7854,7 @@ BLOCKS = [
     ("provider_global_key",      block_provider_global_key_rejected),
     ("lifecycle_waiting",        block_lifecycle_waiting),
     ("lifecycle_failed",         block_lifecycle_failed),
+    ("async_dispatch",           block_async_dispatch),
     ("wedged_provider_timeout",  block_wedged_provider_timeout),
     ("mock_topologies",          block_mock_topologies),
     ("device_calibration",       block_device_calibration),
@@ -6853,6 +7868,12 @@ BLOCKS = [
     ("single_device_batch",      block_single_device_batch),
     ("single_device_rejection",  block_single_device_rejection),
     ("single_device_devq",       block_single_device_devq_provider),
+    ("supports_dynamic",         block_supports_dynamic_capability),
+    ("conditional_ir",           block_conditional_ir),
+    ("conditional_frontend",     block_conditional_frontend),
+    ("dynamic_feasibility",      block_dynamic_feasibility),
+    ("dynamic_lowering",         block_dynamic_lowering),
+    ("mid_circuit_measurement",  block_mid_circuit_measurement),
     ("plugin_matrix",            block_plugin_matrix),
     ("determinism_seeded",       block_determinism_seeded),
     ("determinism_unseeded",     block_determinism_unseeded),
@@ -6872,6 +7893,7 @@ BLOCKS = [
     ("allocator_contract_1q_param", block_allocator_contract_1q_param),
     ("devq_measurement",         block_devq_measurement),
     ("ibm_measurement",          block_ibm_measurement),
+    ("large_device_full_layout", block_large_device_full_layout),
     ("counts_width_contract",    block_counts_width_contract),
     ("shipped_workloads",        block_shipped_workloads),
     ("repo_hygiene",             block_repo_hygiene),

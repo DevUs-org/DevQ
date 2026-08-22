@@ -60,7 +60,7 @@ _REPO_ROOT = os.path.dirname(_HERE)
 
 from benchmark import runner as R
 from benchmark import metrics as M
-from research.providers.ibm_real_provider import IBMRealProvider
+from providers.ibm.ibm_real_provider import IBMRealProvider
 from frontends.qasm2.qasm2_frontend import QASM2Frontend
 
 WORKLOAD = os.path.join(_HERE, "workloads", "real_hardware.json")
