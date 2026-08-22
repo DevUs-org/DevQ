@@ -35,13 +35,23 @@ counts. It does not model noise — that is what the Aer-backed providers are
 for; the engine is the *noiseless* reference, and mixing noise into it would
 defeat its one job.
 
-It also honours DevQ's terminal-measurement execution model. A circuit that
-uses a qubit **after** measuring it (mid-circuit measurement) — or resets a
-qubit after measuring it — is already rejected upstream by
-`CircuitRep.find_mid_circuit_measurement`, before it ever reaches the engine,
-so the engine never has to represent a post-measurement (collapsed) state. A
-reset **before** measurement is a legitimate runnable construct and the engine
-handles it as a return of that qubit to |0>.
+It handles DevQ's execution model on two paths. For a plain circuit
+(terminal measurement only) it applies gates and resets to one statevector
+and marginalises — the fast path. A circuit that uses a qubit **after**
+measuring it (mid-circuit measurement) or uses classical feedback
+(conditional gates) is routed to a separate **exact branch-enumeration**
+path (collapse-and-continue): a mid-circuit measurement produces a classical
+mixture no single statevector can hold, so the engine represents it exactly
+as a set of weighted pure branches, splitting at each measurement, applying
+each conditional only to branches whose recorded classical bits satisfy it,
+and reading the ideal from each branch's classical register. This is exact
+and deterministic — no sampling, no seed. (These circuits were once rejected
+upstream by `CircuitRep.find_mid_circuit_measurement`; that became a
+per-device capability, so the engine now computes their ideals rather than
+never seeing them.) A reset **before** measurement is a legitimate runnable
+construct on both paths — a return of that qubit to |0>; a reset on a qubit
+still entangled (with no measurement having separated it) is declined, its
+mixed result having no statevector form.
 
 ## The gate vocabulary
 
@@ -182,7 +192,10 @@ provider, or records no ideal (fidelity `None`) — the same honest handoff as
 an unknown gate. Simulate what can be simulated exactly; hand off what
 cannot.
 
-Post-measurement resets never reach the engine: a reset (or gate) on a qubit
-after it has been measured is mid-circuit measurement, rejected upstream by
-`CircuitRep.find_mid_circuit_measurement` before the circuit is ever
-simulated.
+A reset (or gate) on a qubit after it has been measured is mid-circuit
+measurement. This is no longer rejected upstream — it is a per-device
+capability — so such a circuit reaches the engine and is handled by the
+branch-enumeration path, where the measurement has already split the state
+into pure branches and the reset acts on a (now separable) collapsed qubit
+within each branch. Only a reset on a qubit still entangled within a branch
+is declined.

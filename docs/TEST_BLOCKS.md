@@ -1,6 +1,6 @@
 # DevQ Sanity Test Plan
 
-Specification for the 81 sanity blocks in `run_tests.py`, covering
+Specification for the 82 sanity blocks in `run_tests.py`, covering
 Phases 0–5.2, the component registry, the Phase 5.3 metrics layer, and
 the Phase 5.4 fidelity metric.
 
@@ -13,7 +13,7 @@ this tells you whether the change was a regression or an improvement.
 ## Running
 
 ```bash
-python run_tests.py              # all 81 blocks, one line each
+python run_tests.py              # all 82 blocks, one line each
 python run_tests.py --list       # block names and descriptions
 python run_tests.py -k single    # only blocks matching a pattern
 python run_tests.py -c           # every assertion each block verified
@@ -773,6 +773,44 @@ applies them (see [`ENGINE.md`](ENGINE.md)). It checks three things.
 (Mutants that transpose the one-qubit application, disable the
 entangled-reset detection, or drop the clbit-position reversal in
 marginalisation are all killed here.)
+
+### `engine_dynamic`
+
+*The statevector core computes exact ideals for feedback and mid-circuit.*
+
+Since mid-circuit measurement and classical feedback became per-device
+capabilities, these circuits reach the engine. It must compute their ideals
+**exactly** by branch enumeration (collapse-and-continue), not silently drop
+the constructs and return a false ideal (which it once did — dropping every
+conditional and skipping mid-circuit measures). A mid-circuit measurement
+turns the state into a classical mixture, represented as a set of weighted
+pure branches; the ideal is the probability-weighted sum over branches of
+each branch's recorded classical register. This is exact and deterministic —
+no seed, byte-reproducible — unlike a sampled reference.
+
+- **Feedback is exact and fires correctly.** A feedback-Bell (`h; measure;
+  if(c==1) x; measure`) gives the exact `{00: .5, 11: .5}`. Preparing the
+  control to `|1>` or `|0>` pins that the guard fires on `c==1` and not on
+  `c==0` (deterministic `11` and `00`).
+- **Mid-circuit readout comes from recorded bits, not the final state.** A
+  measure-reset-reuse (`x; measure→c0; reset; measure→c1`) gives `01` — c0=1
+  recorded before the reset erased it from the quantum state, c1=0 after.
+  Marginalising the final statevector would lose c0; the branch's classical
+  record is the only faithful source.
+- **Never-written condition bits are handled.** A guard on a clbit no measure
+  wrote (always 0) never fires when the value needs it set — the same
+  degenerate case the lowering handles, checked here at the engine level.
+- **Determinism.** The same circuit yields a byte-identical ideal across
+  calls.
+- **The reset boundary still holds inside a branch.** A reset on a qubit
+  still entangled with another *within a branch* is declined
+  (`UnsupportedByEngine`), exactly as on the plain path — branch enumeration
+  does not widen the engine's exactness boundary.
+
+(Mutants that invert the conditional guard, or forget to record a measured
+bit into the branch's classical register, are killed here; the tier-1
+fallthrough that carries these engine ideals into a provider-attached run is
+pinned by `reference_tiers`.)
 
 ### `backend_factory_errors`
 

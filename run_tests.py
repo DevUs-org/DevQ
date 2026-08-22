@@ -2859,6 +2859,97 @@ def block_engine_statevector():
         check(rejected, f"run() rejects shots={bad!r}")
 
 
+def block_engine_dynamic():
+    '''The statevector core computes EXACT ideals for feedback and mid-circuit'''
+    # §1 made dynamic (classical feedback) and mid-circuit measurement
+    # per-device capabilities that reach the engine. The engine must NOT
+    # silently drop them (it once did — dropping every conditional and skipping
+    # mid-circuit measures, returning a FALSE ideal). Instead it computes the
+    # EXACT ideal by branch enumeration (collapse-and-continue): the mixed
+    # state a mid-circuit measurement produces is represented as a set of
+    # weighted pure branches, deterministic and byte-reproducible — no
+    # sampling, no seed. This block pins that against hand-computed exact
+    # distributions.
+    from engine.statevector import simulate, UnsupportedByEngine
+    from circuits.circuit_rep import CircuitRep
+
+    def approx(got, want, tol=1e-9):
+        keys = set(got) | set(want)
+        return all(abs(got.get(k, 0) - want.get(k, 0)) < tol for k in keys)
+
+    # Feedback, deterministic: h q0; measure q0->c0; if(c0==1) x q1; measure
+    # q1->c1. Whichever way q0 collapses, x makes q1 match it, so the two bits
+    # are perfectly correlated: exactly {00: .5, 11: .5}.
+    fb = CircuitRep(2, 2)
+    fb.add_gate("h", [0]); fb.add_measure(0, 0)
+    fb.add_conditional([0], 1, {"op": "gate", "gate": "x",
+                                "qubits": [1], "params": []})
+    fb.add_measure(1, 1)
+    check(approx(simulate(fb), {"00": 0.5, "11": 0.5}),
+          f"feedback bell: exact {{00:.5,11:.5}}, got {simulate(fb)}")
+
+    # The feedback ACTUALLY fires on the right value: if(c0==1) not c0==0.
+    # Force c0=1 by preparing q0=|1>: x q0; measure->c0; if(c0==1) x q1.
+    # Deterministic 11.
+    f1 = CircuitRep(2, 2)
+    f1.add_gate("x", [0]); f1.add_measure(0, 0)
+    f1.add_conditional([0], 1, {"op": "gate", "gate": "x",
+                                "qubits": [1], "params": []})
+    f1.add_measure(1, 1)
+    check(approx(simulate(f1), {"11": 1.0}),
+          f"feedback fires on c==1 (q0=|1> -> 11), got {simulate(f1)}")
+    # ...and does NOT fire when the condition is not met (q0=|0> -> 00).
+    f0 = CircuitRep(2, 2)
+    f0.add_measure(0, 0)
+    f0.add_conditional([0], 1, {"op": "gate", "gate": "x",
+                                "qubits": [1], "params": []})
+    f0.add_measure(1, 1)
+    check(approx(simulate(f0), {"00": 1.0}),
+          f"feedback does not fire on c==0 (q0=|0> -> 00), got {simulate(f0)}")
+
+    # Mid-circuit measurement with RESET and reuse, no feedback: x q0;
+    # measure q0->c0; reset q0; measure q0->c1. c0=1 (x), c1=0 (reset), so the
+    # register is c1c0 = 01, deterministic. READOUT must come from the recorded
+    # mid-circuit bits, not the final statevector (which only holds c1).
+    mc = CircuitRep(1, 2)
+    mc.add_gate("x", [0]); mc.add_measure(0, 0)
+    mc.add_reset(0); mc.add_measure(0, 1)
+    check(approx(simulate(mc), {"01": 1.0}),
+          f"mid-circuit measure+reset+reuse: exact 01, got {simulate(mc)}")
+
+    # A condition on a NEVER-WRITTEN clbit (always 0): if(c==2) over a 2-bit
+    # register where only c0 is measured. Bit 1 is 0, so c==2 (binary 10) can
+    # never hold — the guarded gate never fires. Prepare q0=|1> (c0=1); the
+    # body must NOT apply. Register c1c0 = 01.
+    nw = CircuitRep(2, 2)
+    nw.add_gate("x", [0]); nw.add_measure(0, 0)
+    nw.add_conditional([0, 1], 2, {"op": "gate", "gate": "x",
+                                   "qubits": [1], "params": []})
+    check(approx(simulate(nw), {"01": 1.0}),
+          f"condition on a never-written bit never fires, got {simulate(nw)}")
+
+    # The exact ideal is DETERMINISTIC: same circuit, byte-identical result
+    # across calls (no seed, unlike a sampled reference).
+    check(simulate(fb) == simulate(fb),
+          "the branch-enumerated ideal is deterministic across calls")
+
+    # A reset on an ENTANGLED qubit within a branch is still declined — the
+    # engine's exactness boundary holds inside branch enumeration too. Bell on
+    # q1,q2 stays entangled; measuring q0 (separate) takes the branch path;
+    # resetting q1 while it is entangled with q2 must decline.
+    ent = CircuitRep(3, 3)
+    ent.add_gate("h", [1]); ent.add_gate("cx", [1, 2])
+    ent.add_gate("x", [0]); ent.add_measure(0, 0)
+    ent.add_reset(1)
+    declined = False
+    try:
+        simulate(ent)
+    except UnsupportedByEngine:
+        declined = True
+    check(declined,
+          "a reset on an entangled qubit is declined even on the branch path")
+
+
 # ── Backend factory ──────────────────────────────────────────────────────────
 
 def block_mock_topologies():
@@ -6037,13 +6128,41 @@ def block_reference_tiers():
           "tier 3: a registry with only a non-reference-capable provider "
           "supplies nothing — the entry stays absent")
 
-    # ── Tier 1: an attached provider wins outright ────────────────────────
-    # With a provider passed, that provider computes the ideal even for a
-    # circuit the engine could have handled — tier 1 is not overridden by 2.
+    # ── Tier 1: an attached provider is PREFERRED, but falls through ──────
+    # With a provider passed, that provider computes the ideal for a circuit
+    # it handles — even one the engine could also have done (tier 1 is tried
+    # first).
     prov = IBMSimulatedProvider()
     d = compute_ideals([bell], prov, reg)
     check(bell_h in d,
           "tier 1: an attached reference-capable provider supplies the ideal")
+
+    # ...but tier 1 is a PREFERENCE, not an exclusion: when the attached
+    # provider DECLINES a circuit (returns None), compute_ideals falls through
+    # to the engine rather than giving up. A dynamic circuit is exactly this
+    # case — IBMSimulatedProvider.reference_ideal declines it (Aer's exact path
+    # cannot give a mixed-state ideal), but the engine computes it exactly by
+    # branch enumeration. Without the fallthrough a provider-attached run
+    # reports None here while an unattached run gets the ideal — the asymmetry
+    # that made an attached run WORSE. This pins the fallthrough.
+    fb = CircuitRep(2, 2)
+    fb.add_gate("h", [0]); fb.add_measure(0, 0)
+    fb.add_conditional([0], 1, {"op": "gate", "gate": "x",
+                                "qubits": [1], "params": []})
+    fb.add_measure(1, 1)
+    fb_h = circuit_hash(fb)
+    check(prov.reference_ideal(fb) is None,
+          "precondition: the attached provider declines the dynamic circuit")
+    d = compute_ideals([fb], prov, None)
+    check(fb_h in d,
+          "tier 1 fallthrough: when the attached provider declines a dynamic "
+          "circuit, compute_ideals falls through to the engine rather than "
+          "returning None (the attached-run-worse-than-unattached regression)")
+    fideal = d.get(fb_h, {}).get("ideal", {})
+    check(abs(fideal.get("00", 0) - 0.5) < 1e-9
+          and abs(fideal.get("11", 0) - 0.5) < 1e-9,
+          f"tier 1 fallthrough: the engine's exact feedback ideal (50/50 "
+          f"00/11) reaches the result, got {fideal}")
 
     # ── the qubit cap routes big circuits past the engine ─────────────────
     check(_ENGINE_MAX_QUBITS >= 20,
@@ -7860,6 +7979,7 @@ BLOCKS = [
     ("device_calibration",       block_device_calibration),
     ("engine_gates",             block_engine_gates),
     ("engine_statevector",       block_engine_statevector),
+    ("engine_dynamic",           block_engine_dynamic),
     ("backend_factory_errors",   block_backend_factory_errors),
     ("shell_input_handling",     block_shell_input_handling),
     ("many_device_federation",   block_many_device_federation),

@@ -28,13 +28,24 @@ swap/ecr/ccx/cswap follow the permutation or 4x4 their kind defines. The
 per-gate unitaries and their kinds come from engine.gates, whose matrices
 were locked against Qiskit before this file consumed them.
 
-MEASUREMENT is terminal. DevQ's execution model measures at the end; a
-circuit that operates on a qubit AFTER measuring it (mid-circuit
-measurement) — or resets one after measuring it — is rejected upstream by
-CircuitRep.find_mid_circuit_measurement before it ever reaches the engine,
-so simulate() never faces a post-measurement state. A reset BEFORE
-measurement is legitimate and handled: it returns that qubit to |0>,
-collapsing and renormalising the surviving mass.
+MEASUREMENT is terminal ON THE FAST PATH. For a plain circuit, DevQ's
+execution model measures at the end, and simulate() applies gates and resets
+to one statevector, then marginalises. A circuit that operates on a qubit
+AFTER measuring it (mid-circuit measurement) or uses classical feedback
+(conditional gates) is handled by a SEPARATE exact path — branch enumeration
+(_simulate_dynamic), routed to when circuit.is_dynamic or
+has_mid_circuit_measurement. A mid-circuit measurement produces a classical
+MIXTURE a single statevector cannot hold; branch enumeration represents it
+exactly as a set of weighted pure branches, splitting at each measurement and
+reading the ideal from each branch's recorded classical register — exact and
+deterministic, no sampling. (These circuits were once rejected upstream, so
+the fast path never faced a post-measurement state; that upstream rejection
+became a per-device capability, so the branch path now handles them here
+rather than the fast path silently mis-simulating them.) A reset BEFORE
+measurement is legitimate on the fast path too: it returns that qubit to |0>,
+collapsing and renormalising the surviving mass. A reset on an ENTANGLED
+qubit is declined on both paths (the resulting mixed state has no statevector
+form).
 
 OUTPUT CONTRACT (BaseProvider). Width is BaseProvider._counts_width — the
 declared classical register, or the qubit count when no creg is declared.
@@ -292,6 +303,130 @@ def _apply_reset(state, qubit, n):
     return result
 
 
+def _apply_gate_inst(state, inst, n):
+    '''
+    Apply one `gate` instruction to a statevector and return the new state.
+    Shared by the plain fast path and the dynamic branch-enumeration path so
+    the gate vocabulary is defined once and cannot diverge between them.
+    '''
+    spec = gate_spec(inst["gate"].lower())
+    qubits = inst["qubits"]
+    params = inst.get("params", [])
+    kind = spec.kind
+    if kind == "u1":
+        return _apply_1q(state, spec.unitary(params), qubits[0], n)
+    if kind == "ctrl":
+        return _apply_controlled(
+            state, spec.unitary(params), qubits[0], qubits[1], n)
+    if kind == "ecr":
+        return _apply_ecr(state, qubits[0], qubits[1], n)
+    if kind == "swap":
+        return _apply_swap(state, qubits[0], qubits[1], n)
+    if kind == "ccx":
+        return _apply_ccx(state, qubits[0], qubits[1], qubits[2], n)
+    if kind == "cswap":
+        return _apply_cswap(state, qubits[0], qubits[1], qubits[2], n)
+    # An engine.gates spec with a kind this core does not handle is an
+    # internal inconsistency, not a user error.
+    raise UnknownGateError(
+        f"gate '{inst['gate']}' has unhandled kind '{kind}'")
+
+
+# Branches whose probability weight falls below this are pruned: they
+# contribute nothing measurable to the ideal and pruning bounds the branch
+# count. The threshold is far below any bitstring probability that rounds to a
+# non-zero value in a reported ideal, so pruning cannot change the result.
+_BRANCH_PRUNE = 1e-12
+
+
+def _simulate_dynamic(circuit, n, width):
+    '''
+    EXACT ideal for a circuit with classical feedback and/or mid-circuit
+    measurement, by branch enumeration (collapse-and-continue).
+
+    A mid-circuit measurement turns a pure state into a classical MIXTURE over
+    its outcomes — which a single statevector cannot hold. Instead of sampling
+    that mixture (seed-dependent, inexact), this represents it EXACTLY as a set
+    of pure BRANCHES: each branch is (statevector, probability weight,
+    classical-register contents). At a measurement, every branch SPLITS into
+    its outcome-0 and outcome-1 sub-branches, each renormalised onto that
+    outcome and weighted by its Born probability, recording the bit it wrote.
+    At a conditional, the guarded gate is applied only to branches whose
+    recorded classical bits satisfy the condition. The ideal is the
+    probability-weighted sum over branches of each branch's classical-register
+    value.
+
+    This is exact and DETERMINISTIC — no seed, byte-reproducible — because the
+    mixture is enumerated, not sampled. The cost is 2^(branching measurements)
+    branches, bounded in practice because only a measurement whose result is
+    later read or whose qubit is reused forces a split, low-weight branches are
+    pruned, and identical branches could merge (not needed for the small
+    dynamic circuits this serves). READOUT is from each branch's recorded
+    clbits, NOT from marginalising a final statevector: a mid-circuit measure's
+    outcome is fixed when it happens, and a later reset/reuse would erase it
+    from the quantum state, so the classical record is the only faithful
+    source.
+
+    A reset on an entangled qubit is still declined (UnsupportedByEngine),
+    exactly as in the plain path: within a single branch a reset must be
+    separable to stay pure. (After a measurement collapse the measured qubit is
+    separable, so a measure-then-reset on the same qubit — the common
+    mid-circuit idiom — is fine; only a reset on a qubit still entangled with
+    others in that branch is declined.)
+    '''
+    init = np.zeros(1 << n, dtype=complex)
+    init[0] = 1.0
+    # Each branch: [state, weight, {clbit: bit}].
+    branches = [[init, 1.0, {}]]
+
+    for inst in circuit.instructions:
+        op = inst["op"]
+        if op == "gate":
+            for b in branches:
+                b[0] = _apply_gate_inst(b[0], inst, n)
+        elif op == "reset":
+            q = inst["qubit"]
+            for b in branches:
+                if not _qubit_is_separable(b[0], q, n):
+                    raise UnsupportedByEngine(
+                        f"reset on qubit {q} follows entanglement within a "
+                        f"measurement branch; the resulting mixed state cannot "
+                        f"be represented, so the reference path falls back")
+                b[0] = _apply_reset(b[0], q, n)
+        elif op == "measure":
+            q = inst["qubit"]
+            cb = inst["clbit"]
+            idx = np.arange(1 << n)
+            new = []
+            for state, weight, clbits in branches:
+                for outcome in (0, 1):
+                    proj = np.where(((idx >> q) & 1) == outcome, state, 0)
+                    p = float(np.vdot(proj, proj).real)
+                    if weight * p <= _BRANCH_PRUNE:
+                        continue
+                    nc = dict(clbits)
+                    nc[cb] = outcome
+                    new.append([proj / np.sqrt(p), weight * p, nc])
+            branches = new
+        elif op == "conditional":
+            cbs = inst["condition"]["clbits"]
+            val = inst["condition"]["value"]
+            body = inst["body"]
+            for b in branches:
+                actual = sum((b[2].get(cb, 0) << i) for i, cb in enumerate(cbs))
+                if actual == val:
+                    b[0] = _apply_gate_inst(b[0], body, n)
+
+    # Readout: each branch contributes its recorded classical register (width
+    # bits, clbit 0 = least-significant, matching the plain path's bitstring
+    # convention), weighted by the branch probability. Unwritten clbits read 0.
+    dist = {}
+    for _state, weight, clbits in branches:
+        key = "".join(str(clbits.get(i, 0)) for i in range(width - 1, -1, -1))
+        dist[key] = dist.get(key, 0.0) + weight
+    return {k: v for k, v in dist.items() if v > 1e-9}
+
+
 def simulate(circuit):
     '''
     The exact, noiseless measured-bit distribution for a circuit:
@@ -316,6 +451,18 @@ def simulate(circuit):
     '''
     n = circuit.num_qubits
     width = BaseProvider._counts_width(circuit)
+
+    # Classical feedback (conditional ops) and mid-circuit measurement (a
+    # qubit measured then reused) turn the state into a classical MIXTURE that
+    # a single statevector cannot hold. The engine handles these EXACTLY by
+    # branch enumeration (collapse-and-continue) rather than declining: see
+    # _simulate_dynamic. This keeps the engine's ideal exact and
+    # byte-reproducible for these circuits — no sampling, no seed — so tier 2
+    # of the reference path supplies them Qiskit-free. (Before this the engine
+    # relied on these being rejected upstream and would otherwise have SILENTLY
+    # dropped conditionals and mid-circuit measures, returning a false ideal.)
+    if circuit.is_dynamic or circuit.has_mid_circuit_measurement:
+        return _simulate_dynamic(circuit, n, width)
 
     # A width-0 / qubit-0 circuit has a single trivial amplitude.
     if n == 0:

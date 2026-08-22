@@ -43,12 +43,16 @@ cannot.
 
 ## Results
 
-**205 distinct mutants, 202 killed, 3 excluded** (M10 equivalent, P7 and
+**208 distinct mutants, 205 killed, 3 excluded** (M10 equivalent, P7 and
 CC1 inert — see below). Grouped by subsystem. Several were re-run against
 `main` after each push to confirm the pushed state matches what was
 verified locally; those re-runs are not counted again here.
 
-The total is delta-consistent, not recounted: 202/199/3 from prior work
+The total is delta-consistent, not recounted: 205/202/3 from prior work
+plus 3 new engine-dynamic mutants (ED1 on the conditional guard polarity,
+ED2 on recording the measured bit into the branch register — both killed
+against `engine_dynamic` — and ED3 on the tier-1 fallthrough, killed against
+`reference_tiers` after it was strengthened). The 205/202/3 was 202/199/3
 plus 3 new mid-circuit-measurement mutants (all killed against
 `mid_circuit_measurement` — MC1 on has_mid_circuit_measurement detection,
 MC2 on the never-written-clbit handling in _build_condition, MC3 on the
@@ -684,6 +688,52 @@ semantics (`conditional_frontend`, `qasm2_parser`, `rejection_semantics`,
 `unrunnable_circuits`), which stay green — mid-circuit measurement is now a
 per-device capability (`midcircuit.qasm` rejects only on a devq-only session
 and runs on an IBM-backed one).
+
+### Engine branch enumeration — `engine/statevector.py`, `benchmark/reference.py`
+
+| # | Mutation | Result |
+|---|---|---|
+| ED1 | conditional guard fires when the condition is NOT satisfied | killed (1) |
+| ED2 | the measure branch-split forgets to record the outcome bit | killed (1) |
+| ED3 | remove the tier-1 fallthrough (attached provider all-or-nothing) | killed (1)* |
+
+The statevector engine gained an exact branch-enumeration path
+(collapse-and-continue) so it computes true ideals for dynamic and
+mid-circuit circuits rather than declining — or, before that,
+silently returning a false ideal. ED1 inverts the conditional guard, so a
+feedback-Bell's `x` fires on the wrong branch and the exact `{00,11}`
+becomes `{01,10}`; caught by the feedback check. ED2 drops `nc[cb] = outcome`
+at the measure split, so branches carry no classical record and the readout
+collapses to a single all-zero string; caught by the feedback and
+mid-circuit-readout checks. Both are killed by `engine_dynamic`, which pins
+the branch enumeration against hand-computed exact distributions (the ideals
+are exact and deterministic, so the checks compare to closed-form values,
+not sampled ones).
+
+*ED3 is the tier-1 fallthrough, and it **survived the first pass** — no
+block covered it. `compute_ideals` was changed so an attached provider is a
+PREFERENCE, not an exclusion: when it declines a circuit (a dynamic circuit,
+which Aer's exact path cannot give a mixed-state ideal for), the computation
+falls through to the engine's branch enumeration instead of returning None.
+This is the exact fix for the reported asymmetry — a provider-attached run
+reporting None where an unattached run got the ideal. ED3 reverts it to the
+old all-or-nothing. No existing check exercised a provider that DECLINES,
+so it passed unseen; `reference_tiers` was extended with a dynamic circuit
+that the attached provider declines, asserting the engine's exact feedback
+ideal still reaches the result, and ED3 then failed it. Same lesson as MF3,
+the determinism mutants, and MC2: a mutant that survives because no test
+exercises the path is a test gap, not a safe mutation. Each mutant was run
+against its block (ED1/ED2 `engine_dynamic`, ED3 `reference_tiers`),
+confirmed red, then reverted; `statevector.py` and `reference.py` were
+diffed clean afterward.
+
+The engine change also removes the temporary decline guard that had been the
+interim fix (raising `UnsupportedByEngine` for dynamic/mid-circuit circuits
+so tier 2 returned None): branch enumeration supersedes it, computing the
+exact ideal instead of declining. The one genuine decline the engine keeps —
+a reset on a qubit still entangled within a branch — is pinned by
+`engine_dynamic`'s boundary check, confirming branch enumeration did not
+widen the engine's exactness contract.
 
 ### Full-device layout — `providers/ibm/ibm_provider.py`, `providers/ibm/…`
 

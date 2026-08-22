@@ -132,9 +132,12 @@ _ENGINE_MAX_QUBITS = 20
 def _engine_ideal(circuit):
     '''
     Tier 2: the exact ideal from DevQ's native statevector engine, or None if
-    the engine cannot handle this circuit (above the qubit cap, or a reset /
-    construct it declines). Core and Qiskit-free — this is what lets a run
-    compute ideals with no reference-capable provider attached.
+    the engine cannot handle this circuit (above the qubit cap, or a reset on
+    an entangled qubit it declines). Core and Qiskit-free — this is what lets a
+    run compute ideals with no reference-capable provider attached, AND what a
+    tier-1 provider falls through to when it declines a circuit (e.g. a dynamic
+    circuit, whose exact mixed-state ideal the engine computes by branch
+    enumeration but Aer's exact path cannot).
 
     None is not an error; it is the engine saying "not mine", so the caller
     falls through to the registry tier.
@@ -159,11 +162,12 @@ def _registry_reference_ideal(circuit, registry):
     side purely to compute an ideal — so a caller never has to.
 
     Reached only when the engine returned None (a circuit above the qubit cap,
-    or a reset / mid-circuit construct a statevector cannot represent), so the
-    heavyweight provider (a density-matrix Aer path) is constructed lazily and
-    only when actually needed. Returns the ideal, or None if no registered
-    provider is reference-capable or the chosen one cannot simulate this
-    circuit either.
+    or a reset on an entangled qubit a statevector cannot represent — the
+    engine now handles feedback and mid-circuit measurement itself via branch
+    enumeration), so the heavyweight provider (a density-matrix Aer path) is
+    constructed lazily and only when actually needed. Returns the ideal, or
+    None if no registered provider is reference-capable or the chosen one
+    cannot simulate this circuit either.
     '''
     if registry is None:
         return None
@@ -235,22 +239,30 @@ def compute_ideals(circuits, provider, registry=None):
         key = circuit_hash(circuit)
         if key in ideals:
             continue
-        # A circuit the frontend marked unrunnable (classical control,
-        # mid-circuit measurement) will be REJECTED by the kernel and never
-        # produce measured counts, so it has no fidelity to compute — and
-        # computing its ideal can fail outright. Skip it: no ideal, exactly as
-        # for a circuit no tier can simulate.
+        # A circuit the frontend marked unrunnable will be REJECTED by the
+        # kernel and never produce measured counts, so it has no fidelity to
+        # compute. Skip it: no ideal. (Dynamic and mid-circuit circuits are NO
+        # LONGER marked unrunnable — they are per-device capabilities that run
+        # on a capable provider — so they fall through to the tiers below and
+        # DO get an ideal from the engine's branch enumeration.)
         if getattr(circuit, "unrunnable_reason", None) is not None:
             continue
 
+        # Tier 1 is a PREFERENCE, not an exclusion: an attached
+        # reference-capable provider is tried first, but if it DECLINES a
+        # circuit (returns None — e.g. Aer's exact path cannot give a
+        # mixed-state ideal for a dynamic circuit), fall through to the native
+        # engine and then the registry, rather than giving up. This is what
+        # keeps a provider-attached run (e.g. the IBM-sim study) from reporting
+        # None where the engine can compute the exact ideal — the asymmetry
+        # that made a provider-attached run WORSE than an unattached one.
+        ideal = None
         if provider is not None:
-            # Tier 1: the attached reference-capable provider wins outright.
             ideal = provider.reference_ideal(circuit)
-        else:
-            # Tier 2: the native engine; Tier 3: the registry search.
+        if ideal is None:
             ideal = _engine_ideal(circuit)
-            if ideal is None:
-                ideal = _registry_reference_ideal(circuit, registry)
+        if ideal is None:
+            ideal = _registry_reference_ideal(circuit, registry)
 
         if ideal is None:
             continue
