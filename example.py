@@ -33,7 +33,6 @@ import argparse
 from devq import DevQ
 from providers.devq_simulated_provider import DevQSimulatedProvider
 from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
-from plugins.providers.ibm.ibm_real_provider import IBMRealProvider
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Launch an example DevQ session.")
@@ -53,7 +52,6 @@ if __name__ == "__main__":
     # instance above is constructed here, with a seed DevQ never sees.
     DevQ(config_path='./config/config_examples/router_only.config.json') \
         .register_provider("ibm.simulated", IBMSimulatedProvider) \
-        .register_provider("ibm.real", IBMRealProvider) \
         .add_device(DevQSimulatedProvider(seed=args.seed).get_device("random", 7)) \
         .add_devices([
             (ibm.get_device("FakeNairobiV2"), "nairobi"),

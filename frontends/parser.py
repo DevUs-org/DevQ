@@ -33,7 +33,7 @@ of the same BaseFrontend contract; it is not blocked by anything here.
 
 from circuits.circuit_rep import CircuitRep
 from .tokenizer import tokenize, QASMError
-from .qasm2 import expression
+from . import expression
 
 
 class TokenCursor:
