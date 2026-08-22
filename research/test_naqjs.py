@@ -46,7 +46,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from benchmark import runner as R
-from research.baselines.naqjs_scheduler import NAQJSScheduler
+from plugins.schedulers.naqjs.naqjs_scheduler import NAQJSScheduler
 
 
 # ── Tiny harness (run_tests style, standalone) ────────────────────────────────

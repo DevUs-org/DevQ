@@ -47,8 +47,8 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from benchmark import runner as R
-from providers.devq.devq_simulated_provider import DevQSimulatedProvider
-from research.baselines.qos_router import QOSRouter
+from providers.devq_simulated_provider import DevQSimulatedProvider
+from plugins.routers.qos.qos_router import QOSRouter
 
 
 # ── Tiny harness (run_tests style, standalone) ────────────────────────────────

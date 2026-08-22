@@ -1,5 +1,5 @@
 '''
-Tags: Provider
+Tags: Plugin
 
 IBMSimulatedProvider — IBM simulated hardware provider.
 
@@ -39,8 +39,8 @@ Usage:
         .start()
 '''
 
-from providers.ibm.ibm_provider import IBMProvider
-from providers.ibm.qiskit_lowering import build_qiskit_circuit
+from plugins.providers.ibm.ibm_provider import IBMProvider
+from plugins.providers.ibm.qiskit_lowering import build_qiskit_circuit
 from hardware.device import QuantumDevice
 
 
@@ -379,7 +379,7 @@ class IBMSimulatedProvider(IBMProvider):
         except ImportError:
             return None
 
-        from providers.ibm.qiskit_lowering import (
+        from plugins.providers.ibm.qiskit_lowering import (
             build_qiskit_circuit, resolve_measure_map, UnknownGateError)
 
         width = self._counts_width(circuit)

@@ -61,10 +61,10 @@ if _REPO_ROOT not in sys.path:
 from benchmark import runner as R
 from benchmark import comparison as C
 from benchmark.metrics import write_metrics
-from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
-from research.baselines.qos_router import QOSRouter
-from research.baselines.naqjs_scheduler import NAQJSScheduler
-from research.baselines.mapomatic_allocator import MapomaticAllocator
+from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+from plugins.routers.qos.qos_router import QOSRouter
+from plugins.schedulers.naqjs.naqjs_scheduler import NAQJSScheduler
+from plugins.allocators.mapomatic.mapomatic_allocator import MapomaticAllocator
 
 
 WORKLOAD = os.path.join(_HERE, "workloads", "qasmbench_small.json")

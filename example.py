@@ -31,9 +31,9 @@ across identical sessions. See "Reproducibility & Seeding" in the README.
 import argparse
 
 from devq import DevQ
-from providers.devq.devq_simulated_provider import DevQSimulatedProvider
-from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
-from providers.ibm.ibm_real_provider import IBMRealProvider
+from providers.devq_simulated_provider import DevQSimulatedProvider
+from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+from plugins.providers.ibm.ibm_real_provider import IBMRealProvider
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Launch an example DevQ session.")

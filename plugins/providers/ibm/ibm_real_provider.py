@@ -1,5 +1,5 @@
 '''
-Tags: Provider
+Tags: Plugin
 
 IBMRealProvider — executes on REAL IBM quantum hardware via IBM Runtime.
 
@@ -67,7 +67,7 @@ Usage (see research/run_real_hardware.py for the full proof-run):
     dev = ibm.get_device("ibm_sherbrooke")
 '''
 
-from providers.ibm.ibm_provider import IBMProvider
+from plugins.providers.ibm.ibm_provider import IBMProvider
 from hardware.device import QuantumDevice
 
 
@@ -296,7 +296,7 @@ class IBMRealProvider(IBMProvider):
             ))
 
         from circuits.execution_result import ExecutionResult, submit_async
-        from providers.ibm.qiskit_lowering import build_qiskit_circuit, UnknownGateError
+        from plugins.providers.ibm.qiskit_lowering import build_qiskit_circuit, UnknownGateError
 
         session = self._sessions.get(device.index)
         if session is None:

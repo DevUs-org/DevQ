@@ -1,5 +1,5 @@
 '''
-Tags: Provider
+Tags: Default
 
 DevQSimulatedProvider — DevQ's own simulated hardware provider.
 
@@ -18,7 +18,7 @@ Usage:
 
 from providers.base_provider import BaseProvider
 from hardware.device import QuantumDevice
-from providers.devq.backend_factory import create_backend
+from providers.backend_factory import create_backend
 
 
 class DevQSimulatedProvider(BaseProvider):

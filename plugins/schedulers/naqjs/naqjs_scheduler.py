@@ -1,5 +1,5 @@
 '''
-Tags: Research
+Tags: Plugin
 
 NAQJS — Noise-Aware Quantum Job Scheduler (Wu et al., ICCAD 2024,
 arXiv:2404.07882), ported to DevQ as a scored, sweepable scheduler baseline.

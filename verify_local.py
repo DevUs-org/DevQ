@@ -90,7 +90,7 @@ def check_interactive():
     section("2. Interactive shell (never covered by run_tests.py)")
 
     from devq import DevQ
-    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.devq_simulated_provider import DevQSimulatedProvider
 
     try:
         with contextlib.redirect_stdout(io.StringIO()):
@@ -130,7 +130,7 @@ def check_determinism():
     section("3. Seeded determinism (pinned reference values)")
 
     from devq import DevQ
-    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
     def run_once():
         provider = IBMSimulatedProvider(seed=42)
@@ -172,7 +172,7 @@ def check_event_log():
     section("4. Event log")
 
     from devq import DevQ
-    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.devq_simulated_provider import DevQSimulatedProvider
     from kernel.events import PrintSink, RecordSink, MultiSink
 
     def session(sink=None):
@@ -216,7 +216,7 @@ def check_spec_runner():
     section("5. Workload spec runner")
 
     from devq import DevQ
-    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
     from benchmark.spec import (load_spec, build_session, submit_jobs, drain,
                                 SpecError)
 
@@ -285,7 +285,7 @@ def check_concurrency():
     section("6. Concurrency (multi-core)")
 
     from devq import DevQ
-    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.devq_simulated_provider import DevQSimulatedProvider
 
     provider = DevQSimulatedProvider(seed=42)
     dq = DevQ()

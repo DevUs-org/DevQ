@@ -42,10 +42,10 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from benchmark import runner as R
-from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+from providers.devq_simulated_provider import DevQSimulatedProvider
 from kernel.memory.qubit_pool import QubitPool
 from kernel.memory.allocators.base_allocator import AllocationError
-from research.baselines.mapomatic_allocator import MapomaticAllocator
+from plugins.allocators.mapomatic.mapomatic_allocator import MapomaticAllocator
 
 from qiskit import QuantumCircuit
 

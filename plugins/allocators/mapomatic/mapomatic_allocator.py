@@ -1,5 +1,5 @@
 '''
-Tags: Research
+Tags: Plugin
 
 Mapomatic — calibration-aware layout selection (Nation & Treinish,
 PRX Quantum 4, 010327 (2023); see docs/REFERENCES.md [Mapomatic]),

@@ -1,5 +1,5 @@
 '''
-Tags: Provider
+Tags: Plugin
 
 Qiskit lowering — the one place a CircuitRep becomes a Qiskit
 QuantumCircuit.

@@ -1,5 +1,5 @@
 '''
-Tags: Provider
+Tags: Plugin
 
 IBMProvider — shared base for DevQ's IBM/Qiskit-family providers.
 

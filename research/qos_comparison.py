@@ -75,8 +75,8 @@ from benchmark import runner as R
 from benchmark import comparison as C
 from benchmark import comparison_modes as M
 from benchmark.metrics import write_metrics
-from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
-from research.baselines.qos_router import QOSRouter
+from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+from plugins.routers.qos.qos_router import QOSRouter
 
 
 WORKLOAD = os.path.join(_HERE, "workloads", "qasmbench_small.json")

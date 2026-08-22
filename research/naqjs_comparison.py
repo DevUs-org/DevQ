@@ -48,7 +48,7 @@ from benchmark import runner as R
 from benchmark import comparison as C
 from benchmark import comparison_modes as M
 from benchmark.metrics import write_metrics
-from research.baselines.naqjs_scheduler import NAQJSScheduler
+from plugins.schedulers.naqjs.naqjs_scheduler import NAQJSScheduler
 
 
 WORKLOAD = os.path.join(_HERE, "workloads", "naqjs.json")

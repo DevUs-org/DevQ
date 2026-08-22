@@ -1,5 +1,5 @@
 '''
-Tags: Provider
+Tags: Plugin
 
 ibm provider — IBM/Qiskit-family providers.
 

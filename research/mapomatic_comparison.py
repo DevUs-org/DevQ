@@ -68,8 +68,8 @@ from benchmark import runner as R
 from benchmark import comparison as C
 from benchmark import comparison_modes as M
 from benchmark.metrics import write_metrics
-from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
-from research.baselines.mapomatic_allocator import MapomaticAllocator
+from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+from plugins.allocators.mapomatic.mapomatic_allocator import MapomaticAllocator
 
 
 WORKLOAD = os.path.join(_HERE, "workloads", "qasmbench_small.json")

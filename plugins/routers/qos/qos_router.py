@@ -1,6 +1,6 @@
 """QOS router baseline — a spatial which-QPU device selector.
 
-Tags: Research
+Tags: Plugin
 
 Ports the device-selection policy of QOS (Giortamis, Romao, Tornow &
 Bhatotia, "QOS: Quantum Operating System", OSDI '25, pp. 429-447;

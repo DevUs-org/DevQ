@@ -51,8 +51,8 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
 from circuits.execution_result import (ExecutionResult, shutdown_executor,
                                         submit_async)
 from devq import DevQ, DevQError
-from providers.devq.devq_simulated_provider import DevQSimulatedProvider
-from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+from providers.devq_simulated_provider import DevQSimulatedProvider
+from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
 CONFIG = "./config/config_examples/"
 WORKLOADS = "./benchmark/workloads/"
@@ -772,7 +772,7 @@ def block_rejected_no_ideal():
     # reference records is the filter's effect, cleanly isolated.
     import json, os, tempfile
     from benchmark import runner as R
-    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
     tmp = tempfile.mkdtemp(prefix="devq_reject_ideal_")
     spec_path = os.path.join(tmp, "wl.json")
@@ -1168,8 +1168,8 @@ def block_supports_dynamic_capability():
     import os, re
     from circuits.circuit_rep import CircuitRep
     from providers.base_provider import BaseProvider
-    from providers.ibm.ibm_provider import IBMProvider
-    from providers.ibm.ibm_real_provider import IBMRealProvider
+    from plugins.providers.ibm.ibm_provider import IBMProvider
+    from plugins.providers.ibm.ibm_real_provider import IBMRealProvider
 
     # A representative circuit is enough — v1 answers uniformly, ignoring the
     # argument, so a plain Bell circuit exercises the predicate.
@@ -1323,7 +1323,7 @@ def block_conditional_frontend():
     # exercises the PARSE path end to end — register resolution to clbits,
     # multi-bit conditions, broadcast expansion, and the boundary between a
     # well-formed conditional (emitted) and a genuine error (raised).
-    from frontends.qasm2.parser import parse, QASMError
+    from frontends.parser import parse, QASMError
 
     # Canonical feedback: h; measure; if(c==1) x on a DIFFERENT qubit. Emits
     # one conditional, resolves c to clbit [0], and is NOT unrunnable.
@@ -1398,7 +1398,7 @@ def block_dynamic_feasibility():
     # Qiskit backend is needed — the capability is a plain DevQ predicate.
     from kernel.memory.memory_manager import MemoryManager
     from hardware.device import QuantumDevice
-    from frontends.qasm2.parser import parse
+    from frontends.parser import parse
     from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
 
     class _Provider:
@@ -1484,8 +1484,8 @@ def block_dynamic_lowering():
     # RUNS a feedback circuit and checks the classical correlation holds.
     # reference_ideal declines dynamic circuits, since their ideal is not
     # defined through the noiseless density-matrix + marginalise path.
-    from frontends.qasm2.parser import parse
-    from providers.ibm.qiskit_lowering import build_qiskit_circuit
+    from frontends.parser import parse
+    from plugins.providers.ibm.qiskit_lowering import build_qiskit_circuit
 
     # A dynamic circuit lowers to h, measure (baked inline), if_else — the
     # conditional became an if_test block, and the mid-circuit measure is in
@@ -1559,11 +1559,11 @@ def block_mid_circuit_measurement():
     # or reset after measure) is a per-device CAPABILITY, not a circuit-global
     # rejection — the third optional provider capability, independent of both
     # reference_ideal and supports_dynamic.
-    from frontends.qasm2.parser import parse
+    from frontends.parser import parse
     from providers.base_provider import BaseProvider
-    from providers.ibm.ibm_provider import IBMProvider
-    from providers.ibm.ibm_real_provider import IBMRealProvider
-    from providers.ibm.qiskit_lowering import build_qiskit_circuit
+    from plugins.providers.ibm.ibm_provider import IBMProvider
+    from plugins.providers.ibm.ibm_real_provider import IBMRealProvider
+    from plugins.providers.ibm.qiskit_lowering import build_qiskit_circuit
     from kernel.memory.memory_manager import MemoryManager
     from hardware.device import QuantumDevice
     from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
@@ -2237,7 +2237,7 @@ def block_async_dispatch():
 
 def block_wedged_provider_timeout():
     '''A future that never resolves fails cleanly instead of hanging'''
-    from frontends.qasm2.parser import parse
+    from frontends.parser import parse
 
     class NeverResolves:
         '''A future stuck in flight forever — a wedged provider or a dead
@@ -2345,7 +2345,7 @@ def block_config_validation():
 
 def block_provider_global_key_rejected():
     '''A provider may not set global-scope config keys'''
-    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
     class OversteppingProvider(IBMSimulatedProvider):
         def preferred_config(self):
@@ -2377,7 +2377,7 @@ def block_provider_global_key_rejected():
 
 def block_device_calibration():
     '''The five-term calibration model: synthesis ranges, accessors, extraction'''
-    from providers.devq.backend_factory import create_backend
+    from providers.backend_factory import create_backend
     from hardware.device import QuantumDevice
     import random
 
@@ -2503,7 +2503,7 @@ def block_engine_gates():
     from qiskit import QuantumCircuit
     from qiskit.quantum_info import Operator
     from engine import gates as G
-    from frontends.qasm2.parser import _BUILTIN_GATES
+    from frontends.parser import _BUILTIN_GATES
 
     def op(qc):
         return Operator(qc).data
@@ -2539,7 +2539,7 @@ def block_engine_gates():
     # with a custom gate that itself calls another custom gate and confirm
     # every emitted gate name is in the engine's vocabulary — so covering
     # _BUILTIN_GATES genuinely covers every circuit the parser can produce.
-    from frontends.qasm2.parser import parse as _parse_qasm
+    from frontends.parser import parse as _parse_qasm
     import os as _os
     custom_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
                                 "test_circuits", "qasm2", "custom_gate.qasm")
@@ -2954,7 +2954,7 @@ def block_engine_dynamic():
 
 def block_mock_topologies():
     '''Every mock topology kind builds a usable device'''
-    from providers.devq.backend_factory import create_backend
+    from providers.backend_factory import create_backend
 
     expected_edges = {
         "linear":           6,      # 7 qubits in a chain
@@ -2985,7 +2985,7 @@ def block_mock_topologies():
 
 def block_backend_factory_errors():
     '''Invalid backend requests fail loudly at construction'''
-    from providers.devq.backend_factory import create_backend
+    from providers.backend_factory import create_backend
 
     cases = [
         (("fully_connected", 1), "at least 2"),
@@ -3277,7 +3277,7 @@ def block_plugin_contract_enforcement():
         BaseAllocator, AllocationError)
     from kernel.memory.memory_manager import AllocatorContractError
     from kernel.router.base_router import BaseRouter, RouterContractError
-    from frontends.qasm2.parser import parse
+    from frontends.parser import parse
 
     circuit = parse(open(BELL).read())
 
@@ -3798,7 +3798,7 @@ def block_shipped_workloads():
     # job counts; this one runs what actually ships.
     import io, contextlib, json, os, shutil, tempfile
     from benchmark import runner as R
-    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
     # Job counts pinned per spec. See the note at the assertion below:
     # computing these from the spec under test proves nothing.
@@ -4331,7 +4331,7 @@ def block_workload_spec():
     '''Workload specs validate strictly and resolve seeds predictably'''
     import io, contextlib, json, os, tempfile
     from devq import DevQ
-    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.devq_simulated_provider import DevQSimulatedProvider
     from benchmark.spec import (validate_spec, load_spec, build_session,
                                 submit_jobs, drain, SpecError)
 
@@ -4630,7 +4630,7 @@ def block_event_log():
     '''Kernel events record the full job lifecycle without changing output'''
     import io, contextlib
     from devq import DevQ
-    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.devq_simulated_provider import DevQSimulatedProvider
     from kernel.events import PrintSink, RecordSink, MultiSink
 
     def session(sink=None):
@@ -5569,7 +5569,7 @@ def block_comparison():
     # run) and assert assemble_matrix surfaces populated fidelity. Skips
     # cleanly where qiskit is absent.
     try:
-        from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+        from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
         fdir = os.path.join(root, "test_results", "ibm_federation", "comparisons")
         shutil.rmtree(fdir, ignore_errors=True)
         with contextlib.redirect_stdout(io.StringIO()):
@@ -5816,8 +5816,8 @@ def block_fidelity():
     import json, math, os, tempfile
     from benchmark import metrics as M
     from benchmark import runner as R
-    from frontends.qasm2.qasm2_frontend import QASM2Frontend
-    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from frontends.qasm2_frontend import QASM2Frontend
+    from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
     # ── HALF ONE: the distance measures, on HAND-BUILT distributions ──
     # Values are computed by hand in the comments; asserting a metric
@@ -6071,7 +6071,7 @@ def block_reference_tiers():
                                      _engine_ideal, _ENGINE_MAX_QUBITS)
     from circuits.circuit_rep import CircuitRep
     from registry.registry import Registry
-    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
     from providers.base_provider import BaseProvider
 
     # A pure circuit the engine handles, and an entangled-reset circuit it
@@ -6118,7 +6118,7 @@ def block_reference_tiers():
 
     # A registry with no reference-capable provider covers nothing.
     reg_bare = Registry()
-    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.devq_simulated_provider import DevQSimulatedProvider
     reg_bare.register("provider", "devq.simulated", DevQSimulatedProvider)
     check(DevQSimulatedProvider.reference_ideal is BaseProvider.reference_ideal,
           "the mock devq provider is not reference-capable (guards the tier-3 "
@@ -6196,10 +6196,10 @@ def block_router_scoring():
     # 5.5's weight sweep is meaningless if they are not actually applied.
     import io, contextlib
     from devq import DevQ
-    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
-    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from providers.devq_simulated_provider import DevQSimulatedProvider
+    from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
     from kernel.router.noise_router import NoiseRouter
-    from frontends.qasm2.parser import parse
+    from frontends.parser import parse
     from kernel.process.qcb import QCB
 
     try:
@@ -6593,8 +6593,8 @@ def block_allocator_scoring():
     from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
     from kernel.memory.allocators.static_allocator import StaticAllocator
     from kernel.memory.qubit_pool import QubitPool
-    from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
-    from frontends.qasm2.parser import parse
+    from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+    from frontends.parser import parse
 
     try:
         p = IBMSimulatedProvider(seed=SEED)
@@ -6807,7 +6807,7 @@ def block_scheduler_scoring():
     # CONTRACT: the scoring scheduler is sweepable; a shipped one is not.
     from kernel.memory.memory_manager import MemoryManager
     from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
-    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.devq_simulated_provider import DevQSimulatedProvider
     from kernel.process.process_table import ProcessTable
 
     with contextlib.redirect_stdout(io.StringIO()):
@@ -6910,10 +6910,10 @@ def block_provider_registration_enforced():
     # is the only thing that pins the gate open.
     import io, contextlib
     from devq import DevQ, DevQError
-    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.devq_simulated_provider import DevQSimulatedProvider
 
     try:
-        from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+        from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
     except ImportError:
         check(True, "qiskit not installed - registration block skipped")
         return
@@ -6987,7 +6987,7 @@ def block_device_identity():
     # record. Assert against the DEVICE, not the rendered output.
     import io, contextlib
     from devq import DevQ
-    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.devq_simulated_provider import DevQSimulatedProvider
 
     p = DevQSimulatedProvider(seed=SEED)
     devs = [p.get_device("random", 5) for _ in range(3)]
@@ -7027,7 +7027,7 @@ def block_same_kind_device_isolation():
     import io, contextlib
     from devq import DevQ
     try:
-        from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+        from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
         from qiskit_aer.noise import NoiseModel  # noqa: F401
     except ImportError:
         check(True, "qiskit not installed - isolation block skipped")
@@ -7274,7 +7274,7 @@ def block_qasm2_parser():
     # index space, and the constructs DevQ cannot honour are rejected
     # with precise, line-numbered messages rather than silently mangled.
 
-    from frontends.qasm2.parser import parse, QASMError
+    from frontends.parser import parse, QASMError
     import math
 
     def load(name):
@@ -7474,9 +7474,9 @@ def block_expr_unary_power_precedence():
     # (binds looser) while an explicit sign after `^` is still parsed as the
     # exponent's own sign. Evaluation is deterministic, so exact hand-computed
     # values are fair game (no wall-clock anywhere).
-    from frontends.qasm2.tokenizer import tokenize
-    from frontends.qasm2.parser import TokenCursor
-    from frontends.qasm2 import expression as E
+    from frontends.tokenizer import tokenize
+    from frontends.parser import TokenCursor
+    from frontends import expression as E
     import math
 
     def ev(src):
@@ -7880,7 +7880,7 @@ def block_counts_width_contract():
     # both providers report. devq is dependency-free, so assert through it
     # — a 3-qubit / 2-clbit circuit must yield 2-bit strings, which only
     # holds if the provider took the register width from the helper.
-    from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+    from providers.devq_simulated_provider import DevQSimulatedProvider
     sh = (DevQ(config_path=CONFIG + "router_only.config.json")
           .add_device(DevQSimulatedProvider(seed=SEED).get_device("random", 8))
           .build())

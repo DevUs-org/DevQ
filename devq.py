@@ -78,8 +78,8 @@ from kernel.memory.allocators.graph_allocator import GraphAllocator
 from kernel.memory.allocators.noise_graph_allocator import NoiseGraphAllocator
 from kernel.router.noise_router import NoiseRouter
 from kernel.router.round_robin_router import RoundRobinRouter
-from providers.devq.devq_simulated_provider import DevQSimulatedProvider
-from frontends.qasm2.qasm2_frontend import QASM2Frontend
+from providers.devq_simulated_provider import DevQSimulatedProvider
+from frontends.qasm2_frontend import QASM2Frontend
 
 # DevQ's own components, seeded into every new DevQ instance's registry
 # through the SAME public register_*() path a third party uses. Nothing

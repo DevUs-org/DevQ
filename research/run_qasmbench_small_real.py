@@ -59,7 +59,7 @@ import os
 
 from benchmark import runner as R
 from benchmark import metrics as M
-from providers.ibm.ibm_real_provider import IBMRealProvider
+from plugins.providers.ibm.ibm_real_provider import IBMRealProvider
 
 # Anchor paths to THIS file, not the caller's working directory. The spec
 # lives beside this script under research/workloads/; the circuit paths
