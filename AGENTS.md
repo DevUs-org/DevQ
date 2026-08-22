@@ -39,14 +39,16 @@ lets them run as plugins in one system on identical workloads.
 | Path | Contains |
 |---|---|
 | `devq.py` | The `DevQ` facade — attach devices, register components, `build()` / `start()` |
-| `kernel/` | Kernel, device contexts, process table, schedulers, allocators, routers, memory |
-| `providers/` | `BaseProvider` and the DevQ / IBM simulated providers |
+| `kernel/` | Kernel, device contexts, process table, scheduling/allocation/routing machinery, memory |
+| `plugin_bases/` | The plugin seam: `BaseProvider`/`BaseScheduler`/`BaseAllocator`/`BaseRouter`/`BaseFrontend`, `Sweepable`, and `common` (the single re-export of core types plugins may use — `CircuitRep`, `QuantumDevice`, `JobStates`, `KeySpec`, …). An extension imports from here and nowhere else in DevQ |
+| `plugins/` | Opt-in extensions, one subpackage per kind: `plugins/providers/ibm/`, `plugins/frontends/{qiskit,qasm3}/`, `plugins/routers/qos/`, `plugins/schedulers/naqjs/`, `plugins/allocators/mapomatic/`. Each carries its own tests and (where needed) its own third-party dependency, contained |
+| `provider/` | The built-in, dependency-free `DevQSimulatedProvider` (ships registered) |
+| `frontend/` | The built-in `qasm2` frontend and its full OpenQASM 2.0 parser (tokenizer, expression evaluator, custom-gate inlining, resolver) — the one frontend that ships registered with no third-party dependency |
 | `registry/` | Component registry and the plugin-facing `KeySpec` declarations |
 | `config/` | `ConfigLoader` — the four-level configuration cascade |
 | `shell/` | QShell and the JobSpec parser |
-| `circuits/` | `CircuitRep` (one ordered, op-tagged instruction stream — `gate`/`measure`/`reset` in source order; gate consumers filter `op == "gate"`) and execution futures |
-| `frontends/` | `BaseFrontend`, the `qasm2` frontend, and the full OpenQASM 2.0 parser in `frontends/qasm2/` (tokenizer, expression evaluator, custom-gate inlining); source-language readers that lower to `CircuitRep`, dispatched per job by extension |
-| `run_tests.py` | The whole test suite — 65 blocks, no pytest |
+| `circuits/` | `CircuitRep` (one ordered, op-tagged instruction stream — `gate`/`measure`/`reset`/`conditional` in source order; gate consumers filter `op == "gate"`) and execution futures |
+| `run_tests.py` | The core test suite (no pytest). Each plugin additionally carries its own `test_*.py`, run via `python -m plugins.<kind>.<name>.test_<name>` |
 | `benchmark/runner.py` | Run a workload spec, or the whole component matrix, into a run directory |
 | `benchmark/metrics.py` | Offline metrics from a finished run — throughput, queue latency, utilisation — see `docs/METRICS.md` |
 | `benchmark/workloads/` | Runnable example specs, also used as test fixtures — see `docs/WORKLOADS.md` |

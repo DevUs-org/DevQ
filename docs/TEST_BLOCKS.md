@@ -911,7 +911,7 @@ implementation.
 ### `supports_dynamic`
 
 *supports_dynamic declines by default, IBM affirms, no qiskit escapes
-providers/ibm.*
+the qiskit-family plugins.*
 
 The provider-contract capability for **dynamic circuits** — circuits with
 classical feedback (`if (creg==N)`), the loop mid-circuit measurement is
@@ -933,9 +933,9 @@ return `True`.
 *The boundary must not be breached.* Adding dynamic-circuit support must not
 be the change that leaks Qiskit out of the driver layer. The block walks
 DevQ's own packages and asserts **no `import qiskit` / `from qiskit` /
-`import ibm…` escapes `providers/ibm/`** — the kernel, IR, frontends and
+`import ibm…` escapes `plugins/providers/ibm/`** — the kernel, IR, frontends and
 routing layer stay Qiskit-free. The only legitimate homes for such imports
-are `providers/ibm/` (the drivers) and the test/verify oracles that
+are `plugins/providers/ibm/` (the drivers) and the test/verify oracles that
 cross-check *against* Qiskit by design; `research/` hardware-run entry
 points are excluded explicitly rather than by accident. This is a standing
 regression guard for the whole dynamic-circuit effort, not just this method.
@@ -1502,7 +1502,7 @@ so the kind is not silently exempt from the class-only rule.
 The original reader split source on whitespace and dropped every gate
 parameter, so `rx(pi/2)` executed as a mangled no-op and no parameterised
 circuit — all of QASMBench — ran correctly. The real parser
-(`frontends/qasm2/`: tokenizer, expression evaluator, recursive
+(`frontend/`: tokenizer, expression evaluator, recursive
 custom-gate inliner) replaces it. Because QASM parsing is deterministic
 with no wall-clock anywhere, this block asserts against **hand-computed
 values**, not the parser's own output.
@@ -1538,7 +1538,7 @@ through a real provider to confirm the lowered circuit executes.
 *Unary minus binds looser than `^`: `-2^2` == `-(2^2)`, and `^` stays right-associative.*
 
 A regression witness for a **latent** precedence bug in the QASM2
-expression evaluator (`frontends/qasm2/expression.py`). The grammar read
+expression evaluator (`frontend/expression.py`). The grammar read
 `power := unary ('^' power)?` with `unary` sitting *below* `power`, so
 `_power` consumed a leading minus as part of its base before ever seeing
 `^`. That made `-2^2` evaluate as `(-2)^2 == 4` instead of the standard

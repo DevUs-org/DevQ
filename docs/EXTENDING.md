@@ -285,7 +285,7 @@ no marker (naming it is proof enough that injection was intended).
 Keeping the prefix lets a plugin key safely reuse a core name
 for its own quantity (`myalloc.qubit_error_weight` →
 `myalloc___qubit_error_weight`, distinct from core `qubit_error_weight`).
-The NAQJS baseline (`research/baselines/naqjs_scheduler.py`) is a worked
+The NAQJS baseline (`plugins/schedulers/naqjs/naqjs_scheduler.py`) is a worked
 example: five dotted keys, the three swept weights reported through
 `live_params()`, the fixed inputs (`naqjs.eta`, `naqjs.default_shots`)
 kept out of it.
@@ -325,7 +325,7 @@ rejected, before the file is read. The built-in `qasm2` ships registered
 with no third-party dependency, so DevQ reads `.qasm` out of the box.
 
 The built-in `qasm2` is a complete OpenQASM 2.0 parser
-(`frontends/qasm2/`): a tokenizer, an expression evaluator that keeps
+(`frontend/`): a tokenizer, an expression evaluator that keeps
 gate parameters, recursive custom-gate inlining, and first-class
 `measure`/`reset`. `CircuitRep` is one ordered, op-tagged instruction
 stream — every entry carries an `op` of `"gate"`, `"measure"`, or
@@ -360,7 +360,7 @@ remains free to pair your router with any scheduler, or run it alone. The
 coordination is yours to design and the user's to choose — but the axes are
 open, so "my policy also needs job scheduling" (or placement) is a reason to
 implement a scheduler (or allocator) *alongside* your router, not a reason
-to leave DevQ. The QOS baseline (`research/baselines/qos_router.py`) is a
+to leave DevQ. The QOS baseline (`plugins/routers/qos/qos_router.py`) is a
 live example: its which-QPU spatial decision ports as a router, while the
 waiting-time/ordering half of the same paper is naturally a scheduler — two
 DevQ components expressing one published system.

@@ -56,7 +56,7 @@ QOS's spatial *which-QPU* decision — its estimator (Sec. 6) predicting
 per-QPU fidelity, feeding its scheduler's formula-based policy (Sec. 8)
 that trades fidelity against waiting time and utilisation — is a DevQ
 *router* decision. DevQ ports it as a scored, sweepable router baseline
-(`research/baselines/qos_router.py`), the first scored **router** baseline
+(`plugins/routers/qos/qos_router.py`), the first scored **router** baseline
 (NAQJS `[NAQJS]` is a scheduler; Mapomatic `[Mapomatic]` is an allocator).
 It scores each candidate device by Sec. 6's numerical-cost fidelity and
 selects with Sec. 8's relative-delta trade-off, with `qos.fidelity_weight`
@@ -96,7 +96,7 @@ per-job features — circuit width, shot count, and submission time — combined
 with independent non-negative weights $\alpha, \beta, \gamma$, then packs the
 sorted queue up to a $\eta \cdot N$ qubit-usage cap per cycle. DevQ ports the
 queue-rearranging stage as a scored, sweepable scheduler baseline
-(`research/baselines/naqjs_scheduler.py`), delegating placement to the
+(`plugins/schedulers/naqjs/naqjs_scheduler.py`), delegating placement to the
 device's allocator (DevQ's two-level split): NAQJS supplies the order and the
 $\eta$ cap. Faithfulness notes are recorded at the use-site — the paper's
 negated-descending score equals DevQ's un-negated ascending lowest-wins
@@ -126,7 +126,7 @@ lowest-noise one. DevQ ports the **scoring heuristic** — the layout's
 estimated total error as one minus the product of the per-operation
 fidelities entering it, $S = 1 - \prod_x (1 - e_x)$ over readout,
 single-qubit-gate, and two-qubit-gate errors — as a *device-scope*
-allocator baseline (`research/baselines/mapomatic_allocator.py`), the
+allocator baseline (`plugins/allocators/mapomatic/mapomatic_allocator.py`), the
 first scored **allocator** baseline (NAQJS `[NAQJS]` is a scheduler; QOS
 `[QOS]` is a router). Faithfulness notes are recorded at the use-site: DevQ
 substitutes its own connected-block candidate generation for the paper's
@@ -196,6 +196,103 @@ construction and his point-count `C(m+n−1, n−1)` directly. At `n=2` the
 lattice is the historical `(α, 1−α)` grid; at `n≥3` it tiles the triangle /
 tetrahedron / … . Cited at the use-site in `benchmark/comparison.py`
 (`_simplex_lattice`, `_int_lattice`). See [`COST_MODEL.md`](COST_MODEL.md#answering-the-sweep-from-one-recorded-run-phase-55a) and [`EXTENDING.md`](EXTENDING.md).
+
+### The orchestration gap — DevQ's problem statement
+
+These references establish the *problem* DevQ addresses rather than a
+formula it borrows: the industry-recognised absence of a portable,
+vendor-neutral orchestration layer for heterogeneous quantum-classical
+resources. They anchor the paper's motivation and problem statement — the
+"why this matters" — as distinct from the baselines above (the "what we
+compare against"). Each entry notes what it substantiates. Bibliographic
+details drawn from secondary sources are marked _(verify before
+submission)_ — confirm authors, venue, page numbers, and dates against the
+primary PDF before citing in the paper.
+
+#### [QCSC-RefArch] — the industry naming of the gap _(verify before submission)_
+IBM, "Reference Architecture for Quantum-Centric Supercomputing" (QCSC),
+2026. Announced/covered at ISC 2026.
+- HPCwire coverage: https://www.hpcwire.com/2026/03/12/ibm-launches-reference-architecture-for-quantum-centric-supercomputing/
+
+The single most useful citation for DevQ's problem statement. The QCSC
+reference architecture is the first industry formalisation of the
+discipline, defining logical layers (hardware infrastructure, system
+orchestration, application middleware, applications) and a Quantum Systems
+API (QSA) as the classical/QPU boundary. Critically for DevQ, its own
+analysis observes that Slurm "has no native concept of quantum resources"
+and that traditional batch schedulers "generally do not perform joint
+optimization of heterogeneous resources" — introducing the Quantum
+Resource Management Interface (QRMI) to extend Slurm toward QPUs. This is
+the industry's own admission of the **orchestration gap** DevQ targets.
+Cite it to establish that the problem is real and industry-recognised, not
+academic invention. (Confirm exact title, authors, publication venue, and
+the phased/layered structure against IBM's primary document before
+submission; the wording above is from secondary coverage.)
+
+#### [OrchGap-Analysis] — scheduling as the primary HPC-QC bottleneck _(verify before submission)_
+Analyses surveyed in recent HPC-QC integration work (e.g. Viviani et al.,
+as cited in "Wave-Based Dispatch for Circuit Cutting in Hybrid HPC–Quantum
+Systems", arXiv:2604.15279, 2026).
+- arXiv: https://arxiv.org/abs/2604.15279
+
+Substantiates the specific claim that scheduling — not compilation or
+control — is the primary bottleneck in HPC-QC integration, with root
+causes identified as QPU scarcity, technology **heterogeneity**, and
+software **ecosystem mismatch**. These last two are precisely what DevQ's
+plugin seam and vendor-neutral provider contract address, so this citation
+lets the paper connect the recognised bottleneck directly to DevQ's design
+response. (This is a secondary citation *through* arXiv:2604.15279; locate
+and cite Viviani et al. directly for the primary claim before submission.)
+
+#### [QuantumOS-Survey] — the absence of a portable, open quantum OS _(verify before submission)_
+"The Quantum OS Layer: A Build Guide" / quantum-OS orchestration analysis,
+postquantum.com, May 2026 (industry survey, secondary source).
+- https://postquantum.com/building-quantum-computers/quantum-os-orchestration-build-guide/
+
+Substantiates DevQ's positioning claim: that existing production stacks
+are vertically integrated and vendor-specific — IBM's Qiskit Runtime
+schedules only IBM hardware; Google/Microsoft/Amazon control stacks are
+not downloadable, portable, or open — leaving the field "pre-
+standardization" with no publicly downloadable, vendor-neutral quantum OS
+of Western origin as of mid-2026. This is the market-gap argument for a
+*portable, open, plugin-extensible* orchestrator, i.e. DevQ's exact niche.
+NOTE: this is a **secondary/industry source**, not peer-reviewed; use it to
+frame positioning and to point at the primary vendor documentation it
+summarises (Qiskit Runtime docs, etc.), not as a load-bearing academic
+citation. Verify each specific vendor claim against that vendor's primary
+docs before asserting it in a paper.
+
+#### [Qonductor] — the QOS authors' own orchestrator _(verify before submission)_
+Giortamis et al., "Qonductor" (fidelity/job-completion-time joint
+optimisation for cloud QPU scheduling), as cited in arXiv:2604.15279 and
+related 2026 HPC-QC work.
+
+Positioning reference, and an important one for honesty: the authors of
+QOS `[QOS]` (whose router policy DevQ ports as a baseline) are themselves
+building orchestration systems. The paper should acknowledge Qonductor and
+adjacent systems (Pilot-Quantum, Qurator, XACC, QRMI-based Slurm
+integration) as concurrent/related work, positioning DevQ not as
+"first-ever" but as the **portable, vendor-neutral, plugin-extensible
+research reference** — the neutral-layer niche the vendor-coupled systems
+structurally do not occupy. Locate the primary Qonductor publication and
+verify authorship/venue before citing.
+
+#### Related orchestration systems (concurrent work, for positioning)
+A non-exhaustive list to survey and position against in related-work,
+gathered from 2026 HPC-QC literature; each needs its own primary lookup
+before citation: **QRMI** (Quantum Resource Management Interface, Slurm
+SPANK plugin; Pasqal + NVIDIA CUDA-Q demonstration, March 2026);
+**Pilot-Quantum** (Mantha et al., CCGrid 2025); **Qurator** (Pehlivanoglu
+et al., 2026, hybrid workflows as typed dynamic DAGs); **XACC** (McCaskey
+et al., service-oriented QPU-as-coprocessor middleware) and **QCOR**;
+Kubernetes/Kueue + Argo cloud-native stacks (Tejedor et al., 2026);
+**NVIDIA CUDA-Q** (single-source hybrid programming). DevQ's distinguishing
+axis against all of these is portability + vendor-neutrality + a uniform
+plugin seam across scheduler/allocator/router/provider/frontend, rather
+than coupling to one vendor's hardware or one workflow engine. _(verify
+each before submission)_
+
+---
 
 ### Elementary results used in the sweep (stated inline, not attributed)
 Two facts the sweep rests on are elementary and are proved inline at their

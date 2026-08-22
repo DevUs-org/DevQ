@@ -210,7 +210,7 @@ disambiguated with `--frontend` (shell) or a `"frontend"` spec key. The
 built-in `qasm2` ships registered with no third-party dependency, so DevQ
 reads `.qasm` out of the box. See [`REGISTRY.md`](REGISTRY.md).
 
-The `qasm2` frontend is a **complete 2.0 parser** (`frontends/qasm2/`): a
+The `qasm2` frontend is a **complete 2.0 parser** (`frontend/`): a
 real tokenizer, an expression evaluator that keeps gate parameters
 (`rx(pi/2)` now carries its angle — the bug that stopped parameterised
 QASMBench circuits from running), recursive custom-`gate` inlining with

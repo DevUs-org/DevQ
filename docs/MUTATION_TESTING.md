@@ -111,7 +111,7 @@ Earlier deltas: 66/64/2 before the metrics layer, plus the 14 Metrics, 3
 Shell, 6 Frontend, 6 OpenQASM 2.0 parser, 6 measurement/execution, and 2
 provider-contract mutants. The pre-existing set was taken as given.
 
-### Device identity — `hardware/device.py`, `providers/`, `devq.py`
+### Device identity — `hardware/device.py`, `provider/`, `plugins/providers/`, `devq.py`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -175,7 +175,7 @@ check.
 | T6 | `resolved_at` never stamped | killed (1) |
 | T7 | `queue_latency` `None` guard removed | killed (1) |
 
-### Fidelity — `benchmark/metrics.py`, `benchmark/reference.py`, `providers/ibm/`
+### Fidelity — `benchmark/metrics.py`, `benchmark/reference.py`, `plugins/providers/ibm/`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -347,7 +347,7 @@ rather than waits — and only then did AD6 die. Each was run against
 cleared between runs; `kernel.py` and `qshell.py` were diffed clean
 afterward.
 
-### Frontend dispatch — `frontends/resolver.py`, `shell/parser.py`, `devq.py`, `shell/qshell.py`
+### Frontend dispatch — `frontend/resolver.py`, `shell/parser.py`, `devq.py`, `shell/qshell.py`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -376,7 +376,7 @@ heading. Each was run against `frontend_dispatch` and confirmed to turn it
 red, then reverted; the files were diffed clean afterward to confirm no
 mutation residue.
 
-### OpenQASM 2.0 parser — `frontends/qasm2/`, `circuits/circuit_rep.py`
+### OpenQASM 2.0 parser — `frontend/`, `circuits/circuit_rep.py`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -407,7 +407,7 @@ with what the providers consume: P5 leaks a measure into the gate list
 confirmed to turn it red, then reverted; the parser files were diffed
 clean afterward.
 
-### Measurement & execution — `providers/devq/…`, `providers/ibm/…`
+### Measurement & execution — `provider/…`, `plugins/providers/ibm/…`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -435,7 +435,7 @@ explicit measures, which double-measures and unpins the c[2] bit. Each
 was run against `devq_measurement` or `ibm_measurement`, confirmed to
 turn it red, then reverted; both provider files were diffed clean after.
 
-### Provider contract — `providers/base_provider.py`
+### Provider contract — `plugin_bases/base_provider.py`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -451,7 +451,7 @@ entirely loses the register width. Both are caught by
 only through a provider's end-to-end counts. Each was run against that
 block, confirmed red, then reverted; `base_provider.py` was diffed clean.
 
-### Dynamic-circuit capability — `providers/base_provider.py`, `providers/ibm/ibm_provider.py`
+### Dynamic-circuit capability — `plugin_bases/base_provider.py`, `plugins/providers/ibm/ibm_provider.py`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -471,7 +471,7 @@ decline. SD1 is caught by the "DevQ declines" check and SD2 by the
 SD3 is a different kind of mutant: it does not break the method, it breaks
 the *boundary* the method's block also guards. Planting a real `qiskit`
 import into a core file (`kernel/kernel.py`) simulates the leak the whole
-dynamic-circuit effort must avoid — qiskit escaping `providers/ibm/` into
+dynamic-circuit effort must avoid — qiskit escaping `plugins/providers/ibm/` into
 the kernel/IR/frontend/routing layer. The block's package scan catches it
 and names the offending file. This confirms the guard actually bites rather
 than passing vacuously; it is the standing regression that lets later
@@ -502,7 +502,7 @@ exists to catch — so it is caught by the body-gate-on-measured-qubit
 assertion. Each was run against `conditional_ir`, confirmed red, then
 reverted; `circuit_rep.py` was diffed clean afterward.
 
-### Conditional frontend — `frontends/qasm2/parser.py`
+### Conditional frontend — `frontend/parser.py`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -564,7 +564,7 @@ mutant was run against `dynamic_feasibility`, confirmed red (MF3 after the
 fixture fix), then reverted; `memory_manager.py` was diffed clean
 afterward.
 
-### Dynamic lowering — `providers/ibm/qiskit_lowering.py`, `providers/ibm/ibm_simulated_provider.py`
+### Dynamic lowering — `plugins/providers/ibm/qiskit_lowering.py`, `plugins/providers/ibm/ibm_simulated_provider.py`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -594,7 +594,7 @@ decline; those are exercised by `dynamic_lowering` and the existing
 `ibm_measurement` / `reference_tiers` / `fidelity` blocks, which stay green,
 confirming the static path is unchanged.
 
-### Determinism (seeded) — `providers/ibm/ibm_simulated_provider.py`
+### Determinism (seeded) — `plugins/providers/ibm/ibm_simulated_provider.py`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -648,7 +648,7 @@ defect, catching a plausible copy-paste inversion of the conditional. Each
 was run against `rejected_no_ideal` (extended for this), confirmed red, then
 reverted; `runner.py` was diffed clean afterward.
 
-### Mid-circuit measurement — `circuits/circuit_rep.py`, `providers/ibm/qiskit_lowering.py`, `kernel/memory/memory_manager.py`
+### Mid-circuit measurement — `circuits/circuit_rep.py`, `plugins/providers/ibm/qiskit_lowering.py`, `kernel/memory/memory_manager.py`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -735,7 +735,7 @@ a reset on a qubit still entangled within a branch — is pinned by
 `engine_dynamic`'s boundary check, confirming branch enumeration did not
 widen the engine's exactness contract.
 
-### Full-device layout — `providers/ibm/ibm_provider.py`, `providers/ibm/…`
+### Full-device layout — `plugins/providers/ibm/ibm_provider.py`, `plugins/providers/ibm/…`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -763,7 +763,7 @@ bug ever surfaced. Each was run against that block, confirmed red, then
 reverted with `.pyc` cleared between runs; `ibm_provider.py` and
 `ibm_simulated_provider.py` were diffed clean after.
 
-### Workload spec — `benchmark/spec.py`, `providers/base_provider.py`
+### Workload spec — `benchmark/spec.py`, `plugin_bases/base_provider.py`
 
 | # | Mutation | Result |
 |---|---|---|
@@ -886,7 +886,7 @@ an example forces a deliberate change to the pin.
 
 ---
 
-### Unrunnable-circuit detection and rejection — `circuits/circuit_rep.py`, `frontends/qasm2/parser.py`, `kernel/kernel.py`, `benchmark/spec.py`
+### Unrunnable-circuit detection and rejection — `circuits/circuit_rep.py`, `frontend/parser.py`, `kernel/kernel.py`, `benchmark/spec.py`
 
 DevQ declines a circuit it cannot faithfully run — a well-formed but
 unsupported construct (classical control, mid-circuit measurement) or
