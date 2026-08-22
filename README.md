@@ -39,7 +39,7 @@ The entire system initialises in three lines of user code:
 
 ```python
 from devq import DevQ
-from providers.devq.devq_simulated_provider import DevQSimulatedProvider
+from provider.devq_simulated_provider import DevQSimulatedProvider
 
 DevQ(DevQSimulatedProvider().get_device("random", 10)).start()
 ```
@@ -48,8 +48,8 @@ Attaching multiple backends is one chained call per device:
 
 ```python
 from devq import DevQ
-from providers.devq.devq_simulated_provider import DevQSimulatedProvider
-from providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
+from provider.devq_simulated_provider import DevQSimulatedProvider
+from plugins.providers.ibm.ibm_simulated_provider import IBMSimulatedProvider
 
 ibm = IBMSimulatedProvider()
 
@@ -121,7 +121,7 @@ Every source file carries a tag in its module docstring describing its role:
 | **Main** | Part of the core DevQ abstraction. Hardware-independent; should support most existing quantum infrastructure. |
 | **Default** | The default implementation of a pluggable component (NoiseGraphAllocator, PackingScheduler, NoiseRouter). Part of the core distribution; swappable via config. |
 | **Alt** | Configurable alternatives to the Default components (Static/Graph allocators, FCFS/SDF schedulers, RoundRobin router) usable for debugging, testing, baselines, and optimisation comparisons. |
-| **Provider** | Hardware-provider code: everything that adapts a specific backend or framework to DevQ, including simulated/testing backends. Not part of the core abstraction; grows as more hardware support is added. |
+| **Plugin** | An out-of-core component reached only through `plugin_bases` — a scheduler, allocator, router, frontend, or provider that adapts a specific backend, framework, or policy to DevQ. Not part of the core abstraction; opt-in and independently versioned. A plugin may *also* be tagged **Research** when it is paper tooling. |
 | **Research** | Paper and benchmark tooling that *uses* DevQ but is not part of it — the `research/` package (e.g. the QASMBench fidelity runner). Outside the test suite; its results depend on a pinned calibration snapshot, so it is kept separate from the system under test. |
 
 ---
