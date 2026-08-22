@@ -41,7 +41,7 @@ Usage:
 
 from plugins.providers.ibm.ibm_provider import IBMProvider
 from plugins.providers.ibm.qiskit_lowering import build_qiskit_circuit
-from hardware.device import QuantumDevice
+from plugin_bases.common import QuantumDevice
 
 
 class IBMSimulatedProvider(IBMProvider):
@@ -180,14 +180,14 @@ class IBMSimulatedProvider(IBMProvider):
             from qiskit_aer import AerSimulator
             from qiskit import transpile
         except ImportError:
-            from circuits.execution_result import ExecutionResult, ExecutionFuture
+            from plugin_bases.common import ExecutionResult, ExecutionFuture
             return ExecutionFuture(ExecutionResult(
                 counts  = {},
                 success = False,
                 error   = "qiskit-aer is not installed. Run: pip install qiskit-aer"
             ))
 
-        from circuits.execution_result import ExecutionResult, submit_async
+        from plugin_bases.common import ExecutionResult, submit_async
 
         session = self._sessions.get(device.index)
         if session is None:

@@ -63,12 +63,8 @@ against NoiseGraph / Graph / Static.
 
 from collections import deque
 
-from plugin_bases.base_allocator import (
-    BaseAllocator, AllocationError,
-)
-from kernel.memory.allocators.filtering import (
-    eligible_qubits, edge_allowed, has_connected_block,
-)
+from plugin_bases.base_allocator import BaseAllocator, AllocationError
+from plugin_bases.common import eligible_qubits, edge_allowed, has_connected_block
 
 
 class MapomaticAllocator(BaseAllocator):

@@ -32,7 +32,7 @@ The base class implements the shared candidate pipeline:
 
 from abc import ABC, abstractmethod
 
-from kernel.sweep import Sweepable
+from plugin_bases.sweepable import Sweepable
 
 
 class RouterContractError(Exception):

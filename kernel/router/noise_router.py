@@ -35,7 +35,7 @@ default 0.5 / 0.5). Ties break by lower device index (deterministic).
 '''
 
 from plugin_bases.base_router import BaseRouter
-from kernel.memory.qubit_pool import QubitPool
+from plugin_bases.common import QubitPool
 from plugin_bases.base_allocator import AllocationError
 
 class NoiseRouter(BaseRouter):

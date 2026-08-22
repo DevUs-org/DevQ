@@ -6440,7 +6440,7 @@ def block_sweepable_contract():
     # not-scored default, and the faithfulness anchor — so the allocator
     # and scheduler inherit machinery already proven here, not machinery
     # first exercised three components deep.
-    from kernel.sweep import Sweepable, NOT_SCORED
+    from plugin_bases.sweepable import Sweepable, NOT_SCORED
 
     # A scoring component: score(candidate) = w · value, lowest wins.
     # Deliberately trivial and DISTINCT from any built-in (no

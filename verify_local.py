@@ -108,10 +108,20 @@ def check_interactive():
     try:
         with contextlib.redirect_stdout(buf):
             shell.onecmd("qdevices")
+            # qrun is a pure dispatcher in the async model: it submits and
+            # returns while the job is still RUNNING. Results surface later
+            # through qps once the future resolves, so drain to quiescence
+            # first, then snapshot with qps.
             shell.onecmd("qrun test_circuits/bell.qasm")
+            shell.kernel.drain()
         out = buf.getvalue()
         check("local (d0)" in out, "interactive shell responds to commands")
-        check("FINISHED" in out, "a job completes through the interactive shell")
+
+        status = io.StringIO()
+        with contextlib.redirect_stdout(status):
+            shell.onecmd("qps")
+        check("FINISHED" in status.getvalue(),
+              "a job completes through the interactive shell")
     except Exception as exc:
         check(False, "interactive shell responds",
               f"{type(exc).__name__}: {exc}")
@@ -142,6 +152,10 @@ def check_determinism():
         with contextlib.redirect_stdout(buf):
             shell = session.build(interactive=False)
             shell.onecmd("qrun test_circuits/bell.qasm")
+            # qrun only dispatches; drain so the async result settles, then
+            # snapshot qps — that is where a FINISHED job's counts surface.
+            shell.kernel.drain()
+            shell.onecmd("qps")
         return buf.getvalue(), shell
 
     first, shell = run_once()
@@ -158,7 +172,7 @@ def check_determinism():
 
     counts = None
     for line in first.splitlines():
-        if "FINISHED. Counts:" in line and "[Kernel]" in line:
+        if "FINISHED" in line and "Counts:" in line:
             counts = eval(line.split("Counts: ")[1])
             break
     check(counts == PINNED_BELL_COUNTS,
@@ -186,6 +200,11 @@ def check_event_log():
                 shell.kernel.sink = sink
             shell.onecmd("qsubmit test_circuits/bell.qasm test_circuits/ghz.qasm")
             shell.onecmd("qrunpack")
+            # qrunpack only dispatches; the resolve events (and finished
+            # turnaround times) appear once the futures settle. Drain both
+            # the sink-attached and baseline runs identically so the
+            # byte-identical-output invariant still holds.
+            shell.kernel.drain()
         return buf.getvalue(), shell
 
     baseline, _ = session()
@@ -297,7 +316,11 @@ def check_concurrency():
         shell = dq.build(interactive=False)
         shell.onecmd("qsubmit " + " ".join(["test_circuits/bell.qasm"] * 8))
         started = time.monotonic()
+        # qrunpack dispatches the whole pack and returns while jobs are still
+        # in flight; drain to quiescence so the finished-count below reflects
+        # completed work rather than jobs still RUNNING.
         shell.onecmd("qrunpack")
+        shell.kernel.drain()
         elapsed = time.monotonic() - started
 
     jobs = shell.kernel.process_table.list_jobs()

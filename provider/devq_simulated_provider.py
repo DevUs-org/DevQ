@@ -17,7 +17,7 @@ Usage:
 '''
 
 from plugin_bases.base_provider import BaseProvider
-from hardware.device import QuantumDevice
+from plugin_bases.common import QuantumDevice
 from provider.backend_factory import create_backend
 
 
@@ -105,7 +105,7 @@ class DevQSimulatedProvider(BaseProvider):
         Returns:
             AsyncExecutionFuture resolving to a mocked ExecutionResult
         '''
-        from circuits.execution_result import ExecutionResult, submit_async
+        from plugin_bases.common import ExecutionResult, submit_async
 
         if len(v2p_map) < circuit.num_qubits:
             # Validation errors surface synchronously-shaped but async-wrapped

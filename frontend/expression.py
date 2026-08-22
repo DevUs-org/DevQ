@@ -32,7 +32,7 @@ never touches the circuit, so it can be tested in isolation.
 
 import math
 
-from .tokenizer import QASMError
+from frontend.tokenizer import QASMError
 
 
 _FUNCS = {

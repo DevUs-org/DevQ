@@ -17,7 +17,7 @@ Usage:
     DevQ().add_device(device).start()
 '''
 
-from .device import QuantumDevice
+from hardware.device import QuantumDevice
 
 
 def load_device(device: QuantumDevice) -> QuantumDevice:

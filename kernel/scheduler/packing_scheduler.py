@@ -16,7 +16,7 @@ REJECTED and removed from the queue entirely.
 '''
 
 from plugin_bases.base_scheduler import BaseScheduler
-from kernel.process.lifecycle import JobStates
+from plugin_bases.common import JobStates
 from plugin_bases.base_allocator import AllocationError
 
 

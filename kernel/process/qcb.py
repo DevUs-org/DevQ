@@ -8,7 +8,7 @@ Tracks everything DevQ knows about a submitted job from submission
 through routing, allocation, execution and completion.
 '''
 
-from .lifecycle import JobStates
+from kernel.process.lifecycle import JobStates
 
 
 class QCB:

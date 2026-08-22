@@ -30,7 +30,7 @@ WHY THE SWEEP NEEDS NOTHING BUT THE LOG. A scoring component records, per
 decision, the weight-free inputs to its score (the α/β-free cost
 decomposition, the raw queue pressure). Re-weighting those recorded inputs
 and re-ranking reproduces the decision at any weights — this is the
-Sweepable contract (kernel/sweep.py). The driver borrows the session's
+Sweepable contract (plugin_bases/sweepable.py). The driver borrows the session's
 component purely as a scoring engine: it reconstructs the registered class
 by name and calls its sweep hooks on the logged terms, computing no score
 itself, so a third-party scoring component sweeps identically once

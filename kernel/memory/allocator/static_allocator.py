@@ -11,8 +11,8 @@ topology concept, so the edge threshold is ignored by design, and
 the inherited base feasible() (eligible-qubit count) is exact.
 '''
 
-from ....plugin_bases.base_allocator import BaseAllocator, AllocationError
-from .filtering import eligible_qubits
+from plugin_bases.base_allocator import BaseAllocator, AllocationError
+from plugin_bases.common import eligible_qubits
 
 class StaticAllocator(BaseAllocator):
 

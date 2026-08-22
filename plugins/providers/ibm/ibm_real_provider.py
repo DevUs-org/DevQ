@@ -68,7 +68,7 @@ Usage (see research/run_real_hardware.py for the full proof-run):
 '''
 
 from plugins.providers.ibm.ibm_provider import IBMProvider
-from hardware.device import QuantumDevice
+from plugin_bases.common import QuantumDevice
 
 
 class IBMRealProvider(IBMProvider):
@@ -287,7 +287,7 @@ class IBMRealProvider(IBMProvider):
             from qiskit import transpile
             from qiskit_ibm_runtime import SamplerV2
         except ImportError:
-            from circuits.execution_result import ExecutionResult, submit_async
+            from plugin_bases.common import ExecutionResult, submit_async
             return submit_async(lambda: ExecutionResult(
                 counts  = {},
                 success = False,
@@ -295,7 +295,7 @@ class IBMRealProvider(IBMProvider):
                            "Run: pip install qiskit-ibm-runtime")
             ))
 
-        from circuits.execution_result import ExecutionResult, submit_async
+        from plugin_bases.common import ExecutionResult, submit_async
         from plugins.providers.ibm.qiskit_lowering import build_qiskit_circuit, UnknownGateError
 
         session = self._sessions.get(device.index)

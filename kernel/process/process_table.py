@@ -12,7 +12,7 @@ system-wide; which device it ran on is recorded on the QCB
 (device_index) by the router.
 '''
 
-from .qcb import QCB
+from kernel.process.qcb import QCB
 
 class ProcessTable:
     def __init__(self):

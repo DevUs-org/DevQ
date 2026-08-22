@@ -42,8 +42,8 @@ against Packing/FCFS/SDF.
 '''
 
 from plugin_bases.base_scheduler import BaseScheduler
-from kernel.process.lifecycle import JobStates
-from registry.keyspec import KeySpec, non_negative, unit_interval
+from plugin_bases.common import JobStates
+from plugin_bases.common import KeySpec, non_negative, unit_interval
 
 
 # Namespaced config keys. Every plugin key is dotted "<prefix>.<key>" — the

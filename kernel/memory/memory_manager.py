@@ -16,7 +16,7 @@ translate an allocation failure into WAITING (transient contention)
 or REJECTED (permanently unsatisfiable).
 '''
 
-from .qubit_pool import QubitPool
+from kernel.memory.qubit_pool import QubitPool
 
 
 class AllocatorContractError(Exception):

@@ -31,9 +31,9 @@ CircuitRep. A 3.0 (or Silq, or Q#) frontend is a separate implementation
 of the same BaseFrontend contract; it is not blocked by anything here.
 '''
 
-from circuits.circuit_rep import CircuitRep
-from .tokenizer import tokenize, QASMError
-from . import expression
+from plugin_bases.common import CircuitRep
+from frontend.tokenizer import tokenize, QASMError
+from frontend import expression
 
 
 class TokenCursor:
@@ -372,7 +372,7 @@ class _Parser:
             body.append(c.next())
         # Terminate the captured body with EOF so a sub-cursor over it
         # has a proper stop token.
-        from .tokenizer import Token
+        from frontend.tokenizer import Token
         body.append(Token("EOF", None, body[-1].line if body else 0))
 
         if name in self.gate_defs or name in _BUILTIN_GATES:

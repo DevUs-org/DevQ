@@ -32,7 +32,7 @@ device does not attach it — providers build devices before the kernel
 has assigned anything.
 '''
 
-from .topology_graph import build_graph
+from hardware.topology_graph import build_graph
 
 
 class QuantumDevice:

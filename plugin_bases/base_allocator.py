@@ -52,9 +52,11 @@ Contract:
 
 from abc import ABC, abstractmethod
 
-from kernel.sweep import Sweepable
+from plugin_bases.sweepable import Sweepable
 
-from ..kernel.memory.allocators.filtering import eligible_qubits
+# base_allocator's feasible() default uses eligible_qubits; import it from
+# the common plugin-facing surface rather than reaching into core.
+from plugin_bases.common import eligible_qubits
 
 
 class AllocationError(Exception):

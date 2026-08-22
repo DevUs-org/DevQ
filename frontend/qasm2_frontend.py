@@ -17,7 +17,7 @@ executed, not just parsed.
 '''
 
 from plugin_bases.base_frontend import BaseFrontend
-from .parser import parse, QASMError
+from frontend.parser import parse, QASMError
 
 
 class QASM2Frontend(BaseFrontend):

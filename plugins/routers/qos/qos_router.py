@@ -71,7 +71,7 @@ from __future__ import annotations
 import math
 
 from plugin_bases.base_router import BaseRouter
-from registry.keyspec import KeySpec, unit_interval, non_negative
+from plugin_bases.common import KeySpec, unit_interval, non_negative
 
 
 class QOSRouter(BaseRouter):

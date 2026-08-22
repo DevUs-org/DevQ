@@ -45,6 +45,70 @@ recorded run and what "the component owns its own scoring" buys.
 
 ---
 
+## Imports: what a component may depend on
+
+Two rules govern what a component is allowed to import, and they are what
+keep the plugin seam a seam rather than a suggestion:
+
+- **Absolute imports only.** No relative imports (`from .sibling import …`,
+  `from ..core import …`) anywhere. Every import is spelled from the repo
+  root (`from plugin_bases.base_router import BaseRouter`). A file may still
+  import a genuine *sibling* helper that ships alongside it — a provider and
+  its own `backend_factory`, a frontend and its own tokenizer — because that
+  is the component's own implementation, not a reach across the seam.
+
+- **Reach into DevQ only through `plugin_bases`.** A component imports from
+  `plugin_bases` and nowhere else in DevQ. It must never import `kernel.*`,
+  `hardware.*`, `circuits.*`, `registry.*` or any other core package
+  directly. Third-party dependencies (numpy, qiskit, your own libraries)
+  are unrestricted — the rule is about DevQ-internal coupling only.
+
+Concretely, a component imports from exactly two places inside DevQ:
+
+- **its contract, from its base** — `BaseProvider` from
+  `plugin_bases.base_provider`, `BaseRouter` from `plugin_bases.base_router`,
+  and so on (plus the base's own contract types, like `AllocationError` and
+  `RouterContractError`);
+- **every other core type it needs, from `plugin_bases.common`** — the
+  single plugin-facing surface. `common` imports the plugin-relevant slice
+  of core and re-exports it in one place:
+
+| From `plugin_bases.common` | For |
+| --- | --- |
+| `QuantumDevice`, `ExecutionResult`, `ExecutionFuture`, `submit_async` | providers |
+| `CircuitRep` | frontends |
+| `JobStates` | schedulers |
+| `QubitPool` | routers |
+| `eligible_qubits`, `edge_allowed`, `has_connected_block` | allocators |
+| `KeySpec`, `unit_interval`, `non_negative` | any component declaring config keys |
+
+So a scheduler that needs the job-state enum writes `from
+plugin_bases.common import JobStates`, not `from
+kernel.process.lifecycle import JobStates`. A provider writes `from
+plugin_bases.base_provider import BaseProvider` and `from
+plugin_bases.common import QuantumDevice, submit_async`.
+
+Why one shared module rather than re-exporting from each base: a type like
+`KeySpec` belongs to no single seam (routers and schedulers both declare
+config keys), and a component's needs grow over time — collecting the
+plugin-facing surface in one place means there is never a "which base does
+this live under?" decision, and a maintainer exposing a new core type to
+authors adds one line to `common` and nowhere else. The bases stay pure
+contract logic; `common` is the one file that names core paths.
+
+`Sweepable` is the exception: it physically lives in `plugin_bases`
+itself (`plugin_bases.sweepable`), is inherited by the scoring bases, and
+is never imported by a component directly — so it is not in `common`.
+
+If you need a core type that `common` does not yet expose, add it to
+`common` rather than importing across the seam. (Keep the dependency
+one-way: `common` imports *from* core, never the reverse at module load —
+the handful of core modules that reference the plugin layer do so with
+deferred, function-local imports, which is what keeps the import graph
+acyclic.)
+
+---
+
 ## What to implement
 
 Registration is how a component becomes addressable; this is what the
@@ -54,8 +118,8 @@ points below are load-bearing for correctness rather than style.
 **New provider** — subclass `BaseProvider`, implement `get_device()` and
 `execute(circuit, v2p_map, shots, device)`. Return either a synchronous
 `ExecutionFuture` or (preferred) an `AsyncExecutionFuture` via
-`circuits.execution_result.submit_async(fn)` — the kernel polls
-`done()`/`result()` and never knows the difference. No knowledge of the
+`submit_async(fn)` (imported from `plugin_bases.common`) — the
+kernel polls `done()`/`result()` and never knows the difference. No knowledge of the
 kernel, allocators, schedulers, or routers required;
 `DevQSimulatedProvider` is the reference template.
 
@@ -426,7 +490,7 @@ workload once per weight point.
 the *same operation* seen from two angles: explain reports the raw terms
 behind the decision just made at the live weights; a sweep replays that
 decision from those same raw terms under different weights. DevQ unifies
-them in one contract, `Sweepable` (`kernel/sweep.py`), which
+them in one contract, `Sweepable` (`plugin_bases/sweepable.py`), which
 `BaseRouter`, `BaseAllocator` and `BaseScheduler` all inherit. A scoring
 component supplies three small hooks and gets both explain and sweep
 support, derived so they cannot drift:

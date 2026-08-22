@@ -11,10 +11,13 @@ WAITING; unsatisfiable per the allocator's feasible() → REJECTED
 (terminal; the caller removes it from the queue).
 '''
 from abc import ABC, abstractmethod
-from kernel.process.lifecycle import JobStates
 
-from kernel.sweep import Sweepable
+from plugin_bases.sweepable import Sweepable
 from plugin_bases.base_allocator import AllocationError
+
+# base_scheduler's _attempt_allocation sets qcb.state to JobStates values;
+# import it from the common plugin-facing surface, not from core.
+from plugin_bases.common import JobStates
 
 
 class BaseScheduler(Sweepable, ABC):
