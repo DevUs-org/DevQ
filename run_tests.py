@@ -1206,17 +1206,29 @@ def block_supports_dynamic_capability():
     check(BaseProvider.supports_dynamic(devq, cr) is False,
           "BaseProvider.supports_dynamic default declines (False)")
 
-    # Boundary regression: qiskit/ibm imports must stay INSIDE providers/ibm.
-    # The kernel, IR, frontends and routing layer are Qiskit-free, and the
-    # dynamic-circuit work must not be the change that breaches that. Scan
-    # DevQ's own packages for a top-level `import qiskit` / `from qiskit` /
-    # `import ibm...`; the only legitimate homes are providers/ibm/ (drivers)
-    # and the test/verify oracles, which cross-check AGAINST qiskit by design.
+    # Boundary regression: qiskit/ibm imports must stay INSIDE the
+    # qiskit-family plugins. DevQ CORE — kernel, IR, the built-in frontend,
+    # the base provider, routing — is Qiskit-free, and the dynamic-circuit
+    # work must not be the change that breaches that. Scan DevQ's own
+    # packages (core + plugins) for a top-level `import qiskit` / `from
+    # qiskit` / `import ibm...`; the only legitimate homes are the
+    # qiskit-family plugins (the IBM providers and the Qiskit frontend) and
+    # the research/test oracles, which cross-check AGAINST qiskit by design.
+    #
+    # Post-refactor paths: core lives in singular `frontend/` and
+    # `provider/`; all extensions moved under `plugins/`. This list is the
+    # real tree — a stale entry here silently makes the guard vacuous.
     root = os.path.dirname(os.path.abspath(__file__))
-    OURS = ("benchmark", "circuits", "config", "engine", "frontends",
-            "hardware", "kernel", "providers", "registry", "research", "shell")
-    # Oracles that legitimately import qiskit to check DevQ against it.
-    ALLOWED = (os.path.join("providers", "ibm"),)
+    OURS = ("benchmark", "circuits", "config", "engine", "frontend",
+            "hardware", "kernel", "plugin_bases", "plugins", "provider",
+            "registry", "research", "shell")
+    # Qiskit-family plugins that legitimately drive qiskit, plus the ibm
+    # provider drivers. A qiskit import anywhere else — core, plugin_bases,
+    # or a non-qiskit plugin like the qasm3 frontend — is a leak.
+    ALLOWED = (
+        os.path.join("plugins", "providers", "ibm"),
+        os.path.join("plugins", "frontends", "qiskit"),
+    )
     import_re = re.compile(r"^\s*(?:from|import)\s+(qiskit|ibm)\b", re.M)
     leaks = []
     for pkg in OURS:
@@ -1229,16 +1241,17 @@ def block_supports_dynamic_capability():
                 rel = os.path.relpath(path, root)
                 if any(rel.startswith(a) for a in ALLOWED):
                     continue
-                # research/ holds a hardware-run script that legitimately
-                # drives qiskit-ibm-runtime; it is a research entry point,
-                # not core, so exclude it explicitly rather than by accident.
+                # research/ holds hardware-run scripts and mapomatic tests
+                # that legitimately drive qiskit-ibm-runtime; research is an
+                # entry point, not core, so exclude it explicitly.
                 if rel.startswith("research" + os.sep):
                     continue
                 with open(path) as handle:
                     if import_re.search(handle.read()):
                         leaks.append(rel)
     check(not leaks,
-          f"no qiskit/ibm import escapes providers/ibm (leaks: {sorted(leaks)})")
+          f"no qiskit/ibm import escapes the qiskit-family plugins "
+          f"(leaks: {sorted(leaks)})")
 
 
 def block_conditional_ir():
