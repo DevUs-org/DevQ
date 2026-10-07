@@ -136,7 +136,8 @@ class NAQJSScheduler(BaseScheduler):
         # policy, and the logged scores are exactly the ones that ordered
         # the queue.
         tagged = self._sweep_terms(list(self.queue))
-        ranked = self.explain_recorded(tagged)      # sorted ascending by score
+        ranked = sorted(self.explain_recorded(tagged),
+                        key=lambda row: (row["score"], row["key"]))
         order  = {row["key"]: i for i, row in enumerate(ranked)}
         self.queue.sort(key=lambda qcb: order[qcb.job_id])
 
