@@ -256,11 +256,6 @@ applicable license and notice files for attribution and provenance.
 
 ## Acknowledgements
 
-The author thanks Prof. Yiming Zeng for guidance throughout CS 580Q:
-Quantum Computing and Networks at Binghamton University, and Karan Patil
-for his contributions to the baseline scheduling strategies (FCFS and
-SDF) in an earlier phase of DevQ.
-
 ### Use of AI Tools
 
 Large language models were used as development aids in this work:
